@@ -161,3 +161,8 @@ vite.config.ts.timestamp-*
 .tsa/
 # sunucu/istemci TLS özel anahtarları
 certs/*.key
+
+# Test çalıştırmalarının ürettiği geçici ES256 imzalama anahtarları.
+# İçerikleri her koşuda yeniden üretilir ve üretim değeri yoktur, ama özel
+# anahtarların depoya girmesi hiçbir koşulda doğru değil.
+.tmp-*-keys/
