@@ -37,7 +37,7 @@ const { OAuthService, createDbClientStore } = require('./services/oauth-service'
 process.env.FITFAK_IDP_DEV_DB = 0; 
 process.env.FITFAK_IDP_REMOTE_DB_HOST = "https://localhost:443";
 process.env.FITFAK_IDP_DB_ID = "356496744416022528";
-process.env.FITFAK_IDP_DB_SECRET = "5JJgguLeLoTilFaguwVLxEUjczbcI1J0+q1h9Oedlp0=";
+process.env.FITFAK_IDP_DB_SECRET = "";
 process.env.FITFAK_IDP_REMOTE_DB_JWT = "BURAYA_GECERLI_JWT_YAZ";
 
 process.env.FITFAK_IDP_MTLS_CERT_PATH = "./certs/client.crt";
@@ -306,7 +306,7 @@ async function main() {
       host: 'mail.fitfak.net',
       port: 465,
       username: 'network@fitfak.net',
-      password: 'VlROU2VXSXlOVzVWUjBaN' 
+      password: '' 
     };
 
     mailer = new SMTPService({
