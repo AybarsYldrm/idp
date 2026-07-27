@@ -280,6 +280,33 @@ async function loginWithPassword({
   };
 }
 
+/**
+ * Parola faktörü BAŞKA bir yolla kanıtlandıktan sonra (SRP gibi) ikinci faktör
+ * challenge'ını üretir.
+ *
+ * loginWithPassword'un son bloğuyla aynı işi yapar ve aynı durum makinesine
+ * bağlanır: hesabın e-posta doğrulaması ya da MFA kurulumu eksikse giriş
+ * verilmez. SRP'nin bunu atlayıp doğrudan oturum açması, parolayı bilen birinin
+ * ikinci faktörü tamamen aşması demek olurdu.
+ */
+async function issueMfaChallengeForUser({ db, userId }) {
+  const user = await db.collection('users').get(userId);
+  if (!user) throw new AppError('invalid_credentials', 'Kimlik doğrulama başarısız', { httpStatus: 401 });
+
+  if (user.status === 'pending_email_verification') {
+    return { requiresEmailVerification: true, email: user.email };
+  }
+  if (user.status === 'pending_mfa_setup') {
+    return { requiresMfaSetup: true, setupToken: await issueSetupToken(String(user._id)), userId: String(user._id) };
+  }
+
+  return {
+    requiresSecondFactor: true,
+    mfaChallengeToken: await issueMfaChallengeToken(String(user._id)),
+    availableMethods: JSON.parse(user.mfaMethods || '[]'),
+  };
+}
+
 // ============================================================================
 // PAROLA SIFIRLAMA (forgot password)
 //
@@ -589,6 +616,7 @@ module.exports = {
   validatePasswordComplexity,
   verifyEmail,
   loginWithPassword,
+  issueMfaChallengeForUser,
   completeLoginWithTotp,
   beginTotpEnrollment,
   finishTotpEnrollment,

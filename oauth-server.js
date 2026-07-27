@@ -31,6 +31,7 @@ const schema = require('./db/schema');
 const authService = require('./services/auth-service');
 const webauthnServiceModule = require('./services/webauthn-service');
 const { OAuthService, createDbClientStore } = require('./services/oauth-service');
+const srpAuthService = require('./services/srp-auth-service');
 
 // ----------------------------------------------------------------------------
 // 🏗️ YAPILANDIRMA
@@ -472,6 +473,34 @@ async function main() {
       clientFingerprint: body.fingerprint, powChallengeId: body.powChallengeId, powNonce: body.powNonce,
     });
     sendJson(res, 200, await authService.loginWithPassword({ db, username: targetUsername, passwordPlain: body.password, antiBot }));
+  }), IDP_IP);
+
+  // ---- SRP-6a: parolanın sunucuya HİÇ ulaşmadığı giriş -----------------------
+  // İki adım, tek kullanımlık durum. Ayrıntılı gerekçe services/srp-auth-service.js'te.
+  const srpStateStore = new PrefixedEphemeralStore(sharedEphemeralStore, 'srp:');
+
+  server.addHttpHandler({ method: 'POST', path: '/auth/srp/begin' }, wrapHandler(async (req, res) => {
+    const body = await readJsonBody(req);
+    await authService.enforceAntiAutomation({
+      antiBot, ip: getIp(req), username: `srp:${body.identity}`, headers: req.headers, socket: req.socket,
+      clientFingerprint: body.fingerprint, powChallengeId: body.powChallengeId, powNonce: body.powNonce,
+    });
+    sendJson(res, 200, await srpAuthService.beginSrpLogin({
+      db, store: srpStateStore, config, identity: body.identity,
+    }));
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/auth/srp/finish' }, wrapHandler(async (req, res) => {
+    const body = await readJsonBody(req);
+    const { M2, userId } = await srpAuthService.finishSrpLogin({
+      db, store: srpStateStore, stateId: body.stateId, A: body.A, M1: body.M1,
+    });
+    // Parola kanıtlandı ama bu TEK faktördür. Oturum burada verilmez; mevcut
+    // akıştaki gibi bir 2. faktör (TOTP ya da WebAuthn) isteniyor. Sunucunun M2
+    // kanıtı da dönüyor -- istemci bunu doğrulamazsa sahte bir sunucuyla
+    // konuştuğunu anlayamaz.
+    const challenge = await authService.issueMfaChallengeForUser({ db, userId });
+    sendJson(res, 200, { M2, ...challenge });
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/auth/login/totp' }, wrapHandler(async (req, res) => {
