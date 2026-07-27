@@ -147,7 +147,66 @@
     register: (fields) => postJson('/auth/register', fields),
     resendVerificationEmail: (email) => postJson('/auth/verify-email/resend', { email }),
     confirmVerificationEmail: (email, code) => postJson('/auth/verify-email/confirm', { email, code }),
+    // Eski yol: parolayı DÜZ METİN olarak gönderir. Yalnızca henüz SRP
+    // doğrulayıcısı olmayan hesaplar için, ve o hesap da bu girişin ardından
+    // otomatik olarak SRP'ye taşınır (bkz. loginWithSrp). Herkes taşındıktan
+    // sonra bu uç kaldırılabilir.
+    loginWithPasswordLegacy: (fields) => postJson('/auth/login/password', fields),
     loginWithPassword: (fields) => postJson('/auth/login/password', fields),
+
+    /**
+     * SRP-6a ile giriş: parola bu fonksiyondan ASLA çıkmaz.
+     *
+     * Hesabın doğrulayıcısı yoksa (henüz taşınmamış eski hesap) sunucu
+     * gerçekçi ama sahte bir challenge döner ve doğrulama başarısız olur --
+     * bu, "kullanıcı yok" bilgisini sızdırmamak için kasıtlıdır. O yüzden
+     * başarısızlıkta eski yola düşüp, başarılı olursa hesabı SRP'ye taşıyoruz:
+     * kullanıcı bir kez daha düz metin gönderir, bir daha asla göndermez.
+     */
+    async loginWithSrp(fields) {
+      const identity = fields.identity || fields.email || fields.username;
+      const password = fields.password;
+
+      const begin = await postJson('/auth/srp/begin', Object.assign({ identity }, fields.anti || {}));
+      const client = new global.FitfakSrp.SrpClient({ identity: String(identity).trim().toLowerCase(), password });
+
+      try {
+        const proof = await client.respond(begin);
+        const finish = await postJson('/auth/srp/finish', {
+          stateId: begin.stateId, A: client.start().A, M1: proof.M1,
+        });
+        // Sunucunun kanıtını doğrulamak zorunlu: atlanırsa parolayı bilmeyen
+        // sahte bir sunucuyla konuşulduğu anlaşılmaz.
+        await client.verifyServer(finish);
+        return Object.assign({ srp: true }, finish);
+      } catch (err) {
+        const legacy = await this.loginWithPasswordLegacy(
+          Object.assign({ username: identity, password: password }, fields.anti || {}),
+        );
+        // Eski yol tuttuysa hesabın doğrulayıcısı yoktu. Şimdi tarayıcıda
+        // üretip yüklüyoruz; bir sonraki giriş SRP ile olur.
+        try {
+          const v = await global.FitfakSrp.createVerifier(password);
+          await postJson('/auth/srp/upgrade', {
+            mfaChallengeToken: legacy.mfaChallengeToken,
+            setupToken: legacy.setupToken,
+            saltB64: v.saltB64,
+            verifierB64: v.verifier,
+          });
+        } catch (_) { /* taşıma başarısızsa giriş yine de geçerli */ }
+        return Object.assign({ srp: false, migrated: true }, legacy);
+      }
+    },
+
+    /** Kayıt: doğrulayıcı tarayıcıda üretilir, parola sunucuya hiç gitmez. */
+    async registerWithSrp(fields) {
+      const v = await global.FitfakSrp.createVerifier(fields.password);
+      return postJson('/auth/register', Object.assign({}, fields, {
+        password: undefined,
+        srpSaltB64: v.saltB64,
+        srpVerifierB64: v.verifier,
+      }));
+    },
     completeLoginWithTotp: (mfaChallengeToken, code) => postJson('/auth/login/totp', { mfaChallengeToken, code }),
     logout: () => postJson('/auth/logout'),
 

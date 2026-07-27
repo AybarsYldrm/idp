@@ -1,58 +1,79 @@
 'use strict';
 
-// ============================================================================
-// RFC 5280 CRL (Certificate Revocation List) üretimi. `certificates` koleksiyonundaki
-// TÜM iptal edilmiş kayıtları tarar (bkz. db/query-utils.js'teki scan() deseni),
-// GERÇEK imzalamayı core/pki-issuer.js üzerinden SİZİN @fitfak/ssl'inize delege eder.
+const { reasonCodeOf } = require('./ocsp-service');
+
+// RFC 5280 CRL üretimi — İKİ ayrı liste.
 //
-// ÖNBELLEKLEME NOTU (v1.4 düzeltmesi): CRL üretimi (özellikle çok sayıda iptal varsa)
-// pahalı olabilir VE CRL'ler doğası gereği "biraz eski" olsalar bile GÜVENLİDİR
-// (istemciler zaten periyodik olarak yeniden çeker) -- bu yüzden bir önbellek tutuyoruz.
-// ESKİ SÜRÜM bunu modül-seviyesi bir DEĞİŞKENDE (`let cached = null`) tutuyordu -- bu,
-// birden fazla fitfak-idp instance'ı bir yük dengeleyici arkasında koşarken KIRIKTIR:
-// instance A'da bir sertifika iptal edilip `invalidateCrlCache()` çağrılsa bile,
-// instance B'nin KENDİ bellek-içi `cached` değişkeni bundan HİÇ HABERDAR OLMAZ ve eski
-// (artık iptal edilmiş sertifikayı içermeyen) bir CRL sunmaya devam edebilir. Şimdi
-// önbellek `core/ephemeral-store.js` üzerinden PAYLAŞILAN store'da tutuluyor -- hangi
-// instance sorarsa sorsun AYNI önbellek durumunu görür.
-// ============================================================================
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 dakika -- bu süre boyunca yeni bir iptal CRL'e YANSIMAYABİLİR
-const CACHE_KEY = 'crl:current';
+// Bir CRL yalnızca KENDİ yayıncısının imzaladığı sertifikalar hakkında konuşur.
+// Doğrulayan taraf, bir sertifikanın iptal durumunu ararken o sertifikanın
+// YAYINCISI tarafından imzalanmış bir CRL bekler; başka bir anahtarla imzalanmış
+// liste, o sertifikayı kapsıyor sayılmaz ve sessizce yok sayılır.
+//
+//   scope 'leaf'  -> ara CA imzalar, uç sertifikaların iptallerini taşır
+//   scope 'root'  -> kök CA imzalar, ARA CA'ların iptallerini taşır
+//
+// Önceki sürüm tek bir liste üretiyor ve onu KÖK anahtarıyla imzalıyordu, oysa
+// listedeki uç sertifikaları ara CA imzalamıştı. Sonuç: iptal kayıtları
+// üretiliyor, yayınlanıyor, ve hiçbir doğrulayıcı tarafından dikkate alınmıyordu.
+// İptalin işe yaramadığı, ancak biri iptal edilmiş bir sertifikayla giriş
+// yapmayı denediğinde fark edilirdi.
+//
+// Zincir semantiği: ara CA iptal edildiğinde altındaki her şey düşer. Bunu
+// kök CRL'i taşır; uç CRL'in ayrıca her sertifikayı listelemesi gerekmez.
+
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_KEY_LEAF = 'crl:leaf';
+const CACHE_KEY_ROOT = 'crl:root';
 
 /**
- * @param {object} opts
- * @param {object} opts.db
- * @param {object} opts.pkiIssuer
- * @param {object} opts.cacheStore - core/ephemeral-store.js arayüzü (paylaşılan DB-destekli
- *   store) -- verilmezse (ör. testlerde) önbellek atlanır, HER çağrıda yeniden üretilir.
- * @param {boolean} [opts.forceRefresh]
+ * @param {'leaf'|'root'} scope
  */
 async function generateCrl({
-  db, pkiIssuer, cacheStore, forceRefresh = false,
+  db, pkiIssuer, cacheStore, scope = 'leaf', forceRefresh = false,
 }) {
+  const cacheKey = scope === 'root' ? CACHE_KEY_ROOT : CACHE_KEY_LEAF;
+
   if (!forceRefresh && cacheStore) {
-    const cachedB64 = await cacheStore.get(CACHE_KEY);
-    if (cachedB64) return Buffer.from(cachedB64, 'base64');
+    const cached = await cacheStore.get(cacheKey);
+    if (cached) return Buffer.from(cached, 'base64');
   }
 
   const certs = db.collection('certificates');
+  const subCaSkid = pkiIssuer.subCA?.skid;
+  const subCaSkidHex = Buffer.isBuffer(subCaSkid) ? subCaSkid.toString('hex') : String(subCaSkid || '');
+
   const revoked = [];
   // eslint-disable-next-line no-restricted-syntax
   for await (const row of certs.scan()) {
-    if (row.status === 'revoked') {
-      revoked.push({ serialNumberHex: row.serialNumberHex, revokedAt: new Date(Number(row.revokedAt)) });
-    }
+    if (row.status !== 'revoked') continue;
+
+    // Bir kaydın hangi listeye ait olduğu, onu KİMİN imzaladığına bağlıdır.
+    // Ara CA kaydı kök listesine, geri kalan her şey uç listesine gider.
+    const isIntermediate = row.profile === 'intermediate-ca' || row.skidHex === subCaSkidHex;
+    const belongsHere = scope === 'root' ? isIntermediate : !isIntermediate;
+    if (!belongsHere) continue;
+
+    revoked.push({
+      serialNumberHex: row.serialNumberHex,
+      revokedAt: new Date(Number(row.revokedAt) || Date.now()),
+      // Sebep kodu taşınmazsa her iptal 'unspecified' görünür ve bir anahtar
+      // sızıntısı ile planlı bir yenileme aynı şeye benzer. Bunlar operasyonel
+      // olarak çok farklı olaylardır.
+      reasonCode: reasonCodeOf(row.revocationReason),
+    });
   }
 
-  const crlDer = await pkiIssuer.signCrl({ revokedCerts: revoked });
-  if (cacheStore) await cacheStore.set(CACHE_KEY, crlDer.toString('base64'), CACHE_TTL_MS);
+  const crlDer = await pkiIssuer.signCrl({ revokedCerts: revoked, scope });
+  if (cacheStore) await cacheStore.set(cacheKey, crlDer.toString('base64'), CACHE_TTL_MS);
   return crlDer;
 }
 
-/** Bir sertifika iptal edildiğinde çağrılır -- PAYLAŞILAN önbelleği temizler, TÜM
- * instance'lar bir sonraki istekte taze bir CRL üretir. */
+/** Bir iptal sonrası HER İKİ önbelleği de temizler -- hangi listeye düştüğü
+ * çağıranın bilmesi gereken bir ayrıntı olmamalı. */
 async function invalidateCrlCache(cacheStore) {
-  if (cacheStore) await cacheStore.delete(CACHE_KEY);
+  if (!cacheStore) return;
+  await cacheStore.delete(CACHE_KEY_LEAF);
+  await cacheStore.delete(CACHE_KEY_ROOT);
 }
 
-module.exports = { generateCrl, invalidateCrlCache, CACHE_TTL_MS };
+module.exports = { generateCrl, invalidateCrlCache, CACHE_TTL_MS, CACHE_KEY_LEAF, CACHE_KEY_ROOT };

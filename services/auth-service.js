@@ -158,9 +158,15 @@ async function sendAccountExistsNotification(mailer, { toEmail, username }) {
 // edilir.
 // ============================================================================
 async function register({
-  db, username, email, passwordPlain, mailer,
+  db, username, email, passwordPlain, mailer, srpSaltB64, srpVerifierB64,
 }) {
-  validatePasswordComplexity(passwordPlain);
+  // SRP ile kayıtta parola sunucuya HİÇ gelmez: tarayıcı doğrulayıcıyı üretip
+  // yollar. Bunun kaçınılmaz sonucu, karmaşıklık kuralının burada
+  // uygulanamamasıdır -- sunucu kontrol edeceği şeyi görmüyor. Kural istemciye
+  // taşındı ve istemci yalan söyleyebilir; bu, PAKE kullanmanın bedelidir ve
+  // gizlenmemelidir.
+  const usingSrp = !!(srpSaltB64 && srpVerifierB64);
+  if (!usingSrp) validatePasswordComplexity(passwordPlain);
 
   const users = db.collection('users');
   const existingByUsername = await users.findOne('username', username);
@@ -175,14 +181,19 @@ async function register({
       console.error('[auth-service] hesap-zaten-var bildirimi gönderilemedi:', e.message);
     }
     // Gerçek kayıt yolunun scrypt maliyetini taklit et -- yanıt SÜRESİNDEN bile hesabın
-    // var olup olmadığı çıkarılamasın.
-    password.hash(passwordPlain);
+    // var olup olmadığı çıkarılamasın. SRP yolunda hash hesaplanmadığı için
+    // taklit edilecek bir maliyet de yok.
+    if (!usingSrp) password.hash(passwordPlain);
     return { userId: null, email, requiresEmailVerification: true };
   }
 
-  const passwordHash = password.hash(passwordPlain);
   const userId = await users.insert({
-    username, email, passwordHash,
+    username, email,
+    // İkisinden yalnızca biri dolu olur. SRP yolunda passwordHash boş kalır ve
+    // hesap eski (düz metin) giriş yolunu hiç kullanamaz.
+    passwordHash: usingSrp ? '' : password.hash(passwordPlain),
+    srpSalt: usingSrp ? srpSaltB64 : '',
+    srpVerifier: usingSrp ? srpVerifierB64 : '',
     status: 'pending_email_verification', mfaMethods: '[]', isAdmin: false,
     createdAt: BigInt(Date.now()), emailVerified: false, role: 'user',
   });
@@ -277,6 +288,33 @@ async function loginWithPassword({
     requiresSecondFactor: true,
     mfaChallengeToken: await issueMfaChallengeToken(String(user._id)),
     availableMethods,
+  };
+}
+
+/**
+ * Parola faktörü BAŞKA bir yolla kanıtlandıktan sonra (SRP gibi) ikinci faktör
+ * challenge'ını üretir.
+ *
+ * loginWithPassword'un son bloğuyla aynı işi yapar ve aynı durum makinesine
+ * bağlanır: hesabın e-posta doğrulaması ya da MFA kurulumu eksikse giriş
+ * verilmez. SRP'nin bunu atlayıp doğrudan oturum açması, parolayı bilen birinin
+ * ikinci faktörü tamamen aşması demek olurdu.
+ */
+async function issueMfaChallengeForUser({ db, userId }) {
+  const user = await db.collection('users').get(userId);
+  if (!user) throw new AppError('invalid_credentials', 'Kimlik doğrulama başarısız', { httpStatus: 401 });
+
+  if (user.status === 'pending_email_verification') {
+    return { requiresEmailVerification: true, email: user.email };
+  }
+  if (user.status === 'pending_mfa_setup') {
+    return { requiresMfaSetup: true, setupToken: await issueSetupToken(String(user._id)), userId: String(user._id) };
+  }
+
+  return {
+    requiresSecondFactor: true,
+    mfaChallengeToken: await issueMfaChallengeToken(String(user._id)),
+    availableMethods: JSON.parse(user.mfaMethods || '[]'),
   };
 }
 
@@ -589,6 +627,7 @@ module.exports = {
   validatePasswordComplexity,
   verifyEmail,
   loginWithPassword,
+  issueMfaChallengeForUser,
   completeLoginWithTotp,
   beginTotpEnrollment,
   finishTotpEnrollment,

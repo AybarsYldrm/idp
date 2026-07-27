@@ -48,38 +48,56 @@ async function requestCertificate({
     );
   }
 
-  // Veritabanı koleksiyonunu önceden tanımlıyoruz ki içerideki kontrolde kullanabilelim
   const certs = db.collection('certificates');
 
-  // 🛡️ EKSİKLİK BURADAYDI: skidHex alındı ve checkKeyUniqueness eklendi
   const {
     certPem, serialNumberHex, skidHex, notBefore, notAfter,
   } = await pkiIssuer.signCertificateFromCsr({
-    csrPem, 
-    profile, 
-    subjectOverride: { cn: userRow.username },
-    checkKeyUniqueness: async (incomingSkidHex) => {
-      // Veritabanında bu parmak izine sahip bir sertifika var mı bakıyoruz
-      const existing = await certs.findOne('skidHex', incomingSkidHex);
-      return !!existing; // Varsa PKI motoru anında hata fırlatacak
-    }
+    csrPem,
+    profile,
+    subjectOverride: { cn: userRow.username, email: userRow.email },
   });
 
-  await certs.insert({
-    serialNumberHex,
-    skidHex, // 🛡️ BİR SONRAKİ KONTROLDE YAKALAMAK İÇİN DB'YE KAYDEDİYORUZ
-    userId,
-    subjectCn: userRow.username,
-    profile,
-    certPem,
-    notBefore: BigInt(notBefore.getTime()),
-    notAfter: BigInt(notAfter.getTime()),
-    status: 'valid',
-    revokedAt: 0n,
-    revocationReason: '',
-    createdAt: BigInt(Date.now()),
-    issuedVia: 'device_code',
-  });
+  // Anahtar tekilliği, imzalamadan ÖNCE bir ön-kontrolle DEĞİL, kaydın kendisiyle
+  // ATOMİK olarak zorlanır.
+  //
+  // Önceki hâli `findOne('skidHex', ...)` ile bakıp sonra `insert()` ediyordu. Bu iki
+  // ayrı await'tir: aynı CSR ile eşzamanlı gelen iki istek de "yok" görür ve ikisi de
+  // yazar -- yani korumanın var olma sebebi olan senaryo, tam da onu denerken kaçar.
+  // `insertUnique` kontrolü yazma kuyruğunun İÇİNDE yapar; ikinci istek
+  // ALREADY_EXISTS/UNIQUE_CONSTRAINT ile döner.
+  //
+  // İmza kontrolden önce atıldığı için reddedilen bir istekte ortada imzalanmış ama
+  // kaydedilmemiş bir sertifika kalır. Bu bilinçli bir tercih: o sertifika hiçbir zaman
+  // istemciye verilmez ve kaydı olmadığı için OCSP/CRL tarafından 'unknown' sayılır --
+  // yani doğrulanamaz. Tersi sıralama (önce kaydet, sonra imzala) ise imzalama
+  // başarısız olduğunda anahtarı kalıcı olarak yakardı.
+  try {
+    await certs.insertUnique({
+      serialNumberHex,
+      skidHex,
+      userId,
+      subjectCn: userRow.username,
+      profile,
+      certPem,
+      notBefore: BigInt(notBefore.getTime()),
+      notAfter: BigInt(notAfter.getTime()),
+      status: 'valid',
+      revokedAt: 0n,
+      revocationReason: '',
+      createdAt: BigInt(Date.now()),
+      issuedVia: 'device_code',
+    }, { unique: ['skidHex'] });
+  } catch (e) {
+    if (e.code === 'UNIQUE_CONSTRAINT' || e.code === 'ALREADY_EXISTS' || /already exists/i.test(e.message || '')) {
+      throw new AppError(
+        'key_already_certified',
+        'Bu açık anahtar için zaten bir sertifika üretilmiş. Lütfen yeni bir anahtar çifti ve CSR oluşturun.',
+        { httpStatus: 409 },
+      );
+    }
+    throw e;
+  }
 
   return {
     certPem, serialNumberHex, notBefore: notBefore.toISOString(), notAfter: notAfter.toISOString(),

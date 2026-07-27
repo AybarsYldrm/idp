@@ -24,135 +24,67 @@ const certificateService = require('./services/certificate-service');
 const { AcmeService } = require('./services/acme-service');
 const ocspService = require('./services/ocsp-service');
 const crlService = require('./services/crl-service');
+const { createStatusHandler, createPolicyHandler } = require('./services/status-server');
 const { AppError } = require('./core/errors');
 const schema = require('./db/schema');
 
 const authService = require('./services/auth-service');
 const webauthnServiceModule = require('./services/webauthn-service');
 const { OAuthService, createDbClientStore } = require('./services/oauth-service');
+const srpAuthService = require('./services/srp-auth-service');
 
 // ----------------------------------------------------------------------------
-// 🏗️ YAPILANDIRMA (Sabit Ayarlar)
+// 🏗️ YAPILANDIRMA
 // ----------------------------------------------------------------------------
-process.env.FITFAK_IDP_DEV_DB = 0; 
-process.env.FITFAK_IDP_REMOTE_DB_HOST = "https://localhost:443";
-process.env.FITFAK_IDP_DB_ID = "356496744416022528";
-process.env.FITFAK_IDP_DB_SECRET = "";
-process.env.FITFAK_IDP_REMOTE_DB_JWT = "BURAYA_GECERLI_JWT_YAZ";
+// Buradaki satırlar eskiden `process.env.X = "..."` biçiminde kendi ortamını
+// eziyordu ve içlerinde CANLI sırlar vardı (veritabanı kök sırrı, SMTP parolası,
+// bir kasa kimliği). Bunlar depoya işlendiği için artık git geçmişindedir --
+// koddan silmek onları geçmişten kaldırmaz. İLGİLİ KİMLİK BİLGİLERİ
+// DÖNDÜRÜLMELİDİR; ayrıntı için README'deki "Sır rotasyonu" bölümüne bakın.
+const config = require('./core/config').load();
+const { connectToDatabase } = require('./core/db-bootstrap');
 
-process.env.FITFAK_IDP_MTLS_CERT_PATH = "./certs/client.crt";
-process.env.FITFAK_IDP_MTLS_KEY_PATH = "./certs/client.key";
-
-const PORT = Number(process.env.PORT || 80);
-const HTTP2_PORT = Number(process.env.PORT || 52150);
-const ISSUER = process.env.FITFAK_IDP_ISSUER || 'https://session.fitfak.net';
-const RP_ID = process.env.FITFAK_IDP_RP_ID || 'fitfak.net'; 
-const COOKIE_DOMAIN = process.env.FITFAK_IDP_COOKIE_DOMAIN || '.fitfak.net';
-const TRUST_HOST = process.env.FITFAK_IDP_TRUST_HOST || 'trust.fitfak.net';
+const PORT = config.port;
+const ISSUER = config.issuer;
+const RP_ID = config.rpId;
+const COOKIE_DOMAIN = config.cookieDomain;
+const TRUST_HOST = config.trustHost;
 const TRUST_ISSUER = process.env.FITFAK_IDP_TRUST_ISSUER || `https://${TRUST_HOST}`;
-const KEY_DIR = process.env.FITFAK_IDP_KEY_DIR || path.join(__dirname, '.keys');
-const DEV_MOCK_DB = process.env.FITFAK_IDP_DEV_DB === 0;
-const DB_OWNER_ID = process.env.FITFAK_IDP_DB_OWNER_ID || 'fitfak-idp-service';
+const KEY_DIR = config.keyDir;
 
-// Multi-Bind IP Adresleri
-const IDP_IP = '127.0.0.1'; // session.fitfak.net
-const PKI_IP = '31.58.245.241'; // trust.fitfak.net
+// Mantıksal host başına bir bağlama adresi. Ayrım Host header'ıyla DEĞİL soket
+// seviyesinde yapılır: Host, istemcinin yazdığı bir dizedir; yerel adres değildir.
+const IDP_IP = config.bind.idp;       // session.fitfak.net
+const PKI_IP = config.bind.trust;     // trust.fitfak.net
+const ADMIN_IP = config.bind.admin;   // one.fitfak.net
+const STATUS_IP = config.bind.status; // status.trust.fitfak.net / time.trust.fitfak.net
 
 // ----------------------------------------------------------------------------
 // 🏗️ VERİTABANI KURULUMU
 // ----------------------------------------------------------------------------
-function deriveDbKeyBuffer(secretRaw) {
-  try {
-    const decoded = Buffer.from(secretRaw, 'base64');
-    if (decoded.length === 32 && decoded.toString('base64').replace(/=+$/, '') === secretRaw.replace(/=+$/, '')) {
-      return decoded;
-    }
-  } catch { /* base64 değil -- aşağıya düş */ }
-  return Buffer.from(String(secretRaw).padEnd(32, '0').slice(0, 32));
-}
-
+// Yumurta-tavuk sorununun çözümü core/db-bootstrap.js'te: ilk çalıştırmada
+// bootstrap TLS -> enrolment -> mTLS, sonraki her açılışta diskteki
+// sertifikadan devam. Ayrıntılı gerekçe o dosyanın başındadır.
 async function bootstrapDatabase() {
-  if (DEV_MOCK_DB) {
-    console.warn('[fitfak-idp] UYARI: FITFAK_IDP_DEV_DB=1 -- bellek-içi MOCK veritabanı kullanılıyor.');
+  if (config.devMockDb) {
+    console.warn('[fitfak-idp] UYARI: FITFAK_IDP_DEV_DB=1 -- bellek-içi MOCK veritabanı (kalıcılık ve şifreleme YOK).');
     const { createMockDb } = require('./test/mock-db');
-    return createMockDb(['users', 'webauthn_credentials', 'totp_credentials', 'sessions', 'refresh_tokens', 'oauth_clients', 'ephemeral_state', 'certificates', 'acme_accounts', 'acme_orders', 'acme_authorizations']);
+    return { db: createMockDb(Object.keys(schema)), mode: 'mock' };
   }
 
-  if (process.env.FITFAK_IDP_REMOTE_DB_HOST) {
-    console.warn('[fitfak-idp] UZAK gRPC veritabanı kullanılıyor:', process.env.FITFAK_IDP_REMOTE_DB_HOST);
-    const { connectRemoteDatabase } = require('./db/grpc-db-adapter');
+  const result = await connectToDatabase({ config, logger: console });
 
-    let mtls;
-    if (process.env.FITFAK_IDP_MTLS_CERT_PATH && process.env.FITFAK_IDP_MTLS_KEY_PATH) {
-      mtls = {
-        cert: fs.readFileSync(process.env.FITFAK_IDP_MTLS_CERT_PATH),
-        key: fs.readFileSync(process.env.FITFAK_IDP_MTLS_KEY_PATH),
-        ca: process.env.FITFAK_IDP_MTLS_CA_PATH ? fs.readFileSync(process.env.FITFAK_IDP_MTLS_CA_PATH) : undefined,
-      };
-    } else {
-      console.warn('[fitfak-idp] UYARI: FITFAK_IDP_MTLS_CERT_PATH/_KEY_PATH ayarlanmamış -- mTLS OLMADAN bağlanılıyor.');
-    }
-
-    const jwtFilePath = path.join(__dirname, '.data', 'remote_db_jwt.txt');
-    let currentJwt = process.env.FITFAK_IDP_REMOTE_DB_JWT;
-    
-    if (fs.existsSync(jwtFilePath)) {
-      currentJwt = fs.readFileSync(jwtFilePath, 'utf8').trim();
-      console.log('[fitfak-idp] Kaydedilmiş güncel JWT token diskten yüklendi.');
-    }
-
-    const db = await connectRemoteDatabase({
-      host: process.env.FITFAK_IDP_REMOTE_DB_HOST,
-      dbId: process.env.FITFAK_IDP_DB_ID,
-      clientSecret: process.env.FITFAK_IDP_DB_SECRET || process.env.FITFAK_IDP_DB_CLIENT_SECRET,
-      mtls,
-      jwtToken: currentJwt,
-    });
-
-    setInterval(() => {
-      const latestToken = db.getLastRefreshedToken();
-      if (latestToken && latestToken !== currentJwt) {
-         currentJwt = latestToken;
-         fs.mkdirSync(path.join(__dirname, '.data'), { recursive: true });
-         fs.writeFileSync(jwtFilePath, currentJwt);
-         console.log('[fitfak-idp] Uzak veritabanı JWT tokeni yenilendi ve diske kalıcı olarak kaydedildi.');
-      }
-    }, 60 * 60 * 1000).unref();
-
-    return db;
-  }
-
-  const { DatabaseManager, ClientSecretKeyProvider, SnowflakeGenerator } = require('@fitfak/database');
-  const workerId = Number(process.env.FITFAK_IDP_SNOWFLAKE_WORKER_ID || 1);
-  const snowflake = new SnowflakeGenerator({ workerId });
-
-  const dataDir = process.env.FITFAK_IDP_DB_DIR || path.join(__dirname, '.data');
-  const manager = new DatabaseManager({ baseDir: dataDir, snowflake });
-
-  const secretRaw = process.env.FITFAK_IDP_DB_SECRET || process.env.FITFAK_IDP_DB_CLIENT_SECRET;
-  if (!secretRaw) throw new Error('[fitfak-idp] Sır eksik!');
-  const keyProvider = new ClientSecretKeyProvider(deriveDbKeyBuffer(secretRaw));
-
-  const dbIdFile = path.join(dataDir, 'fitfak_idp_db_id.txt');
-  const dbId = process.env.FITFAK_IDP_DB_ID || (fs.existsSync(dbIdFile) ? fs.readFileSync(dbIdFile, 'utf8').trim() : null);
-
-  if (dbId) {
-    try {
-      return await manager.openDatabase({ ownerId: DB_OWNER_ID, dbId, requesterId: DB_OWNER_ID, keyProvider });
-    } catch (e) {
-      throw new Error(`[fitfak-idp] Mevcut veritabanı açılamadı: ${e.message}`);
+  // Şemayı her açılışta uygula. Bu bir no-op değildir: alan eklemek bir
+  // migrasyondur ve motor bunu tespit edip indeksleri yeniden kurar; kırıcı bir
+  // değişiklik ise açılışta reddedilir -- ilk yazma denemesinde değil.
+  if (typeof result.db.applySchemaRegistry === 'function') {
+    await result.db.applySchemaRegistry(schema);
+  } else {
+    for (const [name, def] of Object.entries(schema)) {
+      await result.db.defineCollectionAsync(name, def);
     }
   }
-
-  const created = await manager.createDatabase({ ownerId: DB_OWNER_ID, name: 'main', keyProvider });
-  fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(dbIdFile, created.dbId);
-  console.warn(`[fitfak-idp] YENİ VERİTABANI OLUŞTURULDU (dbId=${created.dbId})`);
-
-  for (const [name, def] of Object.entries(schema)) {
-    await created.db.defineCollectionAsync(name, def);
-  }
-  return created.db;
+  return result;
 }
 
 // ----------------------------------------------------------------------------
@@ -190,7 +122,7 @@ function parseCookies(req) {
   return out;
 }
 
-const TRUSTED_IP_HEADER = (process.env.FITFAK_IDP_TRUSTED_IP_HEADER || 'cf-connecting-ip').toLowerCase();
+const TRUSTED_IP_HEADER = config.trustedIpHeader;
 
 function isPlausibleIp(ip) {
   return typeof ip === 'string' && ip.length > 0 && ip.length < 46 && !/[^0-9a-fA-F.:%]/.test(ip);
@@ -237,7 +169,8 @@ function wrapHandler(fn) {
 }
 
 async function main() {
-  const db = await bootstrapDatabase();
+  const { db, mode: dbMode } = await bootstrapDatabase();
+  console.log(`[fitfak-idp] Veritabanı bağlantısı hazır (mod: ${dbMode}).`);
 
   // --------------------------------------------------------------------------
   // ⚙️ SERVİSLER
@@ -300,23 +233,25 @@ async function main() {
   // ✉️ SABİT SMTP / E-POSTA YAPILANDIRMASI
   // --------------------------------------------------------------------------
   let mailer = null;
-  try {
-    const { SMTPService } = require('./core/mailer');
-    const SMTP_CONFIG = {
-      host: 'mail.fitfak.net',
-      port: 465,
-      username: 'network@fitfak.net',
-      password: '' 
-    };
-
-    mailer = new SMTPService({
-      host: SMTP_CONFIG.host, port: Number(SMTP_CONFIG.port),
-      username: SMTP_CONFIG.username, password: SMTP_CONFIG.password,
-    });
-    mailer.defaultFrom = SMTP_CONFIG.username;
-    console.log(`[fitfak-idp] SMTP Servisi başarıyla yapılandırıldı: ${SMTP_CONFIG.username}`);
-  } catch (e) {
-    console.warn('[fitfak-idp] UYARI: SMTP servisi yüklenemedi:', e.message);
+  if (config.smtp.host) {
+    try {
+      const { SMTPService } = require('./core/mailer');
+      mailer = new SMTPService({
+        host: config.smtp.host,
+        port: config.smtp.port,
+        username: config.smtp.username,
+        password: config.smtp.password,
+      });
+      mailer.defaultFrom = config.smtp.from || config.smtp.username;
+      console.log(`[fitfak-idp] SMTP yapılandırıldı: ${config.smtp.username}@${config.smtp.host}`);
+    } catch (e) {
+      console.warn('[fitfak-idp] UYARI: SMTP servisi yüklenemedi:', e.message);
+    }
+  } else {
+    // E-posta olmadan doğrulama kodları ve şüpheli-oturum bildirimleri
+    // gönderilemez. Sessizce devam etmek yerine bunu açıkça söylüyoruz:
+    // kayıt akışı çalışır görünüp kullanıcıya kod ulaşmazsa sebebi burasıdır.
+    console.warn('[fitfak-idp] UYARI: SMTP_HOST ayarlanmamış -- doğrulama kodları yalnızca loga yazılacak.');
   }
 
   async function resolveUsernameFromEmail(reqBody) {
@@ -379,16 +314,31 @@ async function main() {
     return [...filtered.map((a) => a.sessionId), sessionId];
   }
 
+  /**
+   * Yönetici yetkisi TEK bir kurala dayanır: doğrulanmış e-posta adresi
+   * yapılandırmadaki yönetici adresine eşit mi.
+   *
+   * Önceki hâlde üç ayrı yol vardı (`role === 'admin'`, `isAdmin` bayrağı, sabit
+   * kodlanmış bir adres) ve herhangi birinin doğru olması yetiyordu. Bu, yetkinin
+   * nereden geldiğini okunamaz kılar: `role` alanını yazabilen HER kod yolu --
+   * bir admin uç noktası, bir migrasyon, ileride eklenecek bir kayıt akışı --
+   * sessizce yeni bir yönetici üretebilir. Tek ve değişmez bir kimlik, yetki
+   * yükseltmeyi "hangi kod bu alanı yazabiliyor" sorusundan çıkarıp
+   * yapılandırma sorusuna indirger.
+   *
+   * E-postanın DOĞRULANMIŞ olması da şart: aksi halde o adresi kayıt sırasında
+   * yazmak yöneticilik için yeterli olurdu.
+   */
   async function requireAdmin(req) {
     const session = await resolveCurrentSession(req);
     if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
     const userRow = await db.collection('users').get(session.userId);
-    
-    const isSuperAdmin = userRow && userRow.email === 'aybarsyildirim.mail@gmail.com';
-    if (!userRow || (userRow.role !== 'admin' && !userRow.isAdmin && !isSuperAdmin)) {
+
+    const email = String(userRow?.email || '').toLowerCase();
+    if (!userRow || !userRow.emailVerified || email !== config.adminEmail) {
       throw new AppError('forbidden', 'Bu işlem için yönetici yetkisi gerekli', { httpStatus: 403 });
     }
-    return { ...session, username: userRow.username };
+    return { ...session, username: userRow.username, email };
   }
 
   async function applyFullLoginCookies(req, res, session) {
@@ -440,7 +390,10 @@ async function main() {
       antiBot, ip: getIp(req), username: body.username, headers: req.headers, socket: req.socket,
       clientFingerprint: body.fingerprint, powChallengeId: body.powChallengeId, powNonce: body.powNonce,
     });
-    sendJson(res, 200, await authService.register({ db, username: body.username, email: body.email, passwordPlain: body.password, mailer }));
+    sendJson(res, 200, await authService.register({
+      db, username: body.username, email: body.email, passwordPlain: body.password, mailer,
+      srpSaltB64: body.srpSaltB64, srpVerifierB64: body.srpVerifierB64,
+    }));
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/auth/verify-email/resend' }, wrapHandler(async (req, res) => {
@@ -523,6 +476,43 @@ async function main() {
       clientFingerprint: body.fingerprint, powChallengeId: body.powChallengeId, powNonce: body.powNonce,
     });
     sendJson(res, 200, await authService.loginWithPassword({ db, username: targetUsername, passwordPlain: body.password, antiBot }));
+  }), IDP_IP);
+
+  // ---- SRP-6a: parolanın sunucuya HİÇ ulaşmadığı giriş -----------------------
+  // İki adım, tek kullanımlık durum. Ayrıntılı gerekçe services/srp-auth-service.js'te.
+  const srpStateStore = new PrefixedEphemeralStore(sharedEphemeralStore, 'srp:');
+
+  server.addHttpHandler({ method: 'POST', path: '/auth/srp/begin' }, wrapHandler(async (req, res) => {
+    const body = await readJsonBody(req);
+    await authService.enforceAntiAutomation({
+      antiBot, ip: getIp(req), username: `srp:${body.identity}`, headers: req.headers, socket: req.socket,
+      clientFingerprint: body.fingerprint, powChallengeId: body.powChallengeId, powNonce: body.powNonce,
+    });
+    sendJson(res, 200, await srpAuthService.beginSrpLogin({
+      db, store: srpStateStore, config, identity: body.identity,
+    }));
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/auth/srp/finish' }, wrapHandler(async (req, res) => {
+    const body = await readJsonBody(req);
+    const { M2, userId } = await srpAuthService.finishSrpLogin({
+      db, store: srpStateStore, stateId: body.stateId, A: body.A, M1: body.M1,
+    });
+    // Parola kanıtlandı ama bu TEK faktördür. Oturum burada verilmez; mevcut
+    // akıştaki gibi bir 2. faktör (TOTP ya da WebAuthn) isteniyor. Sunucunun M2
+    // kanıtı da dönüyor -- istemci bunu doğrulamazsa sahte bir sunucuyla
+    // konuştuğunu anlayamaz.
+    const challenge = await authService.issueMfaChallengeForUser({ db, userId });
+    sendJson(res, 200, { M2, ...challenge });
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/auth/srp/upgrade' }, wrapHandler(async (req, res) => {
+    const body = await readJsonBody(req);
+    sendJson(res, 200, await srpAuthService.upgradeLegacyAccountToSrp({
+      db, authService,
+      mfaChallengeToken: body.mfaChallengeToken, setupToken: body.setupToken,
+      saltB64: body.saltB64, verifierB64: body.verifierB64,
+    }));
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/auth/login/totp' }, wrapHandler(async (req, res) => {
@@ -833,27 +823,42 @@ async function main() {
     sendJson(res, 200, result);
   }), PKI_IP);
 
-  // Alt Sertifikayı Dışarıya Sunma (PKI_IP üzerinden)
-server.addHttpHandler({ method: 'GET', path: '/intermediate.crt' }, (req, res) => {
-  const certPath = path.join(__dirname, '.certs', 'sub_ca.crt');
-  if (fs.existsSync(certPath)) {
-    res.setHeader('content-type', 'application/x-pem-file');
-    res.end(fs.readFileSync(certPath));
-  } else {
-    res.statusCode = 404; res.end('Sub CA bulunamadı');
-  }
-}, PKI_IP);
+  // --------------------------------------------------------------------------
+  // 📡 status.trust.fitfak.net -- OCSP / CRL / CA yayını (31.58.245.241:80)
+  // --------------------------------------------------------------------------
+  // Bunlar sertifikalarda AIA/CDP olarak yazan adreslerdir ve DÜZ HTTP'dir.
+  // HTTPS olsaydı, bir sertifikanın iptal durumunu sorgulamak için önce başka
+  // bir sertifikayı doğrulamak gerekirdi -- sorgu, doğrulamak istediği şeye
+  // bağımlı hale gelirdi. Yanıtlar zaten kendi içlerinde imzalıdır.
+  const statusHandler = createStatusHandler({
+    db, pkiIssuer, cacheStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:'),
+  });
+  server.addHttpHandler(
+    (req) => ['/ocsp', '/crl', '/crl/root', '/intermediate.crt', '/root.crt', '/chain.pem', '/']
+      .includes(req.url.split('?')[0].replace(/\/+$/, '') || '/')
+      || req.url.startsWith('/ocsp/'),
+    statusHandler,
+    STATUS_IP,
+  );
 
-// Kök Sertifikayı Dışarıya Sunma (PKI_IP üzerinden)
-server.addHttpHandler({ method: 'GET', path: '/root.crt' }, (req, res) => {
-  const certPath = path.join(__dirname, '.certs', 'root_ca.crt');
-  if (fs.existsSync(certPath)) {
-    res.setHeader('content-type', 'application/x-pem-file');
-    res.end(fs.readFileSync(certPath));
-  } else {
-    res.statusCode = 404; res.end('Root CA bulunamadı');
-  }
-}, PKI_IP);
+  // trust.fitfak.net/policy -- politika dağıtımı (127.0.0.2)
+  const policyHandler = createPolicyHandler();
+  server.addHttpHandler(
+    (req) => req.method === 'GET' && req.url.split('?')[0].startsWith('/policy'),
+    policyHandler,
+    PKI_IP,
+  );
+
+  // CA sertifikaları trust.fitfak.net üzerinden de erişilebilir kalsın: eski
+  // sertifikalardaki AIA adresleri buraya işaret ediyor olabilir.
+  server.addHttpHandler({ method: 'GET', path: '/intermediate.crt' }, (req, res) => {
+    res.setHeader('content-type', 'application/pkix-cert');
+    res.end(pkiIssuer.subCA.certPem);
+  }, PKI_IP);
+  server.addHttpHandler({ method: 'GET', path: '/root.crt' }, (req, res) => {
+    res.setHeader('content-type', 'application/pkix-cert');
+    res.end(pkiIssuer.rootCA.certPem);
+  }, PKI_IP);
 
   // ACME ROTALARI (PKI - 127.0.0.2)
   server.addHttpHandler({ method: 'GET', path: '/acme/directory' }, (req, res) => { sendJson(res, 200, acmeService.directory()); }, PKI_IP);
@@ -886,14 +891,6 @@ server.addHttpHandler({ method: 'GET', path: '/root.crt' }, (req, res) => {
     const serial = req.url.split('/').pop(); const certPem = await acmeService.downloadCertificate(serial); res.setHeader('content-type', 'application/pem-certificate-chain'); res.end(certPem); 
   }), PKI_IP);
   
-  server.addHttpHandler({ method: 'POST', path: '/ocsp' }, wrapHandler(async (req, res) => { 
-    const ocspRequestDer = await readRawBody(req); const ocspResponseDer = await ocspService.handleOcspRequest({ db, pkiIssuer, ocspRequestDer }); res.setHeader('content-type', 'application/ocsp-response'); res.setHeader('Cache-Control', 'max-age=3600'); res.end(ocspResponseDer); 
-  }), PKI_IP);
-  
-  server.addHttpHandler({ method: 'GET', path: '/crl' }, wrapHandler(async (req, res) => { 
-    const crlDer = await crlService.generateCrl({ db, pkiIssuer, cacheStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:') }); res.setHeader('content-type', 'application/pkix-crl'); res.setHeader('Cache-Control', `max-age=${Math.floor(crlService.CACHE_TTL_MS / 1000)}`); res.end(crlDer); 
-  }), PKI_IP);
-
   server.addHttpHandler({ method: 'GET', path: '/admin/certificates' }, wrapHandler(async (req, res) => { await requireAdmin(req); sendJson(res, 200, { certificates: await certificateService.listAllCertificates({ db }) }); }), IDP_IP);
   server.addHttpHandler({ method: 'POST', path: '/admin/certificates/revoke' }, wrapHandler(async (req, res) => { const admin = await requireAdmin(req); const body = await readJsonBody(req); const result = await certificateService.revokeCertificate({ db, serialNumberHex: body.serialNumberHex, reason: body.reason, actingUserId: admin.userId, actingUserRole: 'admin' }); await crlService.invalidateCrlCache(new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:')); sendJson(res, 200, result); }), IDP_IP);
 
@@ -987,7 +984,7 @@ server.addHttpHandler({ method: 'GET', path: '/root.crt' }, (req, res) => {
 
   await new Promise((resolve) => server.listen(PORT, {
      http2Port: HTTP2_PORT,
-     host: [IDP_IP, PKI_IP]
+     host: [...new Set([IDP_IP, PKI_IP, ADMIN_IP, STATUS_IP])]
     }, resolve));
   console.log(`[fitfak-idp] dinliyor: http://${IDP_IP}:${PORT} (IDP) ve http://${PKI_IP}:${PORT} (PKI)  issuer=${ISSUER}, rpId=${RP_ID}`);
   return server;

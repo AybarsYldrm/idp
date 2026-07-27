@@ -2,266 +2,229 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const crypto = require('node:crypto');
 const ssl = require('@fitfak/ssl');
-const asn1 = ssl.asn1;
-const pki = require('@fitfak/ssl/src/pki');
+const { policyForProfile } = require('./pki-policy');
+
+// trust.fitfak.net'in imzalama tarafı.
+//
+// Önceki sürüm CSR'yi elle DER gezerek ayrıştırıyor, SKID'i tüm
+// SubjectPublicKeyInfo üzerinden hesaplıyor (RFC 5280 subjectPublicKey BIT
+// STRING'ini ister) ve EKU/policy OID'lerini elle hex olarak yazıyordu. Üçü de
+// @fitfak/ssl'de zaten doğru şekilde mevcut; kopyası burada tutulduğu sürece
+// ikisi sessizce ayrışabilir. Bu dosya artık yalnızca POLİTİKA kurar:
+// hangi profil ne kadar yaşar, hangi politika OID'ini taşır, hangi adresleri
+// gösterir. Baytların üretimi kütüphanenin işi.
+
+const STATUS_BASE = process.env.FITFAK_TRUST_STATUS_URL || 'http://status.trust.fitfak.net';
+const OCSP_URL = `${STATUS_BASE}/ocsp`;
+const CA_ISSUERS_URL = `${STATUS_BASE}/intermediate.crt`;
+const CRL_URL = `${STATUS_BASE}/crl`;
+
+// Profil -> @fitfak/ssl profili + ömür.
+//
+// Ömürler amaca göre ayrışır: bir TLS sunucu sertifikası kısa yaşamalı (iptal
+// yayılmadan da kendiliğinden geçersizleşsin), bir belge imzalama sertifikası
+// uzun (imza, sertifika süresi dolduktan sonra da doğrulanabilir olmalı).
+const PROFILE_MAP = {
+  'client-auth':      { sslProfile: 'tls-client',     days: 365 },
+  'server-auth':      { sslProfile: 'tls-server',     days: 90  },
+  smime:              { sslProfile: 'email',          days: 730 },
+  timestamping:       { sslProfile: 'tsa',            days: 1095 },
+  'code-signing':     { sslProfile: 'code-signing',   days: 1095 },
+  'document-signing': { sslProfile: 'code-signing',   days: 1095 },
+  'ocsp-responder':   { sslProfile: 'ocsp-responder', days: 365 },
+};
+
+function loadOrCreateCa(caDir) {
+  if (!fs.existsSync(caDir)) fs.mkdirSync(caDir, { recursive: true, mode: 0o700 });
+
+  const p = (n) => path.join(caDir, n);
+  const readCa = (keyPath, crtPath) => {
+    const keyInfo = ssl.pemToEcPriv(fs.readFileSync(keyPath, 'utf8'));
+    const certPem = fs.readFileSync(crtPath, 'utf8');
+    return {
+      keyType: 'ec',
+      curveName: keyInfo.curveName,
+      hashAlg: 'sha256',
+      privateKey: keyInfo.privateKey,
+      publicKeyBuf: keyInfo.publicKeyBuf,
+      name: ssl.certInfoFromPem(certPem).subjectNameDer,
+      skid: ssl.asn1.computeEcSKID(keyInfo.publicKeyBuf),
+      certPem,
+    };
+  };
+
+  let rootCA;
+  if (fs.existsSync(p('root_ca.key')) && fs.existsSync(p('root_ca.crt'))) {
+    rootCA = readCa(p('root_ca.key'), p('root_ca.crt'));
+  } else {
+    rootCA = ssl.generateEcRootCA({
+      curveName: 'P-256',
+      commonName: 'FITFAK Global Trust Network Root CA G1',
+      organization: 'FITFAK',
+      country: 'TR',
+      verbose: false,
+    });
+    // Kök CA'nın özel anahtarı yalnızca ara CA'yı imzalamak için gerekir; günlük
+    // işleyişte kullanılmaz. 0600 ile yazılıyor -- varsayılan umask'a bırakmak
+    // bu dosyayı okunabilir bırakabilirdi.
+    fs.writeFileSync(p('root_ca.key'), ssl.ecPrivToPem(rootCA), { mode: 0o600 });
+    fs.writeFileSync(p('root_ca.crt'), rootCA.certPem);
+  }
+
+  let subCA;
+  if (fs.existsSync(p('sub_ca.key')) && fs.existsSync(p('sub_ca.crt'))) {
+    subCA = readCa(p('sub_ca.key'), p('sub_ca.crt'));
+  } else {
+    subCA = ssl.generateEcIntermediateCA(rootCA, {
+      curveName: 'P-256',
+      commonName: 'FITFAK Authority Core Sub-CA G1',
+      organization: 'FITFAK',
+      country: 'TR',
+      verbose: false,
+      // Ara CA'nın KENDİ iptal bilgisi kökün CRL'ine bakar; uç sertifikalarınki
+      // ara CA'nınkine. Zincirin her halkasının kendi yayıncısını göstermesi,
+      // "ara sertifika iptal edilirse altındaki her şey düşer" davranışının
+      // doğrulayıcı tarafında gerçekten işlemesinin ön koşuludur.
+      ocspUrl: OCSP_URL,
+      caIssuersUrl: `${STATUS_BASE}/root.crt`,
+      crlUrls: [`${STATUS_BASE}/crl/root`],
+    });
+    fs.writeFileSync(p('sub_ca.key'), ssl.ecPrivToPem(subCA), { mode: 0o600 });
+    fs.writeFileSync(p('sub_ca.crt'), subCA.certPem);
+  }
+
+  return { rootCA, subCA };
+}
 
 class ProductionPkiIssuer {
   constructor(caDir) {
     this.caDir = caDir;
-    if (!fs.existsSync(caDir)) fs.mkdirSync(caDir, { recursive: true });
-
-    const rootKeyPath = path.join(caDir, 'root_ca.key');
-    const rootCrtPath = path.join(caDir, 'root_ca.crt');
-    const subKeyPath = path.join(caDir, 'sub_ca.key');
-    const subCrtPath = path.join(caDir, 'sub_ca.crt');
-
-    // ========================================================================
-    // 1. ROOT CA (KÖK SERTİFİKA) YÖNETİMİ
-    // ========================================================================
-    let rootCA;
-    if (fs.existsSync(rootKeyPath) && fs.existsSync(rootCrtPath)) {
-      console.log("[PKI] Mevcut Kök Sertifika (Root CA) yükleniyor...");
-      const rootKeyPem = fs.readFileSync(rootKeyPath, 'utf8');
-      const rootCrtPem = fs.readFileSync(rootCrtPath, 'utf8');
-
-      const rootKeyInfo = ssl.pemToEcPriv(rootKeyPem);
-      const rootCertInfo = ssl.certInfoFromPem(rootCrtPem);
-
-      rootCA = {
-        keyType: 'ec',
-        curveName: rootKeyInfo.curveName,
-        hashAlg: 'sha256',
-        privateKey: rootKeyInfo.privateKey,
-        publicKeyBuf: rootKeyInfo.publicKeyBuf,
-        name: rootCertInfo.subjectNameDer,
-        skid: asn1.computeEcSKID(rootKeyInfo.publicKeyBuf),
-        certPem: rootCrtPem
-      };
-    } else {
-      console.log("[PKI] YENİ EC Kök Sertifika (Root CA) üretiliyor...");
-      rootCA = ssl.generateEcRootCA({ curveName: 'P-256', verbose: false });
-      fs.writeFileSync(rootKeyPath, ssl.ecPrivToPem(rootCA));
-      fs.writeFileSync(rootCrtPath, rootCA.certPem);
-    }
-
-    // CRL'i Root CA anahtarıyla imzalayabilmek için Root CA'i sınıfın içine kaydediyoruz.
+    const { rootCA, subCA } = loadOrCreateCa(caDir);
     this.rootCA = rootCA;
-
-    // ========================================================================
-    // 2. SUB-CA (ALT SERTİFİKA / INTERMEDIATE) YÖNETİMİ
-    // ========================================================================
-    if (fs.existsSync(subKeyPath) && fs.existsSync(subCrtPath)) {
-      console.log("[PKI] Mevcut Alt Sertifika (Sub-CA) yükleniyor...");
-      const subKeyPem = fs.readFileSync(subKeyPath, 'utf8');
-      const subCrtPem = fs.readFileSync(subCrtPath, 'utf8');
-      
-      const subKeyInfo = ssl.pemToEcPriv(subKeyPem);
-      const subCertInfo = ssl.certInfoFromPem(subCrtPem);
-      
-      this.subCA = {
-        keyType: 'ec',
-        curveName: subKeyInfo.curveName,
-        hashAlg: 'sha256',
-        privateKey: subKeyInfo.privateKey,
-        publicKeyBuf: subKeyInfo.publicKeyBuf,
-        name: subCertInfo.subjectNameDer,
-        skid: asn1.computeEcSKID(subKeyInfo.publicKeyBuf),
-        certPem: subCrtPem
-      };
-    } else {
-      console.log("[PKI] YENİ EC Alt Sertifika (Sub-CA) üretiliyor...");
-      const baseUrl = 'http://status.trust.fitfak.net';
-      
-      this.subCA = ssl.generateEcIntermediateCA(rootCA, {
-        curveName: 'P-256',
-        commonName: 'FITFAK Authority Core Sub-CA G1', 
-        verbose: false,
-        ocspUrl: baseUrl, 
-        aiaUrl: baseUrl,
-        crlUrl: baseUrl   
-      });
-      fs.writeFileSync(subKeyPath, ssl.ecPrivToPem(this.subCA));
-      fs.writeFileSync(subCrtPath, this.subCA.certPem);
-    }
+    this.subCA = subCA;
   }
 
-  // ========================================================================
-  // 3. UÇ SERTİFİKA (LEAF) İMZALAMA VE PROFİL YÖNETİMİ
-  // ========================================================================
-  async signCertificateFromCsr({ csrPem, profile, subjectOverride, checkKeyUniqueness }) {
-    let spkiBuf;
-    try {
-      const csrDer = Buffer.from(
-        csrPem.split('\n').filter(l => l && !l.startsWith('-----')).join(''),
-        'base64'
-      );
-      const top = asn1.readTLV(csrDer, 0);
-      const csrChildren = asn1.readChildren(top.content);
-      const reqInfo = csrChildren[0];
-      const reqInfoChildren = asn1.readChildren(reqInfo.content);
-      
-      const spkiNode = reqInfoChildren[2];
-      spkiBuf = reqInfo.content.subarray(
-        spkiNode.contentOff - spkiNode.headerLen,
-        spkiNode.contentOff - spkiNode.headerLen + spkiNode.totalLen
-      );
-    } catch (e) {
-      throw new Error('Geçersiz CSR biçimi: ' + e.message);
+  /** İstemcilere dağıtılacak zincir (ara + kök). */
+  getChainPem() {
+    return `${this.subCA.certPem.trim()}\n${this.rootCA.certPem.trim()}\n`;
+  }
+
+  /**
+   * Bir CSR'den uç sertifika üretir.
+   *
+   * Subject, CSR'den DEĞİL, `subjectOverride` ile verilen doğrulanmış hesap
+   * bilgisinden kurulur. Sertifikada yazan kimlik, başvuranın yazdığı değil,
+   * IdP'nin doğruladığı kimliktir -- CSR'ye istenen her şey yazılabilir.
+   *
+   * Kimlik e-postaya dayanır (hesabın doğrulanmış adresi): CN insan tarafından
+   * okunabilir ad, e-posta ise hem DN'de hem SAN'da rfc822Name olarak taşınır.
+   * S/MIME istemcileri SAN'daki rfc822Name'e bakar, DN'deki emailAddress'e
+   * değil -- ikisini birden yazmak eski ve yeni istemcileri aynı anda memnun eder.
+   */
+  async signCertificateFromCsr({ csrPem, profile = 'client-auth', subjectOverride = {} }) {
+    const mapping = PROFILE_MAP[profile];
+    if (!mapping) {
+      throw new Error(`Bilinmeyen sertifika profili '${profile}'. Kullanılabilir: ${Object.keys(PROFILE_MAP).join(', ')}`);
     }
 
-    // Açık anahtarın parmak izini hesapla (Subject Key Identifier)
-    const skidBuf = asn1.computeEcSKID(spkiBuf);
-    const skidHex = Buffer.isBuffer(skidBuf) ? skidBuf.toString('hex') : skidBuf;
-
-    // 🛡️ GÜVENLİK KONTROLÜ (Perfect Forward Secrecy): Anahtar (Public Key) daha önce kullanılmış mı?
-    if (typeof checkKeyUniqueness === 'function') {
-      const isKeyAlreadyUsed = await checkKeyUniqueness(skidHex);
-      if (isKeyAlreadyUsed) {
-        throw new Error('Güvenlik İhlali: Bu gizli anahtar (Private Key) daha önce kullanılmış. Lütfen yeni bir anahtar çifti ve CSR oluşturun.');
-      }
+    const csr = ssl.parseCSR(csrPem);
+    if (!ssl.verifyCSR(csr)) {
+      throw new Error('CSR öz-imzası geçersiz -- anahtar sahipliği kanıtlanamadı');
     }
 
+    const email = subjectOverride.email || null;
+    const commonName = subjectOverride.cn || email || 'FITFAK Unified Endpoint';
+
+    const subject = { C: 'TR', O: 'FITFAK Global Trust Network', CN: commonName };
+    if (email) subject.emailAddress = email;
+
+    // SAN: e-posta tabanlı profillerde rfc822Name şart. CSR'nin kendi SAN'ları
+    // BİLEREK taşınmıyor -- taşınsaydı başvuran, kendi seçtiği bir alan adını
+    // sertifikaya yazdırabilirdi ve bu tam olarak kaçınmak istediğimiz şey.
+    const sans = [];
+    if (email) sans.push({ type: 'email', value: email });
+    for (const extra of subjectOverride.sans || []) sans.push(extra);
+
+    const notBefore = new Date();
+    const notAfter = new Date(notBefore.getTime() + mapping.days * 86400000);
     const serialNumberHex = ssl.newSerial();
-    
-    // Kurumsal kimlik (Subject) yapılandırması
-    const cn = subjectOverride?.cn || 'FITFAK Unified Endpoint';
-    const subjectName = asn1.buildName([
-      [asn1.OIDs.country, 'TR'],
-      [asn1.OIDs.orgName, 'FITFAK Global Trust Network'], 
-      [asn1.OIDs.commonName, cn]
-    ]);
 
-    const now = new Date();
-    
-    // Profillere göre geçerlilik süreleri (Örn: PAdES 3 yıl, Web Sunucu 90 gün)
-    let daysValid = 365;
-    if (profile === 'server-auth') daysValid = 90;
-    if (profile === 'document-signing' || profile === 'code-signing') daysValid = 1095;
-    
-    const exp = new Date(now.getTime() + daysValid * 86400000);
-
-    // Uç sertifikalarda CRL (extCDP) kesinlikle yok, sadece OCSP ve Issuer adresi var.
-    const ocspUrl = 'http://status.trust.fitfak.net/ocsp';
-    const caIssuersUrl = 'http://status.trust.fitfak.net/intermediate.crt';
-
-    const extensions = [
-      asn1.extBasicConstraints(false), // Uç sertifika olduğunu belirtir
-      asn1.extSKID(skidBuf),
-      asn1.extAKID(this.subCA.skid),
-      asn1.extAIA(ocspUrl, caIssuersUrl)
-    ];
-
-    // PROFİL TABANLI YETKİLENDİRME (Key Usage & Extended Key Usage)
-    switch (profile) {
-      case 'server-auth':
-        extensions.push(asn1.extKeyUsage([asn1.KU.digitalSignature, asn1.KU.keyEncipherment]));
-        extensions.push(asn1.extEKU(['2b06010505070301'])); // serverAuth
-        extensions.push(asn1.extCertificatePolicies([{oid: '2b0601040183fc6d0101', cps: 'https://fitfak.net/pki/cps'}]));
-        break;
-      case 'document-signing':
-        extensions.push(asn1.extKeyUsage([asn1.KU.digitalSignature, asn1.KU.nonRepudiation]));
-        extensions.push(asn1.extEKU(['2b0601040182370a030c', '2b06010505070304'])); // MS Document Signing & Email Protection
-        extensions.push(asn1.extCertificatePolicies([{oid: '2b0601040183fc6d0101', cps: 'https://fitfak.net/pki/cps'}]));
-        break;
-      case 'timestamping':
-        extensions.push(asn1.extKeyUsage([asn1.KU.digitalSignature]));
-        extensions.push(asn1.extEKU(['2b06010505070308'], true)); // timestamping (critical)
-        extensions.push(asn1.extCertificatePolicies([{oid: '2b0601040183fc6d0104', cps: 'https://fitfak.net/pki/cps'}]));
-        break;
-      case 'smime':
-        extensions.push(asn1.extKeyUsage([asn1.KU.digitalSignature, asn1.KU.nonRepudiation, asn1.KU.keyEncipherment]));
-        extensions.push(asn1.extEKU(['2b06010505070304'])); // emailProtection
-        extensions.push(asn1.extCertificatePolicies([{oid: '2b0601040183fc6d0101', cps: 'https://fitfak.net/pki/cps'}]));
-        break;
-      case 'code-signing':
-        extensions.push(asn1.extKeyUsage([asn1.KU.digitalSignature]));
-        extensions.push(asn1.extEKU(['2b06010505070303'])); // codeSigning
-        extensions.push(asn1.extCertificatePolicies([{oid: '2b0601040183fc6d0101', cps: 'https://fitfak.net/pki/cps'}]));
-        break;
-      case 'client-auth':
-      default:
-        extensions.push(asn1.extKeyUsage([asn1.KU.digitalSignature]));
-        extensions.push(asn1.extEKU(['2b06010505070302'])); // clientAuth
-        extensions.push(asn1.extCertificatePolicies([{oid: '2b0601040183fc6d0101', cps: 'https://fitfak.net/pki/cps'}]));
-        break;
-    }
-
-    // Sertifikayı İnşa Et
-    const cert = pki.buildCert({
+    const issued = ssl.issueCertificateFromCSR(csr, this.subCA, {
+      profile: mapping.sslProfile,
+      subjectOverride: subject,
+      includeCsrSans: false,
+      sans,
       serialNum: serialNumberHex,
-      issuerName: this.subCA.name,
-      subjectName: subjectName,
-      notBefore: now,
-      notAfter: exp,
-      spki: spkiBuf,
-      extensions: extensions,
-      signerKey: {
-        keyType: 'ec',
-        curveName: this.subCA.curveName,
-        hashAlg: this.subCA.hashAlg,
-        privateKey: this.subCA.privateKey
-      }
+      notBefore,
+      notAfter,
+      policies: policyForProfile(profile),
+      ocspUrl: OCSP_URL,
+      caIssuersUrl: CA_ISSUERS_URL,
+      // Hem OCSP hem CRL veriliyor. OCSP tazedir ama tek bir servise bağlıdır;
+      // CRL bayattır ama önbelleklenebilir ve responder ulaşılamazken de
+      // çalışır. Yalnızca birini vermek, o biri düştüğünde doğrulayıcıyı
+      // "iptal durumu bilinmiyor" ile baş başa bırakır.
+      crlUrls: [CRL_URL],
     });
 
-    const subCaPem = this.subCA.pem || this.subCA.certPem; 
-    const fullChainPem = `${cert.pem.trim()}\n${subCaPem.trim()}\n`;
-
+    const skid = issued.skid;
     return {
-      certPem: fullChainPem,
-      serialNumberHex: typeof serialNumberHex === 'bigint' ? serialNumberHex.toString(16) : serialNumberHex,
-      skidHex: skidHex, // Veritabanına kaydetmen ve kontrol etmen için dışa aktarılıyor
-      notBefore: now,
-      notAfter: exp
+      certPem: `${issued.pem.trim()}\n${this.subCA.certPem.trim()}\n`,
+      leafPem: issued.pem,
+      serialNumberHex: typeof serialNumberHex === 'bigint' ? serialNumberHex.toString(16) : String(serialNumberHex),
+      skidHex: Buffer.isBuffer(skid) ? skid.toString('hex') : String(skid),
+      notBefore,
+      notAfter,
     };
   }
 
-  // ========================================================================
-  // 4. OCSP VE CRL SERVISLERI
-  // ========================================================================
+  /**
+   * OCSP yanıtı üretir. Yanıt, uç sertifikaları imzalayan ara CA ile imzalanır --
+   * OCSP yanıtını imzalayan anahtar, sorulan sertifikanın YAYINCISI olmalıdır
+   * (RFC 6960 §4.2.2.2), aksi halde istemci yanıtı "unauthorized" sayar.
+   */
   async generateOcspResponse({ ocspRequestDer, statusLookup }) {
+    const pki = require('@fitfak/ssl/src/pki');
     const ocspRequest = pki.parseOcspRequest(ocspRequestDer);
-    const subCaCertInfo = ssl.certInfoFromPem(this.subCA.certPem);
-    const activeResponderCertDer = subCaCertInfo.certDer;
+    const responderCertDer = ssl.certInfoFromPem(this.subCA.certPem).certDer;
 
-    const statusMap = new Map();
-    if (statusLookup) {
-      if (statusLookup instanceof Map) {
-        for (const [k, v] of statusLookup.entries()) statusMap.set(k, v);
-      } else {
-        for (const key of Object.keys(statusLookup)) {
-          statusMap.set(key, statusLookup[key]);
-        }
-      }
-    }
+    const statusMap = statusLookup instanceof Map
+      ? statusLookup
+      : new Map(Object.entries(statusLookup || {}));
 
-    return pki.generateOcspResponse(
-      ocspRequest,
-      this.subCA,
-      this.subCA,
-      activeResponderCertDer,
-      statusMap
-    );
+    return pki.generateOcspResponse(ocspRequest, this.subCA, this.subCA, responderCertDer, statusMap);
   }
 
-  async signCrl({ revokedCerts }) {
-    const revokedList = (revokedCerts || []).map(cert => ({
-      serial: BigInt('0x' + cert.serialNumberHex),
+  /**
+   * İki ayrı CRL üretilir ve bu ayrım anlamlıdır:
+   *
+   *   scope 'leaf' -> ara CA tarafından imzalanır, uç sertifikaların iptallerini taşır
+   *   scope 'root' -> kök CA tarafından imzalanır, ARA CA'ların iptallerini taşır
+   *
+   * Bir CRL yalnızca KENDİ yayıncısının verdiği sertifikalar hakkında konuşabilir.
+   * Önceki sürüm uç sertifikaların iptallerini kök anahtarıyla imzalıyordu; kök,
+   * o sertifikaların yayıncısı olmadığı için doğrulayıcılar bu CRL'i uç
+   * sertifikalar için geçerli saymaz -- iptal sessizce etkisiz kalırdı.
+   */
+  async signCrl({ revokedCerts, scope = 'leaf' }) {
+    const pki = require('@fitfak/ssl/src/pki');
+    const signer = scope === 'root' ? this.rootCA : this.subCA;
+
+    const revokedList = (revokedCerts || []).map((cert) => ({
+      serial: typeof cert.serialNumberHex === 'bigint'
+        ? cert.serialNumberHex
+        : BigInt(`0x${String(cert.serialNumberHex).replace(/^0x/, '')}`),
       date: cert.revokedAt ? new Date(Number(cert.revokedAt)) : new Date(),
-      reason: cert.reasonCode || 0
+      reason: cert.reasonCode || 0,
     }));
 
-    // CRL, Adobe Acrobat vb. yazılımların kriptografik zinciri doğrulayabilmesi için Root CA anahtarıyla imzalanıyor!
-    const crlPem = pki.generateCRL(this.rootCA, revokedList);
-
-    const base64Der = crlPem
-      .split('\n')
-      .filter(line => line && !line.startsWith('-----'))
-      .join('');
-      
-    return Buffer.from(base64Der, 'base64');
+    const crlPem = pki.generateCRL(signer, revokedList);
+    return Buffer.from(
+      crlPem.split('\n').filter((l) => l && !l.startsWith('-----')).join(''),
+      'base64',
+    );
   }
 }
 
-module.exports = { ProductionPkiIssuer };
+module.exports = { ProductionPkiIssuer, PROFILE_MAP, STATUS_BASE, OCSP_URL, CRL_URL, CA_ISSUERS_URL };

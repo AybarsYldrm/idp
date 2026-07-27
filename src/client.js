@@ -16,13 +16,22 @@ const grpcLog = mk('grpc');
 const authLog = mk('auth');
 const liveLog = mk('stream');
 
-// ============================================================================ 
+// ============================================================================
 // HEDEF KASA VE KULLANICI BILGILERI
-// ============================================================================ 
-const ADMIN_EMAIL = 'aybarsyildirim.game@gmail.com'; 
-const KASA_ID = '355024942087016448'; 
-const SECRET = 'vXfLbDApVcznu90cZIy3+1vlgCfBlnIbGDQkNhgLXmE='; 
-const KOLEKSIYON = 'hastam'; 
+// ============================================================================
+// Bu değerler ortamdan okunur. Önceki hâlde kasa kimliği ve kasa sırrı doğrudan
+// bu dosyada yazılıydı ve depoya işlenmişti -- kasa sırrı, veri dizininin bir
+// kopyasıyla birlikte TÜM içeriği çözmeye yeter, dolayısıyla o sır artık
+// yanmış sayılmalı ve DÖNDÜRÜLMELİDİR.
+const ADMIN_EMAIL = process.env.FITFAK_ADMIN_EMAIL || 'aybarsyildirim.mail@gmail.com';
+const KASA_ID = process.env.FITFAK_VAULT_ID;
+const SECRET = process.env.FITFAK_VAULT_SECRET;
+const KOLEKSIYON = process.env.FITFAK_VAULT_COLLECTION || 'hastam';
+
+if (require.main === module && (!KASA_ID || !SECRET)) {
+  console.error('FITFAK_VAULT_ID ve FITFAK_VAULT_SECRET ortam değişkenleri gerekli.');
+  process.exit(1);
+}
 
 // ============================================================================ 
 // BASIT LOGGER

@@ -1,53 +1,120 @@
 'use strict';
 
-async function handleOcspRequest({ db, pkiIssuer, ocspRequestDer }) {
+// RFC 6960 OCSP yanıtlayıcısı.
+//
+// İki şey burada kasıtlı olarak farklı yapılıyor.
+//
+// 1) SORULAN SERİLER ARANIR, TÜM KOLEKSİYON TARANMAZ.
+//    Önceki sürüm her OCSP isteğinde `certificates` koleksiyonunun TAMAMINI
+//    tarayıp bellekte bir durum haritası kuruyordu. OCSP, TLS el sıkışma
+//    hızında sorgulanan bir uçtur; her sorguda O(n) kayıt çözmek, sertifika
+//    sayısı arttıkça responder'ı sistemin en yavaş parçası yapar -- ve bir
+//    responder yavaşladığında istemciler iptal kontrolünü atlamaya başlar,
+//    yani yük sorunu sessizce bir güvenlik sorununa dönüşür.
+//    Seri numarası zaten indeksli; sorulan 1-2 seriyi indeksden okumak O(1)'dir.
+//
+// 2) İPTAL BİR ZİNCİRDİR.
+//    Bir ara CA iptal edildiğinde, altındaki her uç sertifika da geçersizdir.
+//    Zinciri baştan sona doğrulayan bir istemci bunu ara sertifikayı ayrıca
+//    sorgulayarak görür -- ama hepsi bunu yapmaz. Bu yüzden bir uç sertifikanın
+//    durumu, KENDİ kaydı 'valid' olsa bile, yayıncısı iptal edilmişse 'revoked'
+//    olarak yanıtlanır. Yanlış tarafa hata yapmak burada ucuz.
 
-  const certs = db.collection('certificates');
-  const statusMap = new Map();
+const CA_COMPROMISE = 2; // RFC 5280 CRLReason: cACompromise
 
-  let certCount = 0;
-  let revokedCount = 0;
+// RFC 5280 CRLReason kodları. Veritabanında sebep serbest metin olarak
+// tutuluyor; OCSP/CRL ise sayısal kod ister.
+const REASON_CODES = {
+  unspecified: 0,
+  keyCompromise: 1,
+  cACompromise: 2,
+  affiliationChanged: 3,
+  superseded: 4,
+  cessationOfOperation: 5,
+  certificateHold: 6,
+  privilegeWithdrawn: 9,
+  aACompromise: 10,
+};
 
-  // Veritabanındaki sertifikaları tarayıp Map'i dolduruyoruz
-  for await (const row of certs.scan()) {
-    certCount++;
-    const isRevoked = row.status === 'revoked';
-    
-    // Veritabanındaki iptal tarihini al (yoksa şu anı kullan)
-    const revokedAtTime = row.revokedAt ? Number(row.revokedAt) : Date.now();
-    const statusObj = isRevoked 
-      ? { status: 'revoked', revokedAt: new Date(revokedAtTime) } 
-      : { status: 'good' };
-
-    // Seri numarasının olası tüm string varyasyonlarını üretiyoruz
-    const rawSerial = String(row.serialNumberHex || '').trim();
-    const upperSerial = rawSerial.toUpperCase();
-    const lowerSerial = rawSerial.toLowerCase();
-    
-    let noZeroUpper = upperSerial.replace(/^0+/, '');
-    if (noZeroUpper === '') noZeroUpper = '0';
-    let noZeroLower = lowerSerial.replace(/^0+/, '');
-    if (noZeroLower === '') noZeroLower = '0';
-
-    // Kütüphane hangi formatta ararsa arasın bulabilmesi için hepsini haritaya gömüyoruz
-    statusMap.set(rawSerial, statusObj);
-    statusMap.set(upperSerial, statusObj);
-    statusMap.set(lowerSerial, statusObj);
-    statusMap.set(noZeroUpper, statusObj);
-    statusMap.set(noZeroLower, statusObj);
-
-    if (isRevoked) {
-      revokedCount++;
-    }
-  }
-
-  // Üretim aşaması
-  const responseDer = await pkiIssuer.generateOcspResponse({ 
-    ocspRequestDer, 
-    statusLookup: statusMap 
-  });
-
-  return responseDer;
+function reasonCodeOf(value) {
+  if (typeof value === 'number') return value;
+  return REASON_CODES[String(value || '').trim()] ?? REASON_CODES.unspecified;
 }
 
-module.exports = { handleOcspRequest };
+/**
+ * Bir serinin OCSP durumunu üretir. Kayıt yoksa 'unknown' döner -- 'good'
+ * DEĞİL: bu CA'nın hiç üretmediği bir seri için "iptal edilmemiş" demek,
+ * uydurma seri taşıyan bir sertifikaya olumlu cevap vermektir.
+ */
+async function statusForSerial(certs, serialHex, { issuerRevoked }) {
+  if (issuerRevoked) {
+    return {
+      status: 'revoked',
+      revokedAt: issuerRevoked.revokedAt,
+      reason: CA_COMPROMISE,
+    };
+  }
+
+  const row = await certs.findOne('serialNumberHex', serialHex);
+  if (!row) return { status: 'unknown' };
+
+  if (row.status === 'revoked') {
+    return {
+      status: 'revoked',
+      revokedAt: new Date(Number(row.revokedAt) || Date.now()),
+      reason: reasonCodeOf(row.revocationReason),
+    };
+  }
+  return { status: 'good' };
+}
+
+/**
+ * Ara CA'nın kendisi iptal edilmiş mi? Edilmişse altındaki HER sertifika
+ * geçersizdir ve tek tek sorulmalarına gerek kalmadan öyle yanıtlanır.
+ */
+async function findRevokedIssuer(certs, pkiIssuer) {
+  const skid = pkiIssuer.subCA?.skid;
+  if (!skid) return null;
+  const skidHex = Buffer.isBuffer(skid) ? skid.toString('hex') : String(skid);
+  const row = await certs.findOne('skidHex', skidHex);
+  if (!row || row.status !== 'revoked') return null;
+  return { revokedAt: new Date(Number(row.revokedAt) || Date.now()) };
+}
+
+async function handleOcspRequest({ db, pkiIssuer, ocspRequestDer }) {
+  const pki = require('@fitfak/ssl/src/pki');
+  const certs = db.collection('certificates');
+
+  // İsteği önce ayrıştır: hangi serilerin sorulduğunu bilmeden hangi kayıtları
+  // okuyacağımızı da bilemeyiz.
+  const request = pki.parseOcspRequest(ocspRequestDer);
+
+  const issuerRevoked = await findRevokedIssuer(certs, pkiIssuer);
+
+  const statusMap = new Map();
+  for (const entry of request.requests) {
+    // @fitfak/ssl haritada seriyi `BigInt#toString(16)` biçiminde arar:
+    // baştaki sıfırlar olmadan, küçük harf. Veritabanındaki değer başka bir
+    // biçimde yazılmış olabileceğinden, aramayı kanonik biçim üzerinden yapıp
+    // haritaya da o biçimle koyuyoruz -- önceki sürümdeki "her varyasyonu
+    // haritaya göm" yaklaşımı, biçimin hiçbir yerde sabitlenmemiş olmasının
+    // belirtisiydi.
+    const canonical = entry.serialNumber.toString(16);
+    const candidates = new Set([
+      canonical,
+      canonical.toUpperCase(),
+      canonical.padStart(canonical.length + (canonical.length % 2), '0'),
+    ]);
+
+    let resolved = { status: 'unknown' };
+    for (const candidate of candidates) {
+      const found = await statusForSerial(certs, candidate, { issuerRevoked });
+      if (found.status !== 'unknown') { resolved = found; break; }
+    }
+    statusMap.set(canonical, resolved);
+  }
+
+  return pkiIssuer.generateOcspResponse({ ocspRequestDer, statusLookup: statusMap });
+}
+
+module.exports = { handleOcspRequest, REASON_CODES, reasonCodeOf };
