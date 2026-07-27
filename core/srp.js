@@ -25,9 +25,25 @@ const { modPow } = require('@fitfak/ssl/src/bigint');
 //
 // RFC 5054'ten BİLEREK sapma: RFC, x = SHA1(s | SHA1(I ":" p)) der. SHA-1 hızlı
 // olduğundan çalınmış bir doğrulayıcıya karşı sözlük saldırısı da hızlıdır.
-// Burada x = scrypt(p, s) kullanılıyor. Bu, RFC 5054 uyumluluğunu bozar --
-// üçüncü taraf bir SRP istemcisiyle konuşulmayacağı için kabul edilebilir bir
-// takas -- ama sapma olduğu için burada açıkça yazılıdır.
+// Burada x = PBKDF2-HMAC-SHA256(p, s, 600000) kullanılıyor. RFC 5054
+// uyumluluğunu bozar; üçüncü taraf bir SRP istemcisiyle konuşulmayacağı için
+// kabul edilebilir bir takas.
+//
+// Neden PBKDF2, scrypt değil? Bu türetme tarayıcıda da BİREBİR aynı şekilde
+// yapılmak zorunda -- x istemcide hesaplanır, parola cihazdan çıkmaz. Web
+// Crypto scrypt sunmaz, PBKDF2 sunar. scrypt kullanmak, tarayıcıya elle
+// yazılmış bir scrypt göndermeyi gerektirirdi ve ince hatalı bir KDF burada
+// sessizce yanlış anahtar üretir: belirti "parola yanlış" olur, sebebi bulmak
+// çok zordur. Elle yazılmış kripto ile bellek-sertliği arasında seçim
+// gerektiğinde, her iki tarafta da denetimden geçmiş yerleşik uygulamayı
+// kullanmak daha savunulabilir.
+//
+// Bunun bedeli açıktır: PBKDF2 bellek-sert değildir, dolayısıyla ÇALINMIŞ bir
+// doğrulayıcıya karşı GPU hızlandırmalı sözlük saldırısı scrypt'e göre daha
+// ucuzdur. 600.000 tur (OWASP'ın PBKDF2-HMAC-SHA256 için önerdiği alt sınır)
+// bunu tahmin başına anlamlı bir maliyette tutar, ve doğrulayıcı zaten
+// şifrelenmiş veritabanında durur -- yani saldırganın önce onu ele geçirmesi
+// gerekir.
 
 // RFC 5054 Ek A, 2048-bit grup. N güvenli asaldır (N = 2q+1), g = 2.
 // Bu değerlerin gerçekten asal olduğu test/srp-demo.js içinde doğrulanır:
@@ -47,7 +63,9 @@ const N = BigInt(`0x${N_HEX}`);
 const g = 2n;
 const N_BYTES = 256; // 2048 bit
 
-const SCRYPT_PARAMS = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+// OWASP'ın PBKDF2-HMAC-SHA256 için önerdiği alt sınır.
+const PBKDF2_ITERATIONS = 600000;
+const PBKDF2_DKLEN = 32;
 
 class SrpError extends Error {
   constructor(code, message) { super(message); this.name = 'SrpError'; this.code = code; }
@@ -92,9 +110,9 @@ const k = toBig(H(pad(toBuf(N)), pad(toBuf(g))));
  * üretmek için istemcide çalışır).
  */
 function deriveX(password, salt) {
-  const dk = crypto.scryptSync(
-    Buffer.from(String(password), 'utf8'), salt, 32,
-    { N: SCRYPT_PARAMS.N, r: SCRYPT_PARAMS.r, p: SCRYPT_PARAMS.p, maxmem: SCRYPT_PARAMS.maxmem },
+  const dk = crypto.pbkdf2Sync(
+    Buffer.from(String(password), 'utf8'), salt,
+    PBKDF2_ITERATIONS, PBKDF2_DKLEN, 'sha256',
   );
   return toBig(dk) % N;
 }
@@ -275,7 +293,7 @@ function fakeCredentials(identity, serverSecret) {
 }
 
 module.exports = {
-  N, g, k, N_BYTES,
+  N, g, k, N_BYTES, PBKDF2_ITERATIONS, PBKDF2_DKLEN,
   SrpError, SrpClient, SrpServer,
   createVerifier, deriveX, fakeCredentials,
   _internal: { pad, toBuf, toBig, H, xorBuf },

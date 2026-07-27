@@ -13,6 +13,15 @@ module.exports = {
       { no: 9, name: 'emailVerified', type: 'bool' },
       { no: 10, name: 'role', type: 'string' },
       { no: 11, name: 'certProfiles', type: 'string' },
+      // SRP-6a. Sunucu parolayı ya da bir parola hash'ini DEĞİL, bir doğrulayıcı
+      // (v = g^x mod N) saklar. `passwordHash` (no:4) korunuyor çünkü mevcut
+      // hesaplar hâlâ onunla giriş yapıyor: bir kullanıcı SRP ile ilk kez
+      // giriş yaptığında (ya da parolasını değiştirdiğinde) doğrulayıcı
+      // tarayıcıda üretilip buraya yazılır, sonra passwordHash silinebilir.
+      // İkisini birden zorunlu kılmak, mevcut herkesi aynı anda parola
+      // sıfırlamaya mecbur bırakırdı.
+      { no: 12, name: 'srpSalt', type: 'string' },
+      { no: 13, name: 'srpVerifier', type: 'string' },
     ],
   },
   webauthn_credentials: {
