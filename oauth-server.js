@@ -35,6 +35,7 @@ const authService = require('./services/auth-service');
 const webauthnServiceModule = require('./services/webauthn-service');
 const { OAuthService, createDbClientStore } = require('./services/oauth-service');
 const srpAuthService = require('./services/srp-auth-service');
+const profileService = require('./services/profile-service');
 
 // ----------------------------------------------------------------------------
 // 🏗️ YAPILANDIRMA
@@ -782,6 +783,96 @@ async function main() {
     res.setHeader('location', `${target.pathname}${target.search}`);
     res.end();
   }, IDP_IP);
+
+  // ---- profil, avatar, tercihler, hesap silme --------------------------------
+  const profileStore = new PrefixedEphemeralStore(sharedEphemeralStore, 'profile:');
+
+  async function requireSession(req) {
+    const session = await resolveCurrentSession(req);
+    if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+    return session;
+  }
+
+  server.addHttpHandler({ method: 'GET', path: '/profile' }, wrapHandler(async (req, res) => {
+    const session = await requireSession(req);
+    sendJson(res, 200, await profileService.getProfile({ db, userId: session.userId }));
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/profile' }, wrapHandler(async (req, res) => {
+    const session = await requireSession(req);
+    const body = await readJsonBody(req);
+    sendJson(res, 200, await profileService.updateProfile({
+      db, userId: session.userId,
+      displayName: body.displayName, bio: body.bio, locale: body.locale, timezone: body.timezone,
+    }));
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/profile/notifications' }, wrapHandler(async (req, res) => {
+    const session = await requireSession(req);
+    const body = await readJsonBody(req);
+    sendJson(res, 200, await profileService.updateNotificationPreferences({
+      db, userId: session.userId,
+      product: body.product, newDevice: body.newDevice, newsletter: body.newsletter,
+    }));
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/profile/avatar' }, wrapHandler(async (req, res) => {
+    const session = await requireSession(req);
+    // Gövde ham baytlar. content-type'a BAKILMIYOR: biçim kararı yalnızca
+    // baytlardan veriliyor (bkz. core/image-guard.js).
+    const raw = await readRawBody(req);
+    sendJson(res, 200, await profileService.setAvatar({ db, userId: session.userId, bytes: raw }));
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/profile/avatar/delete' }, wrapHandler(async (req, res) => {
+    const session = await requireSession(req);
+    sendJson(res, 200, await profileService.deleteAvatar({ db, userId: session.userId }));
+  }), IDP_IP);
+
+  server.addHttpHandler((req) => req.method === 'GET' && req.url.split('?')[0].startsWith('/profile/avatar/'),
+    wrapHandler(async (req, res) => {
+      const userId = req.url.split('?')[0].slice('/profile/avatar/'.length);
+      const avatar = await profileService.getAvatar({ db, userId });
+      if (!avatar) { res.statusCode = 404; return res.end(); }
+
+      if (req.headers['if-none-match'] === `"${avatar.etag}"`) {
+        res.statusCode = 304; return res.end();
+      }
+      res.statusCode = 200;
+      res.setHeader('content-type', avatar.contentType);
+      res.setHeader('etag', `"${avatar.etag}"`);
+      // Avatar baytları kullanıcı tarafından yüklenmiştir. Temizlenmiş olsa
+      // bile tarayıcıya "bunu asla belge olarak yorumlama" demek gerekir:
+      // nosniff olmadan içerik koklama, PNG'yi HTML sanabilir; CSP sandbox
+      // ise dosya bir şekilde belge olarak açılırsa script çalışmasını keser.
+      res.setHeader('x-content-type-options', 'nosniff');
+      res.setHeader('content-security-policy', "default-src 'none'; sandbox");
+      res.setHeader('content-disposition', 'inline');
+      // ETag URL'de taşındığı için uzun önbellek güvenli.
+      res.setHeader('cache-control', 'public, max-age=86400, immutable');
+      res.end(avatar.bytes);
+    }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/profile/delete-account' }, wrapHandler(async (req, res) => {
+    const session = await requireSession(req);
+    sendJson(res, 200, await profileService.requestAccountDeletion({
+      db, userId: session.userId, mailer, ephemeralStore: profileStore,
+    }));
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/profile/delete-account/confirm' }, wrapHandler(async (req, res) => {
+    const session = await requireSession(req);
+    const body = await readJsonBody(req);
+    const result = await profileService.confirmAccountDeletion({
+      db, userId: session.userId, code: body.code,
+      ephemeralStore: profileStore, sessionManager,
+    });
+    res.setHeader('set-cookie', [
+      ...sessionManager.buildLogoutCookies(),
+      sessionManager.expireAccountsListCookie(),
+    ]);
+    sendJson(res, 200, result);
+  }), IDP_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/oauth/userinfo' }, wrapHandler(async (req, res) => {
     const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=').map(decodeURIComponent)));

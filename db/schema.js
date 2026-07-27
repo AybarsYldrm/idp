@@ -84,6 +84,34 @@ module.exports = {
       { no: 12, name: 'loginCount', type: 'uint64' },
     ],
   },
+  // Kullanıcı profili. `users` tablosundan AYRI tutuluyor: profil verisi
+  // (avatar özellikle) her kimlik doğrulama okumasında gereksiz yere taşınırdı,
+  // oysa users satırı her istekte okunuyor.
+  user_profiles: {
+    fields: [
+      { no: 2, name: 'userId', type: 'string', index: true, required: true },
+      { no: 3, name: 'displayName', type: 'string' },
+      { no: 4, name: 'bio', type: 'string' },
+      { no: 5, name: 'locale', type: 'string' },
+      { no: 6, name: 'timezone', type: 'string' },
+      // Temizlenmiş avatar baytları. Nesne deposu (object-store) yerine burada:
+      // o depo gömülü motorun DDK'sına ve yerel disk yoluna bağlıdır, IdP ise
+      // uzak bir veritabanına gRPC ile de bağlanabilmeli. 256 KB'lık bir sınır
+      // kaydı taşımaz.
+      { no: 7, name: 'avatarBytes', type: 'bytes' },
+      { no: 8, name: 'avatarContentType', type: 'string' },
+      { no: 9, name: 'avatarWidth', type: 'int32' },
+      { no: 10, name: 'avatarHeight', type: 'int32' },
+      // Avatarın ETag'i: değişmediyse tarayıcı yeniden indirmesin.
+      { no: 11, name: 'avatarEtag', type: 'string' },
+      { no: 12, name: 'updatedAt', type: 'uint64' },
+      // E-posta tercihleri. Güvenlik uyarıları KAPATILAMAZ (aşağıya bkz.),
+      // bu yüzden burada yalnızca kapatılabilir olanlar var.
+      { no: 13, name: 'notifyProduct', type: 'bool' },
+      { no: 14, name: 'notifyNewDevice', type: 'bool' },
+      { no: 15, name: 'notifyNewsletter', type: 'bool' },
+    ],
+  },
   refresh_tokens: {
     fields: [
       { no: 2, name: 'hash', type: 'string', index: true, required: true },

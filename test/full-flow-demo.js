@@ -51,7 +51,10 @@ async function main() {
   await fsp.rm(keyDir, { recursive: true, force: true });
   const signingKeyPair = loadOrCreateSigningKeyPair(keyDir);
 
-  const db = createMockDb(['users', 'webauthn_credentials', 'totp_credentials', 'sessions', 'refresh_tokens', 'oauth_clients', 'ephemeral_state', 'certificates', 'acme_accounts', 'acme_orders', 'acme_authorizations']);
+  // Koleksiyon listesi db/schema.js'ten türetiliyor. Elle yazılmış bir liste,
+  // şemaya yeni bir koleksiyon eklendiğinde sessizce eskir ve testi gerçek
+  // sunucunun çalıştığı yapılandırmadan ayırır.
+  const db = createMockDb(Object.keys(require('../db/schema')));
   const sessionManager = new SessionManager({
     store: authService.createSessionStoreAdapter(db),
     signingKeyPair, issuer: 'https://session.fitfak.net', cookieDomain: '.fitfak.net',
