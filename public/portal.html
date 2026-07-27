@@ -385,7 +385,7 @@
     .then(function () { return Promise.all([loadDevices(), loadCerts()]); })
     .catch(function (e) {
       if (String(e.message).indexOf('401') >= 0 || /unauth/i.test(e.message)) {
-        location.href = '/static/demo-login.html?return_to=' + encodeURIComponent('/static/portal.html');
+        location.href = '/login?return_to=' + encodeURIComponent('/portal');
       } else { showErr(e.message); }
     });
 }());

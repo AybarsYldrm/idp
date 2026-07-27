@@ -264,13 +264,20 @@
 
 <script src="/static/anti-bot-client.js"></script>
 <script src="/static/webauthn-browser.js"></script>
+<script src="/static/safe-redirect-client.js"></script>
 <script src="/static/srp-client.js"></script>
 <script src="/static/oauth-client.js"></script>
 <script>
 (function () {
   'use strict';
 
-  var returnTo = new URLSearchParams(location.search).get('return_to');
+  // return_to DOĞRUDAN kullanılamaz: bu değer adres çubuğundan gelir ve
+  // doğrulanmadan location.href'e yazılırsa açık yönlendirme olur -- kullanıcı
+  // gerçek alan adında giriş yapar, saldırganın sayfasına iner. safeRedirect
+  // yalnızca kendi origin'imizdeki yolları geçirir.
+  var returnTo = FitfakSafeRedirect.safeRedirect(
+    new URLSearchParams(location.search).get('return_to'),
+    { fallback: null, selfOrigin: location.origin });
   var chooseAccount = new URLSearchParams(location.search).get('choose_account') === '1';
   var deviceMode = new URLSearchParams(location.search).get('device') === '1';
   var deviceUserCodeFromUrl = new URLSearchParams(location.search).get('user_code');

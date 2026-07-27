@@ -13,7 +13,9 @@
     "dev": "FITFAK_IDP_DEV_DB=1 node oauth-server.js",
     "test": "for f in test/*.js; do echo \"=== $f ===\"; node \"$f\" || exit 1; done",
     "test:srp": "node test/srp-demo.js && node test/srp-parity-demo.js && node test/srp-endpoint-demo.js && node test/srp-client-glue-demo.js",
-    "test:revocation": "node test/revocation-chain-demo.js"
+    "test:revocation": "node test/revocation-chain-demo.js",
+    "test:redirect": "node test/safe-redirect-demo.js && node test/safe-redirect-parity-demo.js",
+    "test:routing": "node test/routing-demo.js"
   },
   "notes": {
     "neden-sifir-bagimlilik": "WebAuthn/FIDO2, TOTP (RFC 6238), ES256 JWT, CBOR, base32/base64url, ve gRPC-Web tarzı çerçeveleme dahil HER ŞEY node:crypto ve diğer Node.js yerleşikleri üzerine sıfırdan yazıldı -- talep edilen kısıtlamaya uygun olarak harici kütüphane YOK.",

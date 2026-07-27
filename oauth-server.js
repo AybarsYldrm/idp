@@ -25,6 +25,7 @@ const { AcmeService } = require('./services/acme-service');
 const ocspService = require('./services/ocsp-service');
 const crlService = require('./services/crl-service');
 const { createStatusHandler, createPolicyHandler } = require('./services/status-server');
+const { safeRedirect } = require('./core/safe-redirect');
 const { AppError } = require('./core/errors');
 const schema = require('./db/schema');
 
@@ -51,6 +52,12 @@ const COOKIE_DOMAIN = config.cookieDomain;
 const TRUST_HOST = config.trustHost;
 const TRUST_ISSUER = process.env.FITFAK_IDP_TRUST_ISSUER || `https://${TRUST_HOST}`;
 const KEY_DIR = config.keyDir;
+
+// Gerçek çift-yönlü (bidi) akış yalnızca gerçek HTTP/2 üzerinden mümkün; düz
+// porttaki her şey HTTP/1.1 ile çalışıyor. 0 verilerek kapatılabilir -- test
+// ortamında sertifika dosyaları olmayabilir ve bunun için ayrı bir port açmak
+// gereksiz.
+const HTTP2_PORT = Number(process.env.FITFAK_IDP_HTTP2_PORT || 0);
 
 // Mantıksal host başına bir bağlama adresi. Ayrım Host header'ıyla DEĞİL soket
 // seviyesinde yapılır: Host, istemcinin yazdığı bir dizedir; yerel adres değildir.
@@ -639,7 +646,7 @@ async function main() {
     const accounts = await resolveValidAccounts(req);
     if (accounts.length >= 2) {
       res.statusCode = 302;
-      res.setHeader('location', `/static/demo-login.html?return_to=${encodeURIComponent(req.url)}&choose_account=1`);
+      res.setHeader('location', `/login?return_to=${encodeURIComponent(safeRedirect(req.url, { fallback: '/portal', selfOrigin: ISSUER }))}&choose_account=1`);
       return res.end();
     }
     const currentSession = accounts.length === 1 ? { userId: accounts[0].userId, sessionId: accounts[0].sessionId, revoked: false } : null;
@@ -649,7 +656,9 @@ async function main() {
       scope: q.get('scope'), state: q.get('state'), codeChallenge: q.get('code_challenge'), codeChallengeMethod: q.get('code_challenge_method'), currentSession,
     });
     res.statusCode = 302;
-    res.setHeader('location', result.requiresLogin ? `/static/demo-login.html?return_to=${encodeURIComponent(req.url)}` : result.redirectTo);
+    res.setHeader('location', result.requiresLogin
+      ? `/login?return_to=${encodeURIComponent(safeRedirect(req.url, { fallback: '/portal', selfOrigin: ISSUER }))}`
+      : result.redirectTo);
     res.end();
   }), IDP_IP);
 
@@ -707,7 +716,7 @@ async function main() {
   
   server.addHttpHandler({ method: 'GET', path: '/device' }, (req, res) => {
     const url = new URL(req.url, ISSUER);
-    const target = new URL('/static/demo-login.html', ISSUER);
+    const target = new URL('/login', ISSUER);
     target.searchParams.set('device', '1');
     if (url.searchParams.get('user_code')) target.searchParams.set('user_code', url.searchParams.get('user_code'));
     res.statusCode = 302;
@@ -935,27 +944,107 @@ async function main() {
     // uygulamanıza yönlendirebilirsiniz.
     server.addHttpHandler({ method: 'GET', path: '/config' }, (req, res) => {
       sendJson(res, 200, {
-        postLoginUrl: process.env.FITFAK_IDP_POST_LOGIN_URL || '/static/portal.html',
+        postLoginUrl: config.postLoginUrl,
         issuer: ISSUER,
         trustIssuer: TRUST_ISSUER,
       });
     });
 
-  // STATİK DOSYALAR VE ANA SAYFA (IDP)
+  // STATİK VARLIKLAR (IDP) -- yalnızca script/stil, HTML DEĞİL.
+  //
+  // /static/ altından HTML sunmak, temiz URL'lere konan kimlik kontrollerini
+  // atlatmanın yolu olurdu: /portal oturum ister ama /static/portal.html aynı
+  // sayfayı kontrolsüz verirdi. Sayfalar yalnızca kendi rotalarından erişilebilir.
   const PUBLIC_DIR = path.join(__dirname, 'public');
-  const STATIC_CONTENT_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+  const STATIC_CONTENT_TYPES = {
+    '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.woff2': 'font/woff2',
+  };
   server.addHttpHandler(
-    (req) => req.method === 'GET' && req.url.split('?')[0].startsWith('/static/'),
+    (req) => req.method === 'GET' && req.url.split('?')[0].startsWith('/static/')
+      && !req.url.split('?')[0].endsWith('.html'),
     (req, res) => {
       const rel = decodeURIComponent(req.url.split('?')[0].slice('/static/'.length));
       const filePath = path.join(PUBLIC_DIR, rel);
-      if (!filePath.startsWith(PUBLIC_DIR) || !fs.existsSync(filePath)) { res.statusCode = 404; res.end('bulunamadı'); return; }
-      res.setHeader('content-type', STATIC_CONTENT_TYPES[path.extname(filePath)] || 'application/octet-stream');
+      // path.join zaten '..' çözer; kontrolü ondan SONRA yapmak, '/static/../x'
+      // gibi girdilerin PUBLIC_DIR dışına çıkmasını engeller.
+      if (!filePath.startsWith(PUBLIC_DIR + path.sep) || !fs.existsSync(filePath)) {
+        res.statusCode = 404; res.end('bulunamadı'); return;
+      }
+      const type = STATIC_CONTENT_TYPES[path.extname(filePath)];
+      if (!type) { res.statusCode = 404; res.end('bulunamadı'); return; }
+      res.setHeader('content-type', type);
+      res.setHeader('x-content-type-options', 'nosniff');
+      res.setHeader('cache-control', 'public, max-age=3600');
       res.end(fs.readFileSync(filePath));
     },
     IDP_IP
   );
-  server.addHttpHandler({ method: 'GET', path: '/' }, (req, res) => { res.statusCode = 302; res.setHeader('location', '/static/demo-login.html'); res.end(); }, IDP_IP);
+  // ---- temiz URL'ler ---------------------------------------------------------
+  // Adres çubuğunda '.html' görünmemeli: dosya adı bir uygulama detayıdır,
+  // sayfayı yeniden adlandırmak ya da başka bir şeyle sunmak kullanıcıların
+  // yer imlerini kırmamalı.
+  const PAGES = {
+    '/login': 'demo-login.html',
+    '/portal': 'portal.html',
+    '/device': 'demo-login.html',
+  };
+
+  function servePage(res, file) {
+    const filePath = path.join(PUBLIC_DIR, file);
+    if (!fs.existsSync(filePath)) { res.statusCode = 404; res.end('bulunamadı'); return; }
+    res.statusCode = 200;
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    // Giriş sayfaları önbelleğe alınmamalı: oturum durumuna göre farklı
+    // davranıyorlar ve bir ara önbellek bunu bilmiyor.
+    res.setHeader('cache-control', 'no-store');
+    res.setHeader('x-content-type-options', 'nosniff');
+    res.setHeader('x-frame-options', 'DENY');
+    res.setHeader('referrer-policy', 'strict-origin-when-cross-origin');
+    res.end(fs.readFileSync(filePath));
+  }
+
+  // /portal: oturum yoksa girişe gönder, girişten SONRA buraya geri dön.
+  // Eksik olan buydu -- portala giren oturumsuz kullanıcı boş bir sayfa
+  // görüyordu ve girişten sonra da portala dönmenin bir yolu yoktu.
+  server.addHttpHandler({ method: 'GET', path: '/portal' }, wrapHandler(async (req, res) => {
+    const session = await resolveCurrentSession(req);
+    if (!session) {
+      res.statusCode = 302;
+      res.setHeader('location', `/login?return_to=${encodeURIComponent('/portal')}`);
+      return res.end();
+    }
+    servePage(res, 'portal.html');
+  }), IDP_IP);
+
+  for (const [route, file] of Object.entries(PAGES)) {
+    if (route === '/portal') continue; // yukarıda, kimlik kontrolüyle
+    server.addHttpHandler({ method: 'GET', path: route }, (req, res) => servePage(res, file), IDP_IP);
+  }
+
+  // Eski /static/*.html bağlantıları kalıcı olarak temiz URL'lere taşınıyor:
+  // dışarıda paylaşılmış bağlantılar kırılmasın.
+  server.addHttpHandler(
+    (req) => req.method === 'GET' && /^\/static\/[a-z-]+\.html$/.test(req.url.split('?')[0]),
+    (req, res) => {
+      const [pathname, query] = req.url.split('?');
+      const file = pathname.slice('/static/'.length);
+      const route = Object.keys(PAGES).find((r) => PAGES[r] === file);
+      res.statusCode = route ? 301 : 404;
+      if (route) res.setHeader('location', route + (query ? `?${query}` : ''));
+      res.end(route ? '' : 'bulunamadı');
+    },
+    IDP_IP,
+  );
+
+  server.addHttpHandler({ method: 'GET', path: '/' }, async (req, res) => {
+    const session = await resolveCurrentSession(req);
+    res.statusCode = 302;
+    res.setHeader('location', session ? '/portal' : '/login');
+    res.end();
+  }, IDP_IP);
 
   // gRPC SERVİSLERİ (IDP)
   function requireClientCredentials() {
@@ -983,10 +1072,17 @@ async function main() {
   });
 
   await new Promise((resolve) => server.listen(PORT, {
-     http2Port: HTTP2_PORT,
-     host: [...new Set([IDP_IP, PKI_IP, ADMIN_IP, STATUS_IP])]
-    }, resolve));
-  console.log(`[fitfak-idp] dinliyor: http://${IDP_IP}:${PORT} (IDP) ve http://${PKI_IP}:${PORT} (PKI)  issuer=${ISSUER}, rpId=${RP_ID}`);
+    ...(HTTP2_PORT ? { http2Port: HTTP2_PORT } : {}),
+    host: [...new Set([IDP_IP, PKI_IP, ADMIN_IP, STATUS_IP])],
+  }, resolve));
+  console.log(
+    `[fitfak-idp] dinliyor:\n`
+    + `  ${IDP_IP}:${PORT}    session.fitfak.net   (giris, OAuth, oturum)\n`
+    + `  ${PKI_IP}:${PORT}    trust.fitfak.net     (ACME, sertifika, /policy)\n`
+    + `  ${ADMIN_IP}:${PORT}    one.fitfak.net       (yonetim)\n`
+    + `  ${STATUS_IP}:${PORT}  status.trust.fitfak.net (OCSP, CRL, CA yayini)\n`
+    + `  issuer=${ISSUER} rpId=${RP_ID}`,
+  );
   return server;
 }
 
