@@ -24,6 +24,7 @@ const certificateService = require('./services/certificate-service');
 const { AcmeService } = require('./services/acme-service');
 const ocspService = require('./services/ocsp-service');
 const crlService = require('./services/crl-service');
+const { createStatusHandler, createPolicyHandler } = require('./services/status-server');
 const { AppError } = require('./core/errors');
 const schema = require('./db/schema');
 
@@ -55,6 +56,7 @@ const KEY_DIR = config.keyDir;
 const IDP_IP = config.bind.idp;       // session.fitfak.net
 const PKI_IP = config.bind.trust;     // trust.fitfak.net
 const ADMIN_IP = config.bind.admin;   // one.fitfak.net
+const STATUS_IP = config.bind.status; // status.trust.fitfak.net / time.trust.fitfak.net
 
 // ----------------------------------------------------------------------------
 // 🏗️ VERİTABANI KURULUMU
@@ -780,27 +782,42 @@ async function main() {
     sendJson(res, 200, result);
   }), PKI_IP);
 
-  // Alt Sertifikayı Dışarıya Sunma (PKI_IP üzerinden)
-server.addHttpHandler({ method: 'GET', path: '/intermediate.crt' }, (req, res) => {
-  const certPath = path.join(__dirname, '.certs', 'sub_ca.crt');
-  if (fs.existsSync(certPath)) {
-    res.setHeader('content-type', 'application/x-pem-file');
-    res.end(fs.readFileSync(certPath));
-  } else {
-    res.statusCode = 404; res.end('Sub CA bulunamadı');
-  }
-}, PKI_IP);
+  // --------------------------------------------------------------------------
+  // 📡 status.trust.fitfak.net -- OCSP / CRL / CA yayını (31.58.245.241:80)
+  // --------------------------------------------------------------------------
+  // Bunlar sertifikalarda AIA/CDP olarak yazan adreslerdir ve DÜZ HTTP'dir.
+  // HTTPS olsaydı, bir sertifikanın iptal durumunu sorgulamak için önce başka
+  // bir sertifikayı doğrulamak gerekirdi -- sorgu, doğrulamak istediği şeye
+  // bağımlı hale gelirdi. Yanıtlar zaten kendi içlerinde imzalıdır.
+  const statusHandler = createStatusHandler({
+    db, pkiIssuer, cacheStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:'),
+  });
+  server.addHttpHandler(
+    (req) => ['/ocsp', '/crl', '/crl/root', '/intermediate.crt', '/root.crt', '/chain.pem', '/']
+      .includes(req.url.split('?')[0].replace(/\/+$/, '') || '/')
+      || req.url.startsWith('/ocsp/'),
+    statusHandler,
+    STATUS_IP,
+  );
 
-// Kök Sertifikayı Dışarıya Sunma (PKI_IP üzerinden)
-server.addHttpHandler({ method: 'GET', path: '/root.crt' }, (req, res) => {
-  const certPath = path.join(__dirname, '.certs', 'root_ca.crt');
-  if (fs.existsSync(certPath)) {
-    res.setHeader('content-type', 'application/x-pem-file');
-    res.end(fs.readFileSync(certPath));
-  } else {
-    res.statusCode = 404; res.end('Root CA bulunamadı');
-  }
-}, PKI_IP);
+  // trust.fitfak.net/policy -- politika dağıtımı (127.0.0.2)
+  const policyHandler = createPolicyHandler();
+  server.addHttpHandler(
+    (req) => req.method === 'GET' && req.url.split('?')[0].startsWith('/policy'),
+    policyHandler,
+    PKI_IP,
+  );
+
+  // CA sertifikaları trust.fitfak.net üzerinden de erişilebilir kalsın: eski
+  // sertifikalardaki AIA adresleri buraya işaret ediyor olabilir.
+  server.addHttpHandler({ method: 'GET', path: '/intermediate.crt' }, (req, res) => {
+    res.setHeader('content-type', 'application/pkix-cert');
+    res.end(pkiIssuer.subCA.certPem);
+  }, PKI_IP);
+  server.addHttpHandler({ method: 'GET', path: '/root.crt' }, (req, res) => {
+    res.setHeader('content-type', 'application/pkix-cert');
+    res.end(pkiIssuer.rootCA.certPem);
+  }, PKI_IP);
 
   // ACME ROTALARI (PKI - 127.0.0.2)
   server.addHttpHandler({ method: 'GET', path: '/acme/directory' }, (req, res) => { sendJson(res, 200, acmeService.directory()); }, PKI_IP);
@@ -833,14 +850,6 @@ server.addHttpHandler({ method: 'GET', path: '/root.crt' }, (req, res) => {
     const serial = req.url.split('/').pop(); const certPem = await acmeService.downloadCertificate(serial); res.setHeader('content-type', 'application/pem-certificate-chain'); res.end(certPem); 
   }), PKI_IP);
   
-  server.addHttpHandler({ method: 'POST', path: '/ocsp' }, wrapHandler(async (req, res) => { 
-    const ocspRequestDer = await readRawBody(req); const ocspResponseDer = await ocspService.handleOcspRequest({ db, pkiIssuer, ocspRequestDer }); res.setHeader('content-type', 'application/ocsp-response'); res.setHeader('Cache-Control', 'max-age=3600'); res.end(ocspResponseDer); 
-  }), PKI_IP);
-  
-  server.addHttpHandler({ method: 'GET', path: '/crl' }, wrapHandler(async (req, res) => { 
-    const crlDer = await crlService.generateCrl({ db, pkiIssuer, cacheStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:') }); res.setHeader('content-type', 'application/pkix-crl'); res.setHeader('Cache-Control', `max-age=${Math.floor(crlService.CACHE_TTL_MS / 1000)}`); res.end(crlDer); 
-  }), PKI_IP);
-
   server.addHttpHandler({ method: 'GET', path: '/admin/certificates' }, wrapHandler(async (req, res) => { await requireAdmin(req); sendJson(res, 200, { certificates: await certificateService.listAllCertificates({ db }) }); }), IDP_IP);
   server.addHttpHandler({ method: 'POST', path: '/admin/certificates/revoke' }, wrapHandler(async (req, res) => { const admin = await requireAdmin(req); const body = await readJsonBody(req); const result = await certificateService.revokeCertificate({ db, serialNumberHex: body.serialNumberHex, reason: body.reason, actingUserId: admin.userId, actingUserRole: 'admin' }); await crlService.invalidateCrlCache(new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:')); sendJson(res, 200, result); }), IDP_IP);
 
@@ -934,7 +943,7 @@ server.addHttpHandler({ method: 'GET', path: '/root.crt' }, (req, res) => {
 
   await new Promise((resolve) => server.listen(PORT, {
      http2Port: HTTP2_PORT,
-     host: [IDP_IP, PKI_IP]
+     host: [...new Set([IDP_IP, PKI_IP, ADMIN_IP, STATUS_IP])]
     }, resolve));
   console.log(`[fitfak-idp] dinliyor: http://${IDP_IP}:${PORT} (IDP) ve http://${PKI_IP}:${PORT} (PKI)  issuer=${ISSUER}, rpId=${RP_ID}`);
   return server;
