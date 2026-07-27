@@ -163,4 +163,49 @@ async function setSrpCredentials({ db, userId, saltB64, verifierB64 }) {
   return { updated: true };
 }
 
-module.exports = { beginSrpLogin, finishSrpLogin, setSrpCredentials, SRP_STATE_TTL_MS };
+/**
+ * Eski (parolayı düz metin gönderen) yoldan başarıyla giriş yapmış bir hesabı
+ * SRP'ye taşır.
+ *
+ * Geçiş neden böyle: mevcut hesapların yalnızca bir scrypt hash'i var,
+ * doğrulayıcı yok. Doğrulayıcı ise parolanın kendisinden türetilir ve yalnızca
+ * TARAYICI parolayı bilir. Sunucu onu hash'ten üretemez -- üretebilseydi
+ * hash'in bir anlamı kalmazdı. Dolayısıyla taşıma ancak kullanıcı bir kez daha
+ * parolasını girdiğinde yapılabilir.
+ *
+ * Sonuç: her kullanıcı için TAM BİR KEZ daha düz metin gönderimi olur, sonra
+ * hiç olmaz. Alternatif -- eski yolu hemen kaldırmak -- doğrulayıcısı olmayan
+ * herkesi, yani mevcut tüm kullanıcıları kilitlerdi.
+ *
+ * Yetki, az önceki girişin ürettiği tek kullanımlık token'dan gelir: bu
+ * uç noktanın kendi başına kimlik doğrulaması yoktur, aksi halde herkes
+ * herhangi bir hesabın doğrulayıcısını değiştirebilirdi.
+ */
+async function upgradeLegacyAccountToSrp({
+  db, authService, mfaChallengeToken, setupToken, saltB64, verifierB64,
+}) {
+  let userId = null;
+
+  // Token'lar PEEK ediliyor, tüketilmiyor: kullanıcı bu token ile hemen
+  // ardından ikinci faktörünü tamamlayacak. Burada tüketmek, taşımayı
+  // başarılı bir girişi bozan bir yan etkiye çevirirdi.
+  if (mfaChallengeToken) {
+    const pending = await authService.peekEphemeralToken('mfa', mfaChallengeToken);
+    if (pending) userId = pending.userId;
+  }
+  if (!userId && setupToken) {
+    const pending = await authService.peekEphemeralToken('setup', setupToken);
+    if (pending) userId = pending.userId;
+  }
+
+  if (!userId) {
+    throw new AppError('unauthenticated', 'Geçerli bir giriş kanıtı yok', { httpStatus: 401 });
+  }
+
+  return setSrpCredentials({ db, userId, saltB64, verifierB64 });
+}
+
+module.exports = {
+  beginSrpLogin, finishSrpLogin, setSrpCredentials,
+  upgradeLegacyAccountToSrp, SRP_STATE_TTL_MS,
+};

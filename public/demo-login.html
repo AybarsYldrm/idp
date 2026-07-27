@@ -264,6 +264,7 @@
 
 <script src="/static/anti-bot-client.js"></script>
 <script src="/static/webauthn-browser.js"></script>
+<script src="/static/srp-client.js"></script>
 <script src="/static/oauth-client.js"></script>
 <script>
 (function () {
@@ -447,7 +448,9 @@
       var password = $('reg-password').value;
       if (!username || !email || !password) { showError('Lütfen tüm alanları doldurun.'); return; }
       var anti = await antiBotFields();
-      var result = await FitfakOAuth.register(Object.assign({ username: username, email: email, password: password }, anti));
+      // Doğrulayıcı burada üretilir; parola bu sayfadan çıkmaz.
+      var result = await FitfakOAuth.registerWithSrp(
+        Object.assign({ username: username, email: email, password: password }, anti));
       state.pendingUsername = username;
       state.pendingEmail = email;
       $('verify-email-hint').textContent = email + ' adresine gönderilen 6 haneli güvenlik kodunu girin.';
@@ -517,7 +520,11 @@
       var password = $('login-password').value;
       if (!username || !password) { showError('Kimlik bilgileri eksik.'); return; }
       var anti = await antiBotFields();
-      var result = await FitfakOAuth.loginWithPassword(Object.assign({ username: username, password: password }, anti));
+      // SRP: parola ağa çıkmaz. Hesabın henüz doğrulayıcısı yoksa (taşınmamış
+      // eski hesap) loginWithSrp eski yola düşer ve ardından hesabı taşır --
+      // o kullanıcı için son kez düz metin gönderilmiş olur.
+      var result = await FitfakOAuth.loginWithSrp({
+        identity: username, password: password, anti: anti });
       state.pendingUsername = username;
       if (result.requiresEmailVerification) {
         state.pendingEmail = result.email;

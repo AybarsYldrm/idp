@@ -123,6 +123,67 @@ async function main() {
   } catch (e) { badVerifier = e.code === 'invalid_request'; }
   check('yanlış boyutlu doğrulayıcı reddedilir', badVerifier);
 
+  console.log('\n[8] Eski hesabın SRP\'ye taşınması');
+  // Mevcut hesapların yalnızca bir scrypt hash'i var. Doğrulayıcı parolanın
+  // kendisinden türetilir ve onu yalnızca tarayıcı bilir -- sunucu hash'ten
+  // üretemez. Dolayısıyla taşıma ancak kullanıcı bir kez daha parolasını
+  // girdiğinde olur: tam bir kez daha düz metin, sonra hiç.
+  const authService = require('../services/auth-service');
+  const legacyStore = makeStore();
+  authService.configureEphemeralStore(legacyStore);
+
+  const legacyId = await db.collection('users').insert({
+    username: 'eski', email: 'eski@fitfak.net', status: 'active', emailVerified: true,
+    mfaMethods: JSON.stringify(['totp']), createdAt: BigInt(Date.now()),
+    passwordHash: 'scrypt$eski', srpSalt: '', srpVerifier: '',
+  });
+  const before = await db.collection('users').get(legacyId);
+  check('taşınmamış hesabın doğrulayıcısı yok', !before.srpVerifier);
+
+  // Eski giriş bir mfaChallengeToken üretir; taşıma yetkisini oradan alır.
+  const challenge = await authService.issueMfaChallengeForUser({ db, userId: legacyId });
+  const fresh = await browserSrp.createVerifier('EskiParolam123!');
+  await srpAuth.upgradeLegacyAccountToSrp({
+    db, authService,
+    mfaChallengeToken: challenge.mfaChallengeToken,
+    saltB64: fresh.saltB64, verifierB64: fresh.verifier,
+  });
+  const after = await db.collection('users').get(legacyId);
+  check('doğrulayıcı yazıldı', after.srpVerifier === fresh.verifier);
+  check('eski parola hash\'i silindi', after.passwordHash === '');
+
+  // Taşındıktan sonra SRP ile giriş yapabilmeli.
+  const migratedClient = new browserSrp.SrpClient({
+    identity: 'eski@fitfak.net', password: 'EskiParolam123!',
+  });
+  const mBegin = await srpAuth.beginSrpLogin({ db, store, config, identity: 'eski@fitfak.net' });
+  const mProof = await migratedClient.respond(mBegin);
+  const mFinish = await srpAuth.finishSrpLogin({
+    db, store, stateId: mBegin.stateId, A: migratedClient.start().A, M1: mProof.M1,
+  });
+  check('taşınan hesap SRP ile giriş yapabiliyor', String(mFinish.userId) === String(legacyId));
+
+  console.log('\n[9] Taşıma yetkisiz yapılamaz');
+  let noAuth = false;
+  try {
+    await srpAuth.upgradeLegacyAccountToSrp({
+      db, authService, mfaChallengeToken: 'uydurma-token',
+      saltB64: fresh.saltB64, verifierB64: fresh.verifier,
+    });
+  } catch (e) { noAuth = e.code === 'unauthenticated'; }
+  check('geçersiz token ile doğrulayıcı değiştirilemez', noAuth);
+
+  console.log('\n[10] SRP ile kayıtta parola sunucuya hiç gelmez');
+  const regVerifier = await browserSrp.createVerifier('YeniHesap123!');
+  const created = await authService.register({
+    db, username: 'yeni', email: 'yeni@fitfak.net', mailer: null,
+    srpSaltB64: regVerifier.saltB64, srpVerifierB64: regVerifier.verifier,
+  });
+  check('kayıt tamamlandı', !!created.userId);
+  const newRow = await db.collection('users').get(created.userId);
+  check('doğrulayıcı saklandı', newRow.srpVerifier === regVerifier.verifier);
+  check('parola hash\'i hiç oluşmadı', newRow.passwordHash === '');
+
   console.log(`\nOK - SRP uç noktaları: ${checks} kontrol geçti.`);
 }
 

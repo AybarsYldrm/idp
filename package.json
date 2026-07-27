@@ -12,7 +12,7 @@
     "start": "node oauth-server.js",
     "dev": "FITFAK_IDP_DEV_DB=1 node oauth-server.js",
     "test": "for f in test/*.js; do echo \"=== $f ===\"; node \"$f\" || exit 1; done",
-    "test:srp": "node test/srp-demo.js && node test/srp-parity-demo.js",
+    "test:srp": "node test/srp-demo.js && node test/srp-parity-demo.js && node test/srp-endpoint-demo.js && node test/srp-client-glue-demo.js",
     "test:revocation": "node test/revocation-chain-demo.js"
   },
   "notes": {

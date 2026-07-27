@@ -158,9 +158,15 @@ async function sendAccountExistsNotification(mailer, { toEmail, username }) {
 // edilir.
 // ============================================================================
 async function register({
-  db, username, email, passwordPlain, mailer,
+  db, username, email, passwordPlain, mailer, srpSaltB64, srpVerifierB64,
 }) {
-  validatePasswordComplexity(passwordPlain);
+  // SRP ile kayıtta parola sunucuya HİÇ gelmez: tarayıcı doğrulayıcıyı üretip
+  // yollar. Bunun kaçınılmaz sonucu, karmaşıklık kuralının burada
+  // uygulanamamasıdır -- sunucu kontrol edeceği şeyi görmüyor. Kural istemciye
+  // taşındı ve istemci yalan söyleyebilir; bu, PAKE kullanmanın bedelidir ve
+  // gizlenmemelidir.
+  const usingSrp = !!(srpSaltB64 && srpVerifierB64);
+  if (!usingSrp) validatePasswordComplexity(passwordPlain);
 
   const users = db.collection('users');
   const existingByUsername = await users.findOne('username', username);
@@ -175,14 +181,19 @@ async function register({
       console.error('[auth-service] hesap-zaten-var bildirimi gönderilemedi:', e.message);
     }
     // Gerçek kayıt yolunun scrypt maliyetini taklit et -- yanıt SÜRESİNDEN bile hesabın
-    // var olup olmadığı çıkarılamasın.
-    password.hash(passwordPlain);
+    // var olup olmadığı çıkarılamasın. SRP yolunda hash hesaplanmadığı için
+    // taklit edilecek bir maliyet de yok.
+    if (!usingSrp) password.hash(passwordPlain);
     return { userId: null, email, requiresEmailVerification: true };
   }
 
-  const passwordHash = password.hash(passwordPlain);
   const userId = await users.insert({
-    username, email, passwordHash,
+    username, email,
+    // İkisinden yalnızca biri dolu olur. SRP yolunda passwordHash boş kalır ve
+    // hesap eski (düz metin) giriş yolunu hiç kullanamaz.
+    passwordHash: usingSrp ? '' : password.hash(passwordPlain),
+    srpSalt: usingSrp ? srpSaltB64 : '',
+    srpVerifier: usingSrp ? srpVerifierB64 : '',
     status: 'pending_email_verification', mfaMethods: '[]', isAdmin: false,
     createdAt: BigInt(Date.now()), emailVerified: false, role: 'user',
   });

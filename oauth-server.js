@@ -390,7 +390,10 @@ async function main() {
       antiBot, ip: getIp(req), username: body.username, headers: req.headers, socket: req.socket,
       clientFingerprint: body.fingerprint, powChallengeId: body.powChallengeId, powNonce: body.powNonce,
     });
-    sendJson(res, 200, await authService.register({ db, username: body.username, email: body.email, passwordPlain: body.password, mailer }));
+    sendJson(res, 200, await authService.register({
+      db, username: body.username, email: body.email, passwordPlain: body.password, mailer,
+      srpSaltB64: body.srpSaltB64, srpVerifierB64: body.srpVerifierB64,
+    }));
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/auth/verify-email/resend' }, wrapHandler(async (req, res) => {
@@ -501,6 +504,15 @@ async function main() {
     // konuştuğunu anlayamaz.
     const challenge = await authService.issueMfaChallengeForUser({ db, userId });
     sendJson(res, 200, { M2, ...challenge });
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/auth/srp/upgrade' }, wrapHandler(async (req, res) => {
+    const body = await readJsonBody(req);
+    sendJson(res, 200, await srpAuthService.upgradeLegacyAccountToSrp({
+      db, authService,
+      mfaChallengeToken: body.mfaChallengeToken, setupToken: body.setupToken,
+      saltB64: body.saltB64, verifierB64: body.verifierB64,
+    }));
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/auth/login/totp' }, wrapHandler(async (req, res) => {
