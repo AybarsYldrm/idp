@@ -25,6 +25,7 @@ const { AcmeService } = require('./services/acme-service');
 const ocspService = require('./services/ocsp-service');
 const crlService = require('./services/crl-service');
 const { createStatusHandler, createPolicyHandler } = require('./services/status-server');
+const { createCtLog, createCtHandler, CT_PATH_PREFIX } = require('./services/ct-log-service');
 const { safeRedirect } = require('./core/safe-redirect');
 const deviceBinding = require('./core/device-binding');
 const { AppError } = require('./core/errors');
@@ -207,7 +208,13 @@ async function main() {
     console.warn('[fitfak-idp] UYARI: PKI/ACME/OCSP/CRL SAHTE (dev-mock) issuer ile çalışıyor -- ÜRETİMDE KULLANMAYIN.');
   }
   
-  const pkiIssuer = new ProductionPkiIssuer(path.join(__dirname, '.certs'));
+  // CT log'u önce kurulur: sertifika üretimi ona bağlı (önsertifika -> SCT ->
+  // sertifika). Log yoksa sertifikalar SCT'siz üretilir, üretim durmaz.
+  const ctLog = createCtLog({ db, keyDir: config.keyDir });
+  const ctPublicKeyPem = require('node:fs').readFileSync(
+    path.join(config.keyDir, 'ct-log.pub'), 'utf8',
+  );
+  const pkiIssuer = new ProductionPkiIssuer(config.caDir, { ctLog });
   const acmeService = new AcmeService({
     db, pkiIssuer, nonceStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'acmenonce:'), issuer: TRUST_ISSUER,
     http01Port: Number(process.env.FITFAK_IDP_ACME_HTTP01_PORT || 80),
@@ -900,6 +907,14 @@ async function main() {
       || req.url.startsWith('/ocsp/'),
     statusHandler,
     STATUS_IP,
+  );
+
+  // Certificate Transparency log'u -- trust.fitfak.net/ct/v1/*
+  const ctHandler = createCtHandler({ ctLog, publicKeyPem: ctPublicKeyPem });
+  server.addHttpHandler(
+    (req) => req.url.split('?')[0].startsWith(CT_PATH_PREFIX),
+    ctHandler,
+    PKI_IP,
   );
 
   // trust.fitfak.net/policy -- politika dağıtımı (127.0.0.2)

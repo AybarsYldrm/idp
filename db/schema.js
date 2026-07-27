@@ -129,6 +129,22 @@ module.exports = {
       { no: 14, name: 'skidHex', type: 'string', index: true },
     ],
   },
+  // Certificate Transparency log girdileri (RFC 6962).
+  //
+  // EKLEME-YALNIZCA: bu koleksiyona güncelleme/silme yolu yok. Merkle ağacı
+  // geçmişi değiştirmeyi kanıtlanabilir kılar; bir kaydı hiç yazmamaya karşı
+  // koruma ise log'un birden fazla tarafça izlenmesidir.
+  ct_log_entries: {
+    fields: [
+      { no: 2, name: 'dedupeKey', type: 'string', index: true, required: true },
+      { no: 3, name: 'leafIndex', type: 'uint64', index: true },
+      { no: 4, name: 'timestamp', type: 'uint64' },
+      { no: 5, name: 'entryType', type: 'int32' },
+      { no: 6, name: 'leafHashB64', type: 'string' },
+      { no: 7, name: 'merkleLeafB64', type: 'string' },
+      { no: 8, name: 'sctB64', type: 'string' },
+    ],
+  },
   acme_accounts: {
     fields: [
       { no: 2, name: 'accountId', type: 'string', index: true, required: true },
