@@ -891,29 +891,35 @@ async function main() {
   }), IDP_IP);
 
   // ADMİN PANELİ (Arayüz Sunumu) (IDP)
-  server.addHttpHandler({ method: 'GET', path: '/admin' }, (req, res) => {
-    const adminHtmlPath = path.join(__dirname, 'public', 'admin-panel.html');
-    if (fs.existsSync(adminHtmlPath)) {
-      res.statusCode = 200;
-      res.setHeader('content-type', 'text/html; charset=utf-8');
-      res.end(fs.readFileSync(adminHtmlPath));
-    } else {
-      res.statusCode = 404;
-      res.setHeader('content-type', 'text/plain; charset=utf-8');
-      res.end('HATA: public/admin-panel.html dosyası bulunamadı.');
+  // Yönetim yüzeyi one.fitfak.net (127.0.0.3) üzerinde, giriş yüzeyinden AYRI
+  // bir adreste. Ayrım yalnızca düzen için değil: session.fitfak.net herkese
+  // açıkken, yönetim adresi ağ seviyesinde kapatılabilir hale gelir. Aynı
+  // porttaki bir yol olsaydı, koruma yalnızca uygulama içindeki tek bir
+  // kontrole (requireAdmin) bağlı kalırdı.
+  server.addHttpHandler({ method: 'GET', path: '/admin' }, wrapHandler(async (req, res) => {
+    // Sayfanın kendisi de oturum ister ve yönetici değilse girişe yollar --
+    // aksi halde panel açılır, her AJAX çağrısı 403 döner ve kullanıcı ne
+    // olduğunu anlamaz.
+    const session = await resolveCurrentSession(req);
+    if (!session) {
+      res.statusCode = 302;
+      res.setHeader('location', `/login?return_to=${encodeURIComponent('/admin')}`);
+      return res.end();
     }
-  }, IDP_IP);
+    await requireAdmin(req);
+    servePage(res, 'admin-panel.html');
+  }), ADMIN_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/admin/users' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
     sendJson(res, 200, { users: await authService.listAllUsers({ db }) });
-  }), IDP_IP);
+  }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/admin/users/role' }, wrapHandler(async (req, res) => {
     const admin = await requireAdmin(req);
     const body = await readJsonBody(req);
     sendJson(res, 200, await authService.setUserRole({ db, targetUserId: body.userId, role: body.role, actingUserId: admin.userId }));
-  }), IDP_IP);
+  }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'GET', path: '/admin/sessions' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
@@ -922,20 +928,20 @@ async function main() {
     if (!targetUserId) throw new AppError('invalid_argument', 'userId gerekli', { httpStatus: 400 });
     const sessions = await sessionManager.listSessions(targetUserId);
     sendJson(res, 200, { sessions: sessions.map((s) => ({ sessionId: s.sessionId, ip: s.ip, userAgent: s.userAgent, audiences: s.audiences, createdAt: s.createdAt, lastSeenAt: s.lastSeenAt, revoked: s.revoked })) });
-  }), IDP_IP);
+  }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/admin/sessions/revoke' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
     const body = await readJsonBody(req);
     await sessionManager.revokeSession(body.sessionId, 'admin_revoked');
     sendJson(res, 200, { revoked: true });
-  }), IDP_IP);
+  }), ADMIN_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/admin/oauth-clients' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
     const clients = await clientStore.listClients();
     sendJson(res, 200, { clients: clients.map((c) => ({ ...c, clientSecret: undefined, clientSecretMasked: `••••${c.clientSecret.slice(-4)}` })) });
-  }), IDP_IP);
+  }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/admin/oauth-clients' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
@@ -944,19 +950,19 @@ async function main() {
     const clientSecret = body.clientSecret || crypto.randomBytes(24).toString('base64url');
     const created = await clientStore.createClient({ clientId: body.clientId, clientSecret, name: body.name || body.clientId, redirectUris: body.redirectUris, allowedScopes: body.allowedScopes || ['openid', 'profile'] });
     sendJson(res, 200, { ...created, clientSecret });
-  }), IDP_IP);
+  }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/admin/oauth-clients/update' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
     const body = await readJsonBody(req);
     sendJson(res, 200, await clientStore.updateClient(body.clientId, { name: body.name, redirectUris: body.redirectUris, allowedScopes: body.allowedScopes }));
-  }), IDP_IP);
+  }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/admin/oauth-clients/delete' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
     const body = await readJsonBody(req);
     sendJson(res, 200, await clientStore.deleteClient(body.clientId));
-  }), IDP_IP);
+  }), ADMIN_IP);
 
   // PKI ROTALARI (127.0.0.2)
   server.addHttpHandler({ method: 'POST', path: '/device/certificate' }, wrapHandler(async (req, res) => {
@@ -1058,8 +1064,8 @@ async function main() {
     const serial = req.url.split('/').pop(); const certPem = await acmeService.downloadCertificate(serial); res.setHeader('content-type', 'application/pem-certificate-chain'); res.end(certPem); 
   }), PKI_IP);
   
-  server.addHttpHandler({ method: 'GET', path: '/admin/certificates' }, wrapHandler(async (req, res) => { await requireAdmin(req); sendJson(res, 200, { certificates: await certificateService.listAllCertificates({ db }) }); }), IDP_IP);
-  server.addHttpHandler({ method: 'POST', path: '/admin/certificates/revoke' }, wrapHandler(async (req, res) => { const admin = await requireAdmin(req); const body = await readJsonBody(req); const result = await certificateService.revokeCertificate({ db, serialNumberHex: body.serialNumberHex, reason: body.reason, actingUserId: admin.userId, actingUserRole: 'admin' }); await crlService.invalidateCrlCache(new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:')); sendJson(res, 200, result); }), IDP_IP);
+  server.addHttpHandler({ method: 'GET', path: '/admin/certificates' }, wrapHandler(async (req, res) => { await requireAdmin(req); sendJson(res, 200, { certificates: await certificateService.listAllCertificates({ db }) }); }), ADMIN_IP);
+  server.addHttpHandler({ method: 'POST', path: '/admin/certificates/revoke' }, wrapHandler(async (req, res) => { const admin = await requireAdmin(req); const body = await readJsonBody(req); const result = await certificateService.revokeCertificate({ db, serialNumberHex: body.serialNumberHex, reason: body.reason, actingUserId: admin.userId, actingUserRole: 'admin' }); await crlService.invalidateCrlCache(new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:')); sendJson(res, 200, result); }), ADMIN_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/admin/acme-orders' }, wrapHandler(async (req, res) => {
       await requireAdmin(req);
@@ -1083,7 +1089,7 @@ async function main() {
         });
       }
       sendJson(res, 200, { orders, accounts });
-    }));
+    }), ADMIN_IP);
     server.addHttpHandler({ method: 'POST', path: '/admin/users/cert-profiles' }, wrapHandler(async (req, res) => {
       await requireAdmin(req);
       const body = await readJsonBody(req);
@@ -1094,7 +1100,7 @@ async function main() {
       const profiles = (body.certProfiles || []).filter((p) => allowed.includes(p));
       await users.update(body.userId, { certProfiles: JSON.stringify(profiles) });
       sendJson(res, 200, { updated: true, certProfiles: profiles });
-    }));
+    }), ADMIN_IP);
   
     // ---- istemci tarafı yapılandırması (giriş sayfasının nereye yönlendireceği vb.) ----
     // Giriş tamamlandığında kullanıcı buraya yönlendirilir. Varsayılan olarak IdP'nin

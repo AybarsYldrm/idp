@@ -19,7 +19,8 @@
     "test:device": "node test/device-session-demo.js",
     "test:ct": "node test/ct-issuance-demo.js",
     "test:image": "node test/image-guard-demo.js",
-    "test:profile": "node test/profile-demo.js"
+    "test:profile": "node test/profile-demo.js",
+    "test:admin": "node test/admin-isolation-demo.js"
   },
   "notes": {
     "neden-sifir-bagimlilik": "WebAuthn/FIDO2, TOTP (RFC 6238), ES256 JWT, CBOR, base32/base64url, ve gRPC-Web tarzı çerçeveleme dahil HER ŞEY node:crypto ve diğer Node.js yerleşikleri üzerine sıfırdan yazıldı -- talep edilen kısıtlamaya uygun olarak harici kütüphane YOK.",
