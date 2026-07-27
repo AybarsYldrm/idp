@@ -58,6 +58,30 @@ module.exports = {
       { no: 10, name: 'lastSeenAt', type: 'uint64' },
       { no: 11, name: 'revoked', type: 'bool' },
       { no: 12, name: 'revokedReason', type: 'string' },
+      // Oturumun bağlı olduğu tarayıcı. Aynı (userId, deviceId) için yeni bir
+      // oturum satırı AÇILMAZ; var olan tazelenir. Bkz. core/device-binding.js.
+      { no: 13, name: 'deviceId', type: 'string', index: true },
+    ],
+  },
+
+  // Kullanıcı başına görülmüş tarayıcılar. Adım yükseltme ve şüpheli giriş
+  // bildirimi bu tabloya dayanır: hiç görülmemiş bir cihazdan giriş, parola
+  // doğru olsa bile ikinci faktör ister ve kullanıcıya haber verilir.
+  user_devices: {
+    fields: [
+      // userId:deviceId -- tekil arama için tek anahtar. İki alanı ayrı ayrı
+      // sorgulayıp kesişim almak, her giriş için iki tur demek olurdu.
+      { no: 2, name: 'userDeviceKey', type: 'string', blindIndex: true, required: true },
+      { no: 3, name: 'userId', type: 'string', index: true, required: true },
+      { no: 4, name: 'deviceId', type: 'string' },
+      { no: 5, name: 'firstSeenAt', type: 'uint64' },
+      { no: 6, name: 'lastSeenAt', type: 'uint64' },
+      { no: 7, name: 'firstIp', type: 'string' },
+      { no: 8, name: 'lastIp', type: 'string' },
+      { no: 9, name: 'userAgent', type: 'string' },
+      { no: 10, name: 'label', type: 'string' },
+      { no: 11, name: 'trusted', type: 'bool' },
+      { no: 12, name: 'loginCount', type: 'uint64' },
     ],
   },
   refresh_tokens: {

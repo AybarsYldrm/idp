@@ -397,7 +397,10 @@ async function confirmPasswordReset({
 // diye ÖNEKLEYEREK kullanıyoruz ki parola-deneme sayaçlarıyla KARIŞMASIN (iki farklı saldırı
 // yüzeyi, bağımsız sayaçlar).
 // ============================================================================
-async function completeLoginWithTotp({ db, sessionManager, mfaChallengeToken, code, ip, userAgent, fingerprintId, antiBot }) {
+async function completeLoginWithTotp({
+  db, sessionManager, mfaChallengeToken, code, ip, userAgent, fingerprintId,
+  antiBot, deviceId = null, isNewDeviceCookie = false, mailer = null,
+}) {
   // BİLEREK consumeMfaChallengeToken DEĞİL, peekEphemeralToken (TÜKETMEYEN) kullanılıyor:
   // token SADECE başarılı tamamlanışta tüketilmeli. Aksi halde yanlış yazılmış tek bir
   // TOTP hanesi kullanıcıyı parola adımına GERİ döndürürdü -- gereksiz ve kötü bir UX.
@@ -420,7 +423,13 @@ async function completeLoginWithTotp({ db, sessionManager, mfaChallengeToken, co
   await totpCreds.update(row._id, { lastUsedCounter: BigInt(result.newLastUsedCounter) });
   await consumeEphemeralToken('mfa', mfaChallengeToken); // başarı -- şimdi tüket (tek kullanımlık)
 
-  return sessionManager.createSession({ userId: pending.userId, ip, userAgent, fingerprintId });
+  // Oturum açma/tazeleme, cihaz kaydı ve yeni-cihaz bildirimi tek yerde:
+  // bu üçü servisler arasında ayrıştığı için oturumlar çoğalıyordu.
+  const { completeLogin } = require('./login-completion');
+  return completeLogin({
+    db, sessionManager, userId: pending.userId, ip, userAgent, fingerprintId,
+    deviceId, isNewDeviceCookie, mailer, method: 'password + TOTP',
+  });
 }
 
 // ============================================================================
@@ -500,6 +509,7 @@ function createSessionStoreAdapter(db) {
       return sessions.insert({
         sessionId: rec.sessionId, userId: rec.userId, ip: rec.ip || '', userAgent: rec.userAgent || '',
         fingerprintId: rec.fingerprintId || '', audiences: JSON.stringify(rec.audiences || ['self']), scope: rec.scope || '',
+        deviceId: rec.deviceId || '',
         createdAt: BigInt(rec.createdAt.getTime()), lastSeenAt: BigInt(rec.lastSeenAt.getTime()),
         revoked: false, revokedReason: '',
       });
@@ -566,7 +576,8 @@ function createSessionStoreAdapter(db) {
 function toSessionView(row) {
   return {
     sessionId: row.sessionId, userId: row.userId, ip: row.ip, userAgent: row.userAgent,
-    fingerprintId: row.fingerprintId, audiences: JSON.parse(row.audiences || '["self"]'), scope: row.scope,
+    fingerprintId: row.fingerprintId, deviceId: row.deviceId || '',
+    audiences: JSON.parse(row.audiences || '["self"]'), scope: row.scope,
     createdAt: new Date(Number(row.createdAt)), lastSeenAt: new Date(Number(row.lastSeenAt)),
     revoked: row.revoked, revokedReason: row.revokedReason,
   };

@@ -26,6 +26,7 @@ const ocspService = require('./services/ocsp-service');
 const crlService = require('./services/crl-service');
 const { createStatusHandler, createPolicyHandler } = require('./services/status-server');
 const { safeRedirect } = require('./core/safe-redirect');
+const deviceBinding = require('./core/device-binding');
 const { AppError } = require('./core/errors');
 const schema = require('./db/schema');
 
@@ -348,12 +349,33 @@ async function main() {
     return { ...session, username: userRow.username, email };
   }
 
+  // Cihaz kimliği için ayrı bir HMAC anahtarı: token imzalama anahtarıyla aynı
+  // sırrı kullanmak, iki farklı amacı tek anahtara bağlar ve birini döndürmeyi
+  // diğerini de kırmadan imkânsız kılar.
+  const deviceSecret = crypto.createHash('sha256')
+    .update(config.db.rootSecret || Buffer.alloc(32))
+    .update('fitfak-device-binding-v1')
+    .digest();
+
+  function currentDevice(req) {
+    return deviceBinding.resolveDevice(req, { secret: deviceSecret, parseCookies });
+  }
+
   async function applyFullLoginCookies(req, res, session) {
     const accountsList = await addSessionToAccountsList(req, { sessionId: session.sessionId, userId: session.userId });
-    res.setHeader('set-cookie', [
+    const cookiesToSet = [
       ...sessionManager.buildSsoCookies({ accessToken: session.accessToken, refreshToken: session.refreshToken }),
       sessionManager.buildAccountsListCookie(accountsList),
-    ]);
+    ];
+    // Cihaz çerezi yalnızca yeni üretildiğinde yazılır; her yanıtta yeniden
+    // yazmak süresini sürekli uzatır ve "bu tarayıcıyı ne zamandır tanıyoruz"
+    // sorusunu anlamsızlaştırır.
+    if (session.deviceId && session.isNewDeviceCookie) {
+      cookiesToSet.push(deviceBinding.buildDeviceCookie(session.deviceId, {
+        secret: deviceSecret, cookieDomain: COOKIE_DOMAIN,
+      }));
+    }
+    res.setHeader('set-cookie', cookiesToSet);
   }
 
   async function resolveUserIdForMfaSetup(req, body) {
@@ -524,9 +546,11 @@ async function main() {
 
   server.addHttpHandler({ method: 'POST', path: '/auth/login/totp' }, wrapHandler(async (req, res) => {
     const body = await readJsonBody(req);
+    const { deviceId, isNew } = currentDevice(req);
     const session = await authService.completeLoginWithTotp({
       db, sessionManager, mfaChallengeToken: body.mfaChallengeToken, code: body.code,
       ip: getIp(req), userAgent: req.headers['user-agent'], antiBot,
+      deviceId, isNewDeviceCookie: isNew, mailer,
     });
     await applyFullLoginCookies(req, res, session);
     sendJson(res, 200, { sessionId: session.sessionId, expiresIn: session.expiresIn });
@@ -542,9 +566,11 @@ async function main() {
 
   server.addHttpHandler({ method: 'POST', path: '/auth/webauthn/login/finish' }, wrapHandler(async (req, res) => {
     const body = await readJsonBody(req);
+    const { deviceId, isNew } = currentDevice(req);
     const result = await webauthnServiceModule.finishAuthentication({
       db, sessionManager, webauthnService: webauthn, challengeId: body.challengeId, credential: body.credential,
       mfaChallengeToken: body.mfaChallengeToken, ip: getIp(req), userAgent: req.headers['user-agent'],
+      deviceId, isNewDeviceCookie: isNew, mailer,
     });
     if (result.accessToken) {
       await applyFullLoginCookies(req, res, result);
@@ -560,8 +586,18 @@ async function main() {
     const target = accounts.find((a) => a.sessionId === body.sessionId);
     if (!target) throw new AppError('not_found', 'Bu hesap bu tarayıcıda bulunamadı', { httpStatus: 404 });
     const tokens = await sessionManager.issueTokensForClient({ sessionId: target.sessionId, clientId: 'self', scope: 'openid profile' });
-    await applyFullLoginCookies(req, res, { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, sessionId: target.sessionId, userId: target.userId });
-    sendJson(res, 200, { switched: true, username: target.username });
+    await applyFullLoginCookies(req, res, {
+      accessToken: tokens.accessToken, refreshToken: tokens.refreshToken,
+      sessionId: target.sessionId, userId: target.userId,
+    });
+    // Hesap değiştirdikten sonra nereye gidileceği yanıtta dönüyor. Önceden
+    // yalnızca {switched:true} dönüyordu ve istemci nereye gideceğini
+    // bilmediği için kullanıcı seçim ekranında kalıyordu.
+    sendJson(res, 200, {
+      switched: true,
+      username: target.username,
+      redirectTo: safeRedirect(body.returnTo, { fallback: config.postLoginUrl, selfOrigin: ISSUER }),
+    });
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/auth/accounts' }, wrapHandler(async (req, res) => {
@@ -582,25 +618,41 @@ async function main() {
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/auth/logout-all' }, wrapHandler(async (req, res) => {
+    // Yetki, erişim token'ından DEĞİL bu tarayıcıdaki hesap listesinden geliyor.
+    //
+    // Önceki hâli resolveCurrentSession() istiyordu, yani geçerli bir erişim
+    // token'ı. Ama /auth/logout tam olarak o çerezi siliyor -- dolayısıyla
+    // "önce bir hesaptan çık, sonra hepsinden çık" dizisi 401 ile bitiyordu ve
+    // kullanıcı, tarayıcıda hâlâ açık duran diğer hesaplarını kapatamıyordu.
+    // Çıkış yapmanın kimlik kanıtı gerektirmesi zaten yanlış yönde bir kısıt:
+    // burada verilen karar "bu tarayıcıdaki her şeyi kapat".
+    const accounts = await resolveValidAccounts(req);
     const current = await resolveCurrentSession(req);
-    if (!current) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
 
-    // 1. Kullanıcının DB'deki tüm oturumlarını bul
-    const allSessions = await sessionManager.listSessions(current.userId);
-    
-    // 2. Sadece aktif olanları filtrele (gereksiz DB yükünü engelle)
-    const activeSessions = allSessions.filter((s) => !s.revoked);
-    
-    // 3. Tüm aktif oturumları "logout_all" sebebiyle revoke et
-    await Promise.all(activeSessions.map((s) => sessionManager.revokeSession(s.sessionId, 'logout_all')));
-    
-    // 4. Mevcut tarayıcıdaki tüm çerezleri temizle
+    const sessionIds = new Set(accounts.map((a) => a.sessionId));
+    if (current) sessionIds.add(current.sessionId);
+
+    // Bu tarayıcıda bilinen her hesabın TÜM oturumları kapatılır -- "her yerden
+    // çıkış yap" bunu ister, yalnızca bu tarayıcıdakileri değil.
+    const userIds = new Set(accounts.map((a) => a.userId));
+    if (current) userIds.add(current.userId);
+    for (const userId of userIds) {
+      for (const s of await sessionManager.listSessions(userId)) {
+        if (!s.revoked) sessionIds.add(s.sessionId);
+      }
+    }
+
+    let count = 0;
+    for (const sessionId of sessionIds) {
+      try { await sessionManager.revokeSession(sessionId, 'logout_all'); count += 1; }
+      catch (_) { /* zaten iptal edilmiş olabilir */ }
+    }
+
     res.setHeader('set-cookie', [
-      ...sessionManager.buildLogoutCookies(), 
-      sessionManager.expireAccountsListCookie()
+      ...sessionManager.buildLogoutCookies(),
+      sessionManager.expireAccountsListCookie(),
     ]);
-    
-    sendJson(res, 200, { loggedOut: true, count: activeSessions.length });
+    sendJson(res, 200, { loggedOut: true, count });
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/auth/sessions' }, wrapHandler(async (req, res) => {
