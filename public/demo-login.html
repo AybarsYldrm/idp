@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fitfak kimlik</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --ink: #0a0a0a;
+    --ink-2: #52525b;
+    --ink-3: #a1a1aa;
+    --line: #e4e4e7;
+    --line-strong: #d4d4d8;
+    --bg-hover: #f4f4f5;
+    --ok: #166534;
+    --ok-bg: #f0fdf4;
+    --bad: #991b1b;
+    --bad-bg: #fef2f2;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+    font-family: 'Inter', system-ui, sans-serif; font-size: 13.5px; line-height: 1.5;
+    display: flex; align-items: center; justify-content: center; padding: 32px 16px;
+  }
+  code, .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+  a { color: var(--ink); font-weight: 500; }
+  button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+  .wrap { width: 100%; max-width: 400px; }
+  .wordmark { text-align: center; font-weight: 700; font-size: 17px; margin-bottom: 24px; letter-spacing: -0.02em; }
+  .wordmark span { color: var(--ink-3); font-weight: 400; }
+
+  .card { 
+    background: var(--surface); 
+    border: 1px solid var(--line-strong); 
+    border-radius: var(--radius); 
+    padding: 32px; 
+    box-shadow: 0 10px 30px rgba(0,0,0,0.02); 
+  }
+
+  .tabs { display: flex; gap: 4px; margin-bottom: 24px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  .tab { flex: 1; background: none; border: none; color: var(--ink-3); padding: 8px 12px; border-radius: 4px; font: inherit; font-weight: 500; cursor: pointer; transition: 0.15s; }
+  .tab:hover { color: var(--ink); background: var(--bg-hover); }
+  .tab.active { color: var(--ink); font-weight: 600; background: var(--bg-hover); }
+
+  .view { display: none; }
+  .view.active { display: block; animation: fadeIn 0.2s ease; }
+  @media (prefers-reduced-motion: reduce) { .view.active { animation: none; } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+
+  h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; margin-bottom: 8px; color: var(--ink); }
+  
+  label { display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+  label:first-of-type { margin-top: 0; }
+  
+  input[type=text], input[type=password], input[type=email] {
+    width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid var(--line-strong);
+    background: var(--surface); color: var(--ink); font: inherit; font-size: 13.5px;
+    transition: border-color 0.15s;
+  }
+  input:focus { border-color: var(--ink); }
+  input[type=text].mono-input { font-family: 'IBM Plex Mono', monospace; letter-spacing: 0.14em; text-align: center; font-size: 15px; font-weight: 500; }
+
+  .btn { width: 100%; padding: 10px 14px; border-radius: 6px; border: 1px solid var(--line-strong); background: #fff; color: var(--ink); font: inherit; font-weight: 500; cursor: pointer; margin-top: 16px; transition: 0.15s ease; }
+  .btn:disabled { opacity: 0.55; cursor: wait; }
+  .btn:hover { background: var(--bg-hover); border-color: var(--ink-3); }
+  
+  .btn-primary { background: var(--ink); color: #fff; border-color: var(--ink); font-weight: 600; }
+  .btn-primary:hover { background: #27272a; border-color: #27272a; }
+  
+  .btn-secondary { background: var(--surface); color: var(--ink); border: 1px solid var(--line-strong); }
+  
+  .btn-danger-text { background: none; color: var(--bad); border: none; padding: 4px; width: auto; margin: 0; font-weight: 500; font-size: 12px; }
+  .btn-danger-text:hover { background: none; text-decoration: underline; border-color: transparent; }
+
+  .divider { display: flex; align-items: center; gap: 10px; margin: 20px 0; color: var(--ink-3); font-size: 11px; text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; }
+  .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+
+  .choice-tiles { display: grid; gap: 10px; margin-top: 8px; }
+  .tile { display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); cursor: pointer; text-align: left; color: var(--ink); font: inherit; transition: 0.15s; }
+  .tile:hover { border-color: var(--ink); background: var(--bg-hover); }
+  .tile-icon { width: 36px; height: 36px; border-radius: 6px; background: var(--bg-hover); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; color: var(--ink); flex-shrink: 0; font-size: 16px; }
+  .tile-title { font-weight: 600; font-size: 13.5px; }
+  .tile-desc { font-size: 11.5px; color: var(--ink-2); margin-top: 2px; }
+
+  .step-indicator { display: flex; gap: 6px; margin-bottom: 20px; }
+  .step-dot { flex: 1; height: 4px; border-radius: 2px; background: var(--line); }
+  .step-dot.done { background: var(--ink); }
+
+  .banner { padding: 11px 14px; border-radius: 6px; font-size: 12.5px; margin-bottom: 18px; display: none; font-weight: 500; }
+  .banner.show { display: block; }
+  .banner-err { background: var(--bad-bg); color: var(--bad); border: 1px solid #fecaca; }
+  .banner-ok { background: var(--ok-bg); color: var(--ok); border: 1px solid #bbf7d0; }
+
+  .secret-box { background: var(--bg-hover); border: 1px dashed var(--ink-3); border-radius: 6px; padding: 14px; margin: 16px 0; word-break: break-all; font-size: 12.5px; }
+  .secret-box .label { color: var(--ink-2); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; display: block; font-weight: 600; }
+
+  .session-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+  .session-row:last-child { border-bottom: none; }
+  .session-meta { font-size: 13.5px; font-weight: 500; }
+  .session-meta .ua { color: var(--ink-2); font-size: 11.5px; margin-top: 3px; font-weight: 400; }
+  .badge-current { display: inline-block; background: var(--ink); color: #fff; font-size: 10px; padding: 2.5px 7px; border-radius: 4px; margin-left: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  .hint { font-size: 12.5px; color: var(--ink-2); margin-top: 8px; }
+
+  /* ---- Hesap Seçici (Monokrom) ---- */
+  .account-row { display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); cursor: pointer; width: 100%; text-align: left; font: inherit; margin-bottom: 8px; transition: 0.15s; }
+  .account-row:hover { border-color: var(--ink); background: var(--bg-hover); }
+  .account-avatar { width: 38px; height: 38px; border-radius: 50%; background: var(--ink); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 14px; flex-shrink: 0; }
+  .account-name { font-weight: 600; font-size: 13.5px; }
+  .account-email { font-size: 11.5px; color: var(--ink-2); margin-top: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="wordmark">fitfak<span> kimlik</span></div>
+
+  <div class="card">
+    <div class="banner banner-err" id="error-banner"></div>
+    <div class="banner banner-ok" id="info-banner" style="display:none"></div>
+
+    <!-- ---- HESAP SEÇİCİ ---- -->
+    <div class="view" id="view-choose-account">
+      <h3 style="margin-top:0">Hesap seçin</h3>
+      <p class="hint" style="margin-bottom:20px">Bu cihazda kayıtlı olan bir hesabı seçerek devam edin.</p>
+      <div id="accounts-list"></div>
+      <button class="btn btn-secondary" id="btn-use-other-account">Başka bir hesapla giriş yap</button>
+    </div>
+
+    <!-- ---- CİHAZ ONAYI ---- -->
+    <div class="view" id="view-device-code">
+      <h3 style="margin-top:0">Cihaz onayı</h3>
+      <div id="device-code-entry">
+        <p class="hint" style="margin-bottom:20px">Terminalde veya uygulamada gösterilen eşleştirme kodunu girin.</p>
+        <label for="device-code-input">Bağlantı Kodu</label>
+        <input type="text" id="device-code-input" class="mono-input" placeholder="XXXX-XXXX">
+        <button class="btn btn-primary" id="btn-device-continue">Devam et</button>
+      </div>
+      <div id="device-confirm-box" style="display:none">
+        <p class="hint" style="margin-bottom:20px" id="device-info-text">Yükleniyor…</p>
+        <button class="btn btn-primary" id="btn-device-approve">Erişimi Onayla</button>
+        <button class="btn btn-secondary" id="btn-device-deny" style="margin-top:10px">Reddet</button>
+      </div>
+    </div>
+
+    <!-- ---- GİRİŞ / KAYIT ---- -->
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-tab="login">Giriş yap</button>
+      <button class="tab" data-tab="register">Hesap oluştur</button>
+    </div>
+
+    <div class="view active" id="view-login">
+      <label for="login-username">E-Posta Adresi</label>
+      <input type="email" id="login-username" autocomplete="username">
+      
+      <label for="login-password">Parola</label>
+      <input type="password" id="login-password" autocomplete="current-password">
+      
+      <button class="btn btn-primary" id="btn-login-password">Giriş yap</button>
+      <div class="divider">veya</div>
+      <button class="btn btn-secondary" id="btn-login-passkey">Cihaz anahtarı ile giriş yap</button>
+    </div>
+
+    <div class="view" id="view-register">
+      <label for="reg-username">Kullanıcı adı</label>
+      <input type="text" id="reg-username" autocomplete="username">
+      
+      <label for="reg-email">E-posta Adresi</label>
+      <input type="email" id="reg-email" autocomplete="email">
+      
+      <label for="reg-password">Parola</label>
+      <input type="password" id="reg-password" autocomplete="new-password">
+      
+      <button class="btn btn-primary" id="btn-register">Hesap oluştur</button>
+      <p class="hint">Devam ettiğinizde e-posta adresinize doğrulama kodu gönderilecektir.</p>
+    </div>
+
+    <!-- ---- E-POSTA DOĞRULAMA ---- -->
+    <div class="view" id="view-verify-email">
+      <div class="step-indicator"><div class="step-dot done"></div><div class="step-dot"></div><div class="step-dot"></div></div>
+      <h3 style="margin-top:0">E-postanızı doğrulayın</h3>
+      <p class="hint" style="margin-bottom:20px" id="verify-email-hint">Adresinize gönderilen 6 haneli güvenlik kodunu girin.</p>
+      
+      <label for="verify-email-code">Doğrulama kodu</label>
+      <input type="text" id="verify-email-code" class="mono-input" maxlength="6" inputmode="numeric" placeholder="000000">
+      
+      <button class="btn btn-primary" id="btn-confirm-email">Kodu Onayla</button>
+      <button class="btn btn-secondary" id="btn-resend-email" style="margin-top:10px">Kodu tekrar gönder</button>
+    </div>
+
+    <!-- ---- MFA SEÇİMİ ---- -->
+    <div class="view" id="view-mfa-choice">
+      <div class="step-indicator"><div class="step-dot done"></div><div class="step-dot done"></div><div class="step-dot"></div></div>
+      <h3 style="margin-top:0">Hesap güvenliği</h3>
+      <p class="hint" style="margin-bottom:20px">Devam etmeden önce hesabınızı korumak için iki adımlı doğrulamayı yapılandırın.</p>
+      
+      <div class="choice-tiles">
+        <button class="tile" id="tile-choose-totp">
+          <div class="tile-icon">⏱</div>
+          <div><div class="tile-title">Kimlik Doğrulayıcı Uygulama</div><div class="tile-desc">QR kod veya kurulum anahtarı ile</div></div>
+        </button>
+        <button class="tile" id="tile-choose-passkey">
+          <div class="tile-icon">🔑</div>
+          <div><div class="tile-title">Cihaz Anahtarı (Passkey)</div><div class="tile-desc">Cihazınızın PIN / biyometrik kilidiyle</div></div>
+        </button>
+      </div>
+    </div>
+
+    <!-- ---- MFA TOTP SETUP ---- -->
+    <div class="view" id="view-mfa-totp-setup">
+      <div class="step-indicator"><div class="step-dot done"></div><div class="step-dot done"></div><div class="step-dot"></div></div>
+      <h3 style="margin-top:0">Uygulama eşleştirme</h3>
+      <p class="hint">Gösterilen QR kodu taratın veya kurulum anahtarını manuel olarak girin:</p>
+      
+      <div id="totp-qr-box" style="text-align:center;margin:16px 0"></div>
+      <div class="secret-box"><span class="label">Kurulum Anahtarı</span><code id="totp-secret" class="mono">—</code></div>
+      
+      <label for="totp-setup-code">Uygulamadaki 6 haneli kodu girin</label>
+      <input type="text" id="totp-setup-code" class="mono-input" maxlength="6" inputmode="numeric" placeholder="000000">
+      
+      <button class="btn btn-primary" id="btn-confirm-totp-setup">Kurulumu Tamamla</button>
+    </div>
+
+    <!-- ---- MFA PASSKEY SETUP ---- -->
+    <div class="view" id="view-mfa-passkey-setup">
+      <div class="step-indicator"><div class="step-dot done"></div><div class="step-dot done"></div><div class="step-dot"></div></div>
+      <h3 style="margin-top:0">Cihaz anahtarı oluştur</h3>
+      <p class="hint" style="margin-bottom:24px">Sistem, cihazınızın mevcut güvenlik yöntemi (PIN, parmak izi veya Face ID) ile bir anahtar oluşturmanızı isteyecek.</p>
+      <button class="btn btn-primary" id="btn-create-passkey">Anahtarı Oluştur</button>
+    </div>
+
+    <!-- ---- 2. FAKTÖR GİRİŞ ---- -->
+    <div class="view" id="view-2fa">
+      <h3 style="margin-top:0">Ek güvenlik adımı</h3>
+      <p class="hint" style="margin-bottom:20px">Giriş işlemini tamamlamak için kimliğinizi doğrulayın.</p>
+      
+      <label for="twofa-code">Doğrulayıcı Kodu</label>
+      <input type="text" id="twofa-code" class="mono-input" maxlength="6" inputmode="numeric" placeholder="000000">
+      <button class="btn btn-primary" id="btn-confirm-2fa-totp">Giriş Yap</button>
+      
+      <div class="divider">veya</div>
+      <button class="btn btn-secondary" id="btn-confirm-2fa-passkey">Cihaz anahtarı ile onayla</button>
+    </div>
+
+    <!-- ---- OTURUMLAR YÖNETİMİ ---- -->
+    <div class="view" id="view-sessions">
+      <h3 style="margin-top:0">Aktif oturumlar</h3>
+      <p class="hint" style="margin-bottom:20px">Hesabınıza bağlı cihazları ve tarayıcıları yönetin.</p>
+      
+      <div id="sessions-list"></div>
+      
+      <button class="btn btn-secondary" id="btn-logout" style="margin-top:24px">Bu Cihazdan Çıkış Yap</button>
+      <button class="btn btn-danger-text" id="btn-logout-all" style="margin-top:12px;display:block;text-align:center;width:100%">Tüm Oturumlardan Çıkış Yap</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/anti-bot-client.js"></script>
+<script src="/static/webauthn-browser.js"></script>
+<script src="/static/oauth-client.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var returnTo = new URLSearchParams(location.search).get('return_to');
+  var chooseAccount = new URLSearchParams(location.search).get('choose_account') === '1';
+  var deviceMode = new URLSearchParams(location.search).get('device') === '1';
+  var deviceUserCodeFromUrl = new URLSearchParams(location.search).get('user_code');
+  var state = { setupToken: null, mfaChallengeToken: null, pendingUsername: null, awaitingDeviceConfirm: false, deviceUserCode: null };
+
+  function $(id) { return document.getElementById(id); }
+  
+  function showError(message) {
+    $('info-banner').style.display = 'none';
+    var el = $('error-banner');
+    el.textContent = message;
+    el.classList.add('show');
+  }
+  function clearError() { $('error-banner').classList.remove('show'); }
+  
+  function showInfo(message) {
+    clearError();
+    var el = $('info-banner');
+    el.textContent = message;
+    el.style.display = 'block';
+  }
+  function clearInfo() { $('info-banner').style.display = 'none'; }
+
+  function showView(id) {
+    document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('active'); });
+    $(id).classList.add('active');
+    clearError();
+    clearInfo();
+  }
+
+  function setTab(name) {
+    $('tabs').style.display = 'flex';
+    document.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('active', t.dataset.tab === name); });
+    showView(name === 'login' ? 'view-login' : 'view-register');
+  }
+
+  document.querySelectorAll('.tab').forEach(function (t) {
+    t.addEventListener('click', function () { setTab(t.dataset.tab); });
+  });
+
+  async function withBusyButton(button, fn) {
+    var original = button.textContent;
+    button.disabled = true;
+    button.textContent = 'İşleniyor…';
+    try {
+      await fn();
+    } catch (e) {
+      showError(e.message || 'Beklenmeyen bir hata oluştu.');
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  async function antiBotFields() {
+    var pow = await FitfakAntiBot.fetchAndSolveChallenge('/auth/pow-challenge');
+    var fingerprint = FitfakAntiBot.collectFingerprint();
+    return { powChallengeId: pow.powChallengeId, powNonce: pow.powNonce, fingerprint: fingerprint };
+  }
+
+  function onAuthSuccess() {
+    if (state.awaitingDeviceConfirm) { showDeviceConfirmFlow(); return; }
+    if (returnTo) { location.href = returnTo; return; }
+    loadSessions();
+    showView('view-sessions');
+  }
+
+  // ---- ÇOKLU HESAP SEÇİCİ ----
+  function initials(name) { return (name || '?').slice(0, 2).toUpperCase(); }
+
+  async function renderAccountChooser() {
+    $('tabs').style.display = 'none';
+    var data = await FitfakOAuth.listAccounts();
+    var list = $('accounts-list');
+    list.innerHTML = '';
+    data.accounts.forEach(function (a) {
+      var btn = document.createElement('button');
+      btn.className = 'account-row';
+      btn.innerHTML =
+        '<div class="account-avatar">' + initials(a.username) + '</div>' +
+        '<div><div class="account-name">' + a.username + '</div><div class="account-email">' + a.email + '</div></div>';
+      
+      btn.addEventListener('click', function () {
+        withBusyButton(btn, async function () {
+          await FitfakOAuth.switchAccount(a.sessionId);
+          // HATA BURADA ÇÖZÜLDÜ: Önceden sadece returnTo varsa yönleniyordu. 
+          // Artık her halükarda başarılı giriş metodunu tetikliyor.
+          onAuthSuccess(); 
+        });
+      });
+      list.appendChild(btn);
+    });
+    showView('view-choose-account');
+  }
+  
+  $('btn-use-other-account').addEventListener('click', function () {
+    setTab('login');
+  });
+
+  if (chooseAccount) {
+    renderAccountChooser().catch(function (e) { showError(e.message); });
+  }
+
+  // ---- CİHAZ ONAYI ----
+  async function checkLoggedIn() {
+    try { await FitfakOAuth.listSessions(); return true; } catch { return false; }
+  }
+
+  async function showDeviceConfirmFlow() {
+    $('tabs').style.display = 'none';
+    showView('view-device-code');
+    if (!state.deviceUserCode) {
+      $('device-code-entry').style.display = 'block';
+      $('device-confirm-box').style.display = 'none';
+      return;
+    }
+    $('device-code-entry').style.display = 'none';
+    $('device-confirm-box').style.display = 'block';
+    try {
+      var info = await FitfakOAuth.getDeviceInfo(state.deviceUserCode);
+      $('device-info-text').textContent = '"' + info.clientName + '" uygulaması hesabınıza güvenli erişim talep ediyor. Bu işlemi siz mi başlattınız?';
+    } catch (e) {
+      $('device-info-text').textContent = 'Kod geçersiz veya süresi dolmuş.';
+      showError(e.message);
+    }
+  }
+
+  $('btn-device-continue').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      var code = $('device-code-input').value.trim();
+      if (!code) { showError('Bağlantı kodunu girmelisiniz.'); return; }
+      state.deviceUserCode = code;
+      await showDeviceConfirmFlow();
+    });
+  });
+  
+  $('btn-device-approve').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      await FitfakOAuth.approveDevice(state.deviceUserCode);
+      showView('view-device-code');
+      $('device-confirm-box').style.display = 'none';
+      $('device-code-entry').style.display = 'none';
+      showInfo('Cihaz erişimi onaylandı! İşleminize hedef uygulamadan devam edebilirsiniz.');
+    });
+  });
+  
+  $('btn-device-deny').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      await FitfakOAuth.denyDevice(state.deviceUserCode);
+      showView('view-device-code');
+      $('device-confirm-box').style.display = 'none';
+      $('device-code-entry').style.display = 'none';
+      showInfo('Erişim isteği reddedildi.');
+    });
+  });
+
+  if (deviceMode) {
+    state.deviceUserCode = deviceUserCodeFromUrl || null;
+    checkLoggedIn().then(function (loggedIn) {
+      if (loggedIn) {
+        showDeviceConfirmFlow();
+      } else {
+        state.awaitingDeviceConfirm = true;
+        setTab('login');
+        showInfo('Cihaz erişimini onaylamak için lütfen giriş yapın.');
+      }
+    }).catch(function (e) { showError(e.message); });
+  }
+
+  // ---- KAYIT ----
+  $('btn-register').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      var username = $('reg-username').value.trim();
+      var email = $('reg-email').value.trim();
+      var password = $('reg-password').value;
+      if (!username || !email || !password) { showError('Lütfen tüm alanları doldurun.'); return; }
+      var anti = await antiBotFields();
+      var result = await FitfakOAuth.register(Object.assign({ username: username, email: email, password: password }, anti));
+      state.pendingUsername = username;
+      state.pendingEmail = email;
+      $('verify-email-hint').textContent = email + ' adresine gönderilen 6 haneli güvenlik kodunu girin.';
+      showView('view-verify-email');
+    });
+  });
+
+  // ---- E-POSTA DOĞRULAMA ----
+  $('btn-confirm-email').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      var code = $('verify-email-code').value.trim();
+      var result = await FitfakOAuth.confirmVerificationEmail(state.pendingEmail, code);
+      state.setupToken = result.setupToken;
+      showView('view-mfa-choice');
+    });
+  });
+  
+  $('btn-resend-email').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      await FitfakOAuth.resendVerificationEmail(state.pendingEmail);
+      showInfo('Doğrulama kodu e-posta adresinize tekrar gönderildi.');
+    });
+  });
+
+  // ---- MFA SEÇİMİ ----
+  $('tile-choose-totp').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      var begin = await FitfakOAuth.beginTotpEnrollment({ setupToken: state.setupToken, username: state.pendingUsername });
+      $('totp-secret').textContent = begin.secretBase32;
+      $('totp-qr-box').innerHTML = begin.qrCodeBase64
+        ? '<img src="' + begin.qrCodeBase64 + '" width="160" height="160" alt="TOTP QR kod" style="border-radius:6px;border:1px solid var(--line-strong)">'
+        : '';
+      showView('view-mfa-totp-setup');
+    });
+  });
+  
+  $('btn-confirm-totp-setup').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      await FitfakOAuth.finishTotpEnrollment({ setupToken: state.setupToken, code: $('totp-setup-code').value.trim() });
+      finishMfaSetup();
+    });
+  });
+
+  $('tile-choose-passkey').addEventListener('click', function () {
+    showView('view-mfa-passkey-setup');
+  });
+  
+  $('btn-create-passkey').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      var begin = await FitfakOAuth.beginWebauthnRegistration({ setupToken: state.setupToken, username: state.pendingUsername, displayName: state.pendingUsername });
+      var result = await FitfakWebAuthn.register(begin);
+      await FitfakOAuth.finishWebauthnRegistration(Object.assign({ setupToken: state.setupToken }, result));
+      finishMfaSetup();
+    });
+  });
+
+  function finishMfaSetup() {
+    setTab('login');
+    $('login-username').value = state.pendingUsername || '';
+    showInfo('Hesap güvenliğiniz yapılandırıldı. Sisteme giriş yapabilirsiniz.');
+  }
+
+  // ---- PAROLA İLE GİRİŞ ----
+  $('btn-login-password').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      var username = $('login-username').value.trim();
+      var password = $('login-password').value;
+      if (!username || !password) { showError('Kimlik bilgileri eksik.'); return; }
+      var anti = await antiBotFields();
+      var result = await FitfakOAuth.loginWithPassword(Object.assign({ username: username, password: password }, anti));
+      state.pendingUsername = username;
+      if (result.requiresEmailVerification) {
+        state.pendingEmail = result.email;
+        $('verify-email-hint').textContent = result.email + ' adresine gönderilen 6 haneli güvenlik kodunu girin.';
+        showView('view-verify-email');
+        return;
+      }
+      if (result.requiresMfaSetup) { state.setupToken = result.setupToken; showView('view-mfa-choice'); return; }
+      if (result.requiresSecondFactor) { state.mfaChallengeToken = result.mfaChallengeToken; showView('view-2fa'); return; }
+      onAuthSuccess();
+    });
+  });
+
+  // ---- PAROLASIZ (PASSKEY) GİRİŞ ----
+  $('btn-login-passkey').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      var username = $('login-username').value.trim() || undefined;
+      var begin = await FitfakOAuth.beginWebauthnLogin({ username: username, purpose: 'primary' });
+      var result = await FitfakWebAuthn.authenticate(begin);
+      var finishResult = await FitfakOAuth.finishWebauthnLogin(result);
+      if (finishResult.requiresSecondFactor) { state.mfaChallengeToken = finishResult.mfaChallengeToken; showView('view-2fa'); return; }
+      onAuthSuccess();
+    });
+  });
+
+  // ---- 2. FAKTÖR DOĞRULAMA ----
+  $('btn-confirm-2fa-totp').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      var code = $('twofa-code').value.trim();
+      await FitfakOAuth.completeLoginWithTotp(state.mfaChallengeToken, code);
+      onAuthSuccess();
+    });
+  });
+  
+  $('btn-confirm-2fa-passkey').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      var begin = await FitfakOAuth.beginWebauthnLogin({ username: state.pendingUsername, purpose: 'second_factor' });
+      var result = await FitfakWebAuthn.authenticate(begin);
+      await FitfakOAuth.finishWebauthnLogin(Object.assign({ mfaChallengeToken: state.mfaChallengeToken }, result));
+      onAuthSuccess();
+    });
+  });
+
+  // ---- OTURUMLAR YÖNETİMİ ----
+  async function loadSessions() {
+    var data = await FitfakOAuth.listSessions();
+    var list = $('sessions-list');
+    list.innerHTML = '';
+    data.sessions.forEach(function (s) {
+      var row = document.createElement('div');
+      row.className = 'session-row';
+      var created = new Date(s.createdAt).toLocaleString('tr-TR');
+      row.innerHTML =
+        '<div class="session-meta">' +
+          '<div>' + (s.ip || 'Bilinmeyen IP') + (s.isCurrent ? '<span class="badge-current">Mevcut</span>' : '') + '</div>' +
+          '<div class="ua">' + (s.userAgent || 'Sistem Tanımlanamadı') + ' &bull; ' + created + '</div>' +
+        '</div>';
+      
+      if (!s.isCurrent) {
+        var btn = document.createElement('button');
+        btn.className = 'btn btn-danger-text';
+        btn.textContent = 'Sonlandır';
+        btn.addEventListener('click', function () {
+          FitfakOAuth.revokeSession(s.sessionId).then(loadSessions).catch(function (e) { showError(e.message); });
+        });
+        row.appendChild(btn);
+      }
+      list.appendChild(row);
+    });
+  }
+  
+  $('btn-logout').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      await FitfakOAuth.logout();
+      setTab('login');
+    });
+  });
+  
+  $('btn-logout-all').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      await FitfakOAuth.logoutAll();
+      setTab('login');
+    });
+  });
+}());
+</script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "name": "@fitfak/idp",
+  "version": "1.0.0",
+  "description": "fitfak.net ekosistemi için bağımsız OAuth 2.0 / WebAuthn Merkezi Kimlik Sağlayıcısı (session.fitfak.net)",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "oauth-server.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node oauth-server.js",
+    "dev": "FITFAK_IDP_DEV_DB=1 node oauth-server.js",
+    "test": "for f in test/*.js; do echo \"=== $f ===\"; node \"$f\" || exit 1; done"
+  },
+  "notes": {
+    "neden-sifir-bagimlilik": "WebAuthn/FIDO2, TOTP (RFC 6238), ES256 JWT, CBOR, base32/base64url, ve gRPC-Web tarzı çerçeveleme dahil HER ŞEY node:crypto ve diğer Node.js yerleşikleri üzerine sıfırdan yazıldı -- talep edilen kısıtlamaya uygun olarak harici kütüphane YOK.",
+    "fitfak-database-nicin-peer-dependency": "Gerçek üretim veritabanı (@fitfak/database) bu paketin İÇİNDE değil, sizin monorepo'nuzda/ortamınızda zaten mevcut olduğu için 'peerDependency' + optional olarak işaretlendi. FITFAK_IDP_DEV_DB=1 ile çalıştırıldığında (sadece geliştirme/demo) hiç gerekmez -- test/mock-db.js kullanılır."
+  },
+  "dependencies": {
+    "@fitfak/database": "^1.0.0",
+    "@fitfak/qr": "^1.0.0",
+    "@fitfak/ssl": "^1.0.2"
+  }
+}

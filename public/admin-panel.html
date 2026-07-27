@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fitfak kimlik — yönetim</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-sidebar: #0a0a0a;
+    --bg-subtle: #fafafa;
+    --bg-hover: #f4f4f5;
+    --ink: #0a0a0a;
+    --ink-2: #52525b;
+    --ink-3: #a1a1aa;
+    --line: #e4e4e7;
+    --line-strong: #d4d4d8;
+    --sidebar-ink: #a1a1aa;
+    --sidebar-ink-active: #ffffff;
+    --sidebar-hover: #1c1c1f;
+    --ok: #166534;
+    --ok-bg: #f0fdf4;
+    --warn: #854d0e;
+    --warn-bg: #fefce8;
+    --bad: #991b1b;
+    --bad-bg: #fef2f2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: 'Inter', system-ui, sans-serif; font-size: 14px; line-height: 1.5;
+    display: grid; grid-template-columns: 240px 1fr; min-height: 100vh;
+  }
+  .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+  button, input, select { font: inherit; }
+  button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+  /* ---------- sidebar ---------- */
+  aside { background: var(--bg-sidebar); color: var(--sidebar-ink); padding: 20px 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+  .brand { padding: 0 20px 22px; font-weight: 700; font-size: 15px; color: #fff; letter-spacing: -0.01em; }
+  .brand span { color: var(--ink-3); font-weight: 400; }
+  .nav-group { margin-bottom: 20px; }
+  .nav-label { padding: 0 20px 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; color: #52525b; font-weight: 600; }
+  .nav-item { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--sidebar-ink); padding: 9px 20px; cursor: pointer; font-size: 13.5px; border-left: 2px solid transparent; }
+  .nav-item:hover { background: var(--sidebar-hover); color: #fff; }
+  .nav-item.active { background: var(--sidebar-hover); color: var(--sidebar-ink-active); border-left-color: #fff; font-weight: 600; }
+  .sidebar-foot { padding: 16px 20px 0; border-top: 1px solid #1c1c1f; margin-top: 20px; font-size: 12px; color: #52525b; }
+
+  /* ---------- main ---------- */
+  main { padding: 32px 40px 64px; max-width: 1180px; }
+  .page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 26px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 21px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .page-sub { color: var(--ink-2); font-size: 13px; margin: 0; }
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* ---------- stat cards ---------- */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 30px; }
+  .stat { border: 1px solid var(--line); border-radius: 6px; padding: 15px 17px; }
+  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); font-weight: 600; margin-bottom: 7px; }
+  .stat-value { font-size: 25px; font-weight: 600; letter-spacing: -0.02em; line-height: 1; }
+  .stat-note { font-size: 11.5px; color: var(--ink-2); margin-top: 6px; }
+
+  /* ---------- tables ---------- */
+  .table-wrap { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-bottom: 26px; }
+  .table-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: var(--bg-subtle); border-bottom: 1px solid var(--line); }
+  .table-head h2 { font-size: 13px; font-weight: 600; margin: 0; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 9px 16px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); font-weight: 600; border-bottom: 1px solid var(--line); background: #fff; }
+  td { padding: 11px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; font-size: 13px; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--bg-subtle); }
+  .empty { padding: 30px 16px; text-align: center; color: var(--ink-3); font-size: 13px; }
+  .cell-strong { font-weight: 500; }
+  .cell-sub { font-size: 11.5px; color: var(--ink-3); margin-top: 2px; }
+
+  /* ---------- badges ---------- */
+  .badge { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2.5px 7px; border-radius: 3px; letter-spacing: 0.02em; border: 1px solid transparent; }
+  .badge-ok { background: var(--ok-bg); color: var(--ok); border-color: #bbf7d0; }
+  .badge-warn { background: var(--warn-bg); color: var(--warn); border-color: #fef08a; }
+  .badge-bad { background: var(--bad-bg); color: var(--bad); border-color: #fecaca; }
+  .badge-neutral { background: var(--bg-hover); color: var(--ink-2); border-color: var(--line-strong); }
+  .badge-dark { background: var(--ink); color: #fff; }
+
+  /* ---------- buttons ---------- */
+  .btn { border: 1px solid var(--line-strong); background: #fff; color: var(--ink); padding: 6px 12px; border-radius: 5px; cursor: pointer; font-size: 12.5px; font-weight: 500; }
+  .btn:hover { background: var(--bg-hover); border-color: var(--ink-3); }
+  .btn-primary { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .btn-primary:hover { background: #27272a; border-color: #27272a; }
+  .btn-danger { color: var(--bad); border-color: #fecaca; }
+  .btn-danger:hover { background: var(--bad-bg); border-color: var(--bad); }
+  .btn-sm { padding: 4px 9px; font-size: 11.5px; }
+  .btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  /* ---------- forms / modal ---------- */
+  .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(10,10,10,0.45); z-index: 50; align-items: center; justify-content: center; padding: 20px; }
+  .modal-backdrop.open { display: flex; }
+  .modal { background: #fff; border-radius: 8px; width: 100%; max-width: 480px; max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 50px rgba(0,0,0,0.25); }
+  .modal-head { padding: 18px 22px; border-bottom: 1px solid var(--line); font-weight: 600; font-size: 15px; }
+  .modal-body { padding: 22px; }
+  .modal-foot { padding: 14px 22px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; background: var(--bg-subtle); }
+  label { display: block; font-size: 11.5px; font-weight: 600; color: var(--ink-2); margin: 15px 0 5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  label:first-child { margin-top: 0; }
+  input[type=text], input[type=url], select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 5px; font-size: 13px; }
+  input:focus, select:focus, textarea:focus { border-color: var(--ink); }
+  textarea { min-height: 72px; resize: vertical; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+  .field-hint { font-size: 11.5px; color: var(--ink-3); margin-top: 5px; }
+  .check-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; }
+  .check-row input { width: auto; }
+  .check-row label { margin: 0; text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 400; color: var(--ink); }
+
+  .banner { padding: 11px 14px; border-radius: 5px; font-size: 13px; margin-bottom: 18px; display: none; }
+  .banner.show { display: block; }
+  .banner-err { background: var(--bad-bg); color: var(--bad); border: 1px solid #fecaca; }
+  .banner-ok { background: var(--ok-bg); color: var(--ok); border: 1px solid #bbf7d0; }
+
+  .secret-reveal { background: var(--ink); color: #fff; padding: 12px 14px; border-radius: 5px; word-break: break-all; margin: 12px 0; font-size: 12.5px; }
+  .secret-reveal .label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); margin-bottom: 5px; }
+
+  .scope-chip { display: inline-block; background: var(--bg-hover); border: 1px solid var(--line-strong); padding: 2px 7px; border-radius: 3px; font-size: 11px; margin: 1px 3px 1px 0; }
+  .filter-bar { display: flex; gap: 8px; margin-bottom: 14px; }
+  .filter-bar input { max-width: 280px; }
+</style>
+</head>
+<body>
+
+<aside>
+  <div class="brand">fitfak <span>kimlik</span></div>
+  <div class="nav-group">
+    <div class="nav-label">Genel</div>
+    <button class="nav-item active" data-view="overview">Genel bakış</button>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Kimlik</div>
+    <button class="nav-item" data-view="users">Kullanıcılar</button>
+    <button class="nav-item" data-view="sessions">Oturumlar</button>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Uygulamalar</div>
+    <button class="nav-item" data-view="apps">Kayıtlı uygulamalar</button>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Sertifika otoritesi</div>
+    <button class="nav-item" data-view="certs">Sertifikalar</button>
+    <button class="nav-item" data-view="acme">ACME</button>
+    <button class="nav-item" data-view="revocation">İptal (OCSP/CRL)</button>
+  </div>
+  <div class="sidebar-foot" id="whoami">yükleniyor…</div>
+</aside>
+
+<main>
+  <div class="banner banner-err" id="err"></div>
+  <div class="banner banner-ok" id="ok"></div>
+
+  <!-- ================= GENEL BAKIŞ ================= -->
+  <section class="view active" id="view-overview">
+    <div class="page-head">
+      <div><h1>Genel bakış</h1><p class="page-sub">Kiracı genelinde kimlik ve sertifika durumu.</p></div>
+      <button class="btn" id="btn-refresh-all">Yenile</button>
+    </div>
+    <div class="stats" id="overview-stats"></div>
+    <div class="table-wrap">
+      <div class="table-head"><h2>Servis uç noktaları</h2></div>
+      <table>
+        <thead><tr><th>Servis</th><th>Host</th><th>Uç nokta</th></tr></thead>
+        <tbody id="endpoints-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= KULLANICILAR ================= -->
+  <section class="view" id="view-users">
+    <div class="page-head">
+      <div><h1>Kullanıcılar</h1><p class="page-sub">Roller, hesap durumu ve sertifika üretme yetkileri.</p></div>
+    </div>
+    <div class="filter-bar"><input type="text" id="user-filter" placeholder="Kullanıcı adı veya e-posta ara…"></div>
+    <div class="table-wrap">
+      <div class="table-head"><h2>Tüm kullanıcılar</h2><span class="badge badge-neutral" id="user-count">0</span></div>
+      <table>
+        <thead><tr><th>Kullanıcı</th><th>Durum</th><th>Rol</th><th>Sertifika yetkileri</th><th></th></tr></thead>
+        <tbody id="users-body"><tr><td colspan="5" class="empty">yükleniyor…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= OTURUMLAR ================= -->
+  <section class="view" id="view-sessions">
+    <div class="page-head">
+      <div><h1>Oturumlar</h1><p class="page-sub">Bir kullanıcının aktif cihazlarını görüntüleyin ve sonlandırın.</p></div>
+    </div>
+    <div class="filter-bar">
+      <input type="text" id="session-user-id" placeholder="Kullanıcı ID (Kullanıcılar sekmesinden kopyalayın)">
+      <button class="btn btn-primary" id="btn-load-sessions">Getir</button>
+    </div>
+    <div class="table-wrap">
+      <div class="table-head"><h2>Aktif oturumlar</h2></div>
+      <table>
+        <thead><tr><th>IP</th><th>Cihaz / tarayıcı</th><th>Başlangıç</th><th>Kapsam</th><th></th></tr></thead>
+        <tbody id="sessions-body"><tr><td colspan="5" class="empty">Bir kullanıcı ID girin.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= UYGULAMALAR ================= -->
+  <section class="view" id="view-apps">
+    <div class="page-head">
+      <div><h1>Kayıtlı uygulamalar</h1><p class="page-sub">OAuth2 istemcileri, yönlendirme adresleri ve izin kapsamları (scope).</p></div>
+      <button class="btn btn-primary" id="btn-new-app">Uygulama kaydet</button>
+    </div>
+    <div class="table-wrap">
+      <div class="table-head"><h2>İstemciler</h2><span class="badge badge-neutral" id="app-count">0</span></div>
+      <table>
+        <thead><tr><th>Uygulama</th><th>Yönlendirme adresleri</th><th>Kapsamlar</th><th></th></tr></thead>
+        <tbody id="apps-body"><tr><td colspan="4" class="empty">yükleniyor…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= SERTİFİKALAR ================= -->
+  <section class="view" id="view-certs">
+    <div class="page-head">
+      <div><h1>Sertifikalar</h1><p class="page-sub">trust.fitfak.net tarafından verilmiş tüm sertifikalar.</p></div>
+    </div>
+    <div class="table-wrap">
+      <div class="table-head"><h2>Verilen sertifikalar</h2><span class="badge badge-neutral" id="cert-count">0</span></div>
+      <table>
+        <thead><tr><th>Konu (CN)</th><th>Profil</th><th>Kaynak</th><th>Geçerlilik</th><th>Durum</th><th></th></tr></thead>
+        <tbody id="certs-body"><tr><td colspan="6" class="empty">yükleniyor…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= ACME ================= -->
+  <section class="view" id="view-acme">
+    <div class="page-head">
+      <div><h1>ACME</h1><p class="page-sub">RFC 8555 otomatik sertifika siparişleri ve hesapları.</p></div>
+    </div>
+    <div class="table-wrap">
+      <div class="table-head"><h2>Siparişler</h2><span class="badge badge-neutral" id="order-count">0</span></div>
+      <table>
+        <thead><tr><th>Tanımlayıcılar</th><th>Durum</th><th>Sertifika</th><th>Oluşturulma</th></tr></thead>
+        <tbody id="orders-body"><tr><td colspan="4" class="empty">yükleniyor…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <div class="table-head"><h2>ACME hesapları</h2></div>
+      <table>
+        <thead><tr><th>Hesap ID</th><th>İletişim</th><th>Durum</th></tr></thead>
+        <tbody id="acme-accounts-body"><tr><td colspan="3" class="empty">yükleniyor…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= İPTAL ================= -->
+  <section class="view" id="view-revocation">
+    <div class="page-head">
+      <div><h1>İptal (OCSP / CRL)</h1><p class="page-sub">İptal edilmiş sertifikalar ve doğrulama uç noktaları.</p></div>
+    </div>
+    <div class="stats" id="revocation-stats"></div>
+    <div class="table-wrap">
+      <div class="table-head"><h2>İptal edilmiş sertifikalar</h2></div>
+      <table>
+        <thead><tr><th>Konu (CN)</th><th>Seri numarası</th><th>Profil</th><th>İptal tarihi</th></tr></thead>
+        <tbody id="revoked-body"><tr><td colspan="4" class="empty">yükleniyor…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<!-- ================= MODAL ================= -->
+<div class="modal-backdrop" id="modal-backdrop">
+  <div class="modal">
+    <div class="modal-head" id="modal-title">—</div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot">
+      <button class="btn" id="modal-cancel">Kapat</button>
+      <button class="btn btn-primary" id="modal-save">Kaydet</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { users: [], apps: [], certs: [], orders: [], acmeAccounts: [] };
+
+  function showErr(m) { $('ok').classList.remove('show'); var e = $('err'); e.textContent = m; e.classList.add('show'); }
+  function showOk(m) { $('err').classList.remove('show'); var e = $('ok'); e.textContent = m; e.classList.add('show'); setTimeout(function(){ e.classList.remove('show'); }, 4000); }
+  function clearBanners() { $('err').classList.remove('show'); $('ok').classList.remove('show'); }
+
+  async function api(path, opts) {
+    var res = await fetch(path, Object.assign({ credentials: 'include', headers: { 'content-type': 'application/json' } }, opts || {}));
+    var data = null;
+    try { data = await res.json(); } catch (e) { /* boş gövde */ }
+    if (!res.ok) throw new Error((data && (data.error_description || data.error)) || ('HTTP ' + res.status));
+    return data;
+  }
+  var get = function (p) { return api(p); };
+  var post = function (p, b) { return api(p, { method: 'POST', body: JSON.stringify(b || {}) }); };
+
+  function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+  function fmtDate(ms) { return ms ? new Date(Number(ms)).toLocaleString('tr-TR') : '—'; }
+  function shortId(s) { return s ? esc(String(s).slice(0, 12)) + '…' : '—'; }
+
+  // ---------- navigasyon ----------
+  document.querySelectorAll('.nav-item').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('.nav-item').forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('active'); });
+      $('view-' + btn.dataset.view).classList.add('active');
+      clearBanners();
+    });
+  });
+
+  // ---------- modal ----------
+  var modalSaveHandler = null;
+  function openModal(title, bodyHtml, onSave, saveLabel) {
+    $('modal-title').textContent = title;
+    $('modal-body').innerHTML = bodyHtml;
+    modalSaveHandler = onSave;
+    $('modal-save').textContent = saveLabel || 'Kaydet';
+    $('modal-save').style.display = onSave ? '' : 'none';
+    $('modal-backdrop').classList.add('open');
+  }
+  function closeModal() { $('modal-backdrop').classList.remove('open'); modalSaveHandler = null; }
+  $('modal-cancel').addEventListener('click', closeModal);
+  $('modal-backdrop').addEventListener('click', function (e) { if (e.target === $('modal-backdrop')) closeModal(); });
+  $('modal-save').addEventListener('click', function () {
+    if (!modalSaveHandler) return;
+    var btn = this; btn.disabled = true; btn.textContent = 'Kaydediliyor…';
+    Promise.resolve(modalSaveHandler())
+      .then(function () { closeModal(); })
+      .catch(function (e) { showErr(e.message); })
+      .finally(function () { btn.disabled = false; btn.textContent = 'Kaydet'; });
+  });
+
+  // ---------- KULLANICILAR ----------
+  function renderUsers() {
+    var q = ($('user-filter').value || '').toLowerCase();
+    var rows = state.users.filter(function (u) {
+      return !q || (u.username || '').toLowerCase().indexOf(q) >= 0 || (u.email || '').toLowerCase().indexOf(q) >= 0;
+    });
+    $('user-count').textContent = state.users.length;
+    var tb = $('users-body');
+    if (!rows.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">Kayıt yok.</td></tr>'; return; }
+    tb.innerHTML = '';
+    rows.forEach(function (u) {
+      var statusBadge = u.status === 'active'
+        ? '<span class="badge badge-ok">aktif</span>'
+        : '<span class="badge badge-warn">' + esc(u.status) + '</span>';
+      var roleBadge = u.role === 'admin' ? '<span class="badge badge-dark">yönetici</span>' : '<span class="badge badge-neutral">kullanıcı</span>';
+      var profiles = (u.certProfiles && u.certProfiles.length)
+        ? u.certProfiles.map(function (p) { return '<span class="scope-chip">' + esc(p) + '</span>'; }).join('')
+        : '<span class="scope-chip">client-auth (varsayılan)</span>';
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td><div class="cell-strong">' + esc(u.username) + '</div><div class="cell-sub">' + esc(u.email) + '</div>'
+          + '<div class="cell-sub mono">' + esc(u.userId) + '</div></td>' +
+        '<td>' + statusBadge + '</td>' +
+        '<td>' + roleBadge + '</td>' +
+        '<td>' + profiles + '</td>' +
+        '<td><div class="btn-row"></div></td>';
+      var actions = tr.querySelector('.btn-row');
+
+      var roleBtn = document.createElement('button');
+      roleBtn.className = 'btn btn-sm';
+      roleBtn.textContent = u.role === 'admin' ? 'Yöneticiliği al' : 'Yönetici yap';
+      roleBtn.addEventListener('click', function () {
+        post('/admin/users/role', { userId: u.userId, role: u.role === 'admin' ? 'user' : 'admin' })
+          .then(function () { showOk('Rol güncellendi.'); return loadUsers(); })
+          .catch(function (e) { showErr(e.message); });
+      });
+      actions.appendChild(roleBtn);
+
+      var certBtn = document.createElement('button');
+      certBtn.className = 'btn btn-sm';
+      certBtn.textContent = 'Sertifika yetkileri';
+      certBtn.addEventListener('click', function () { openCertProfileModal(u); });
+      actions.appendChild(certBtn);
+
+      var sessBtn = document.createElement('button');
+      sessBtn.className = 'btn btn-sm';
+      sessBtn.textContent = 'Oturumlar';
+      sessBtn.addEventListener('click', function () {
+        $('session-user-id').value = u.userId;
+        document.querySelector('.nav-item[data-view="sessions"]').click();
+        loadSessionsFor(u.userId);
+      });
+      actions.appendChild(sessBtn);
+
+      tb.appendChild(tr);
+    });
+  }
+
+  function openCertProfileModal(u) {
+    var all = ['client-auth', 'server-auth', 'timestamping'];
+    var current = u.certProfiles || [];
+    var html = '<p class="field-hint" style="margin-top:0">Kullanıcının hangi profillerde sertifika talep edebileceğini belirler. '
+      + '<strong>client-auth</strong> herkese açıktır. Yöneticiler tüm profilleri kullanabilir.</p>';
+    all.forEach(function (p) {
+      var checked = current.indexOf(p) >= 0 ? 'checked' : '';
+      html += '<div class="check-row"><input type="checkbox" id="cp-' + p + '" value="' + p + '" ' + checked + '>'
+        + '<label for="cp-' + p + '">' + p + '</label></div>';
+    });
+    openModal('Sertifika yetkileri — ' + u.username, html, function () {
+      var selected = all.filter(function (p) { return $('cp-' + p).checked; });
+      return post('/admin/users/cert-profiles', { userId: u.userId, certProfiles: selected })
+        .then(function () { showOk('Sertifika yetkileri güncellendi.'); return loadUsers(); });
+    });
+  }
+
+  $('user-filter').addEventListener('input', renderUsers);
+
+  async function loadUsers() {
+    try {
+      var data = await get('/admin/users');
+      state.users = data.users || [];
+      renderUsers();
+      renderOverview();
+    } catch (e) { showErr(e.message); }
+  }
+
+  // ---------- OTURUMLAR ----------
+  async function loadSessionsFor(userId) {
+    try {
+      var data = await get('/admin/sessions?userId=' + encodeURIComponent(userId));
+      var tb = $('sessions-body');
+      var list = (data.sessions || []).filter(function (s) { return !s.revoked; });
+      if (!list.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">Bu kullanıcının aktif oturumu yok.</td></tr>'; return; }
+      tb.innerHTML = '';
+      list.forEach(function (s) {
+        var tr = document.createElement('tr');
+        var auds = (s.audiences || []).map(function (a) { return '<span class="scope-chip">' + esc(a) + '</span>'; }).join('');
+        tr.innerHTML =
+          '<td class="mono">' + esc(s.ip || '—') + '</td>' +
+          '<td><div class="cell-sub">' + esc(s.userAgent || '—') + '</div></td>' +
+          '<td>' + fmtDate(s.createdAt) + '</td>' +
+          '<td>' + auds + '</td>' +
+          '<td></td>';
+        var btn = document.createElement('button');
+        btn.className = 'btn btn-sm btn-danger';
+        btn.textContent = 'Sonlandır';
+        btn.addEventListener('click', function () {
+          post('/admin/sessions/revoke', { sessionId: s.sessionId })
+            .then(function () { showOk('Oturum sonlandırıldı.'); return loadSessionsFor(userId); })
+            .catch(function (e) { showErr(e.message); });
+        });
+        tr.children[4].appendChild(btn);
+        tb.appendChild(tr);
+      });
+    } catch (e) { showErr(e.message); }
+  }
+  $('btn-load-sessions').addEventListener('click', function () {
+    var id = $('session-user-id').value.trim();
+    if (id) loadSessionsFor(id);
+  });
+
+  // ---------- UYGULAMALAR ----------
+  var KNOWN_SCOPES = ['openid', 'profile', 'email', 'dns:read', 'dns:write', 'cert:issue', 'admin:read'];
+
+  function renderApps() {
+    $('app-count').textContent = state.apps.length;
+    var tb = $('apps-body');
+    if (!state.apps.length) { tb.innerHTML = '<tr><td colspan="4" class="empty">Kayıtlı uygulama yok.</td></tr>'; return; }
+    tb.innerHTML = '';
+    state.apps.forEach(function (c) {
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td><div class="cell-strong">' + esc(c.name) + '</div><div class="cell-sub mono">' + esc(c.clientId) + '</div>'
+          + '<div class="cell-sub mono">gizli anahtar: ' + esc(c.clientSecretMasked || '••••') + '</div></td>' +
+        '<td>' + (c.redirectUris || []).map(function (u) { return '<div class="cell-sub mono">' + esc(u) + '</div>'; }).join('') + '</td>' +
+        '<td>' + (c.allowedScopes || []).map(function (s) { return '<span class="scope-chip">' + esc(s) + '</span>'; }).join('') + '</td>' +
+        '<td><div class="btn-row"></div></td>';
+      var actions = tr.querySelector('.btn-row');
+
+      var editBtn = document.createElement('button');
+      editBtn.className = 'btn btn-sm';
+      editBtn.textContent = 'Düzenle';
+      editBtn.addEventListener('click', function () { openAppModal(c); });
+      actions.appendChild(editBtn);
+
+      var delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-sm btn-danger';
+      delBtn.textContent = 'Sil';
+      delBtn.addEventListener('click', function () {
+        openModal('Uygulamayı sil', '<p>“' + esc(c.name) + '” uygulamasını silmek üzeresiniz. '
+          + 'Bu uygulamayı kullanan tüm entegrasyonlar <strong>anında çalışmayı durdurur</strong>.</p>', function () {
+          return post('/admin/oauth-clients/delete', { clientId: c.clientId })
+            .then(function () { showOk('Uygulama silindi.'); return loadApps(); });
+        }, 'Sil');
+      });
+      actions.appendChild(delBtn);
+
+      tb.appendChild(tr);
+    });
+  }
+
+  function scopeCheckboxes(selected) {
+    return KNOWN_SCOPES.map(function (s) {
+      var checked = (selected || []).indexOf(s) >= 0 ? 'checked' : '';
+      return '<div class="check-row"><input type="checkbox" id="sc-' + s.replace(':', '-') + '" value="' + s + '" ' + checked + '>'
+        + '<label for="sc-' + s.replace(':', '-') + '">' + s + '</label></div>';
+    }).join('');
+  }
+  function readScopes() {
+    return KNOWN_SCOPES.filter(function (s) { return $('sc-' + s.replace(':', '-')).checked; });
+  }
+
+  function openAppModal(existing) {
+    var isEdit = !!existing;
+    var html =
+      '<label>Görünen ad</label><input type="text" id="app-name" value="' + esc(isEdit ? existing.name : '') + '" placeholder="DNS Paneli">' +
+      (isEdit ? '' : '<label>İstemci kimliği (client_id)</label><input type="text" id="app-id" placeholder="dns-fitfak-net">') +
+      '<label>Yönlendirme adresleri (her satıra bir tane)</label>' +
+      '<textarea id="app-redirects" placeholder="https://fitfak.net/oauth/callback">' + esc((isEdit ? existing.redirectUris : []).join('\n')) + '</textarea>' +
+      '<div class="field-hint">OAuth2 geri dönüş adresleri. Tam eşleşme aranır.</div>' +
+      '<label>İzin kapsamları (scope)</label>' + scopeCheckboxes(isEdit ? existing.allowedScopes : ['openid', 'profile']);
+
+    openModal(isEdit ? ('Uygulamayı düzenle — ' + existing.name) : 'Yeni uygulama kaydet', html, function () {
+      var redirects = $('app-redirects').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+      var payload = { name: $('app-name').value.trim(), redirectUris: redirects, allowedScopes: readScopes() };
+      if (isEdit) {
+        payload.clientId = existing.clientId;
+        return post('/admin/oauth-clients/update', payload).then(function () { showOk('Uygulama güncellendi.'); return loadApps(); });
+      }
+      payload.clientId = $('app-id').value.trim();
+      return post('/admin/oauth-clients', payload).then(function (created) {
+        return loadApps().then(function () {
+          openModal('Uygulama oluşturuldu',
+            '<p>İstemci gizli anahtarı <strong>yalnızca şimdi</strong> gösterilir. Kaydedin — bir daha görüntülenemez.</p>'
+            + '<div class="secret-reveal"><span class="label">client_id</span>' + esc(created.clientId) + '</div>'
+            + '<div class="secret-reveal"><span class="label">client_secret</span>' + esc(created.clientSecret) + '</div>', null);
+        });
+      });
+    }, isEdit ? 'Güncelle' : 'Oluştur');
+  }
+  $('btn-new-app').addEventListener('click', function () { openAppModal(null); });
+
+  async function loadApps() {
+    try {
+      var data = await get('/admin/oauth-clients');
+      state.apps = data.clients || [];
+      renderApps();
+      renderOverview();
+    } catch (e) { showErr(e.message); }
+  }
+
+  // ---------- SERTİFİKALAR ----------
+  function renderCerts() {
+    $('cert-count').textContent = state.certs.length;
+    var tb = $('certs-body');
+    if (!state.certs.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">Henüz sertifika verilmemiş.</td></tr>'; return; }
+    tb.innerHTML = '';
+    state.certs.forEach(function (c) {
+      var tr = document.createElement('tr');
+      var status = c.status === 'valid' ? '<span class="badge badge-ok">geçerli</span>' : '<span class="badge badge-bad">iptal</span>';
+      var src = c.issuedVia === 'acme' ? '<span class="badge badge-neutral">ACME</span>' : '<span class="badge badge-neutral">cihaz kodu</span>';
+      tr.innerHTML =
+        '<td><div class="cell-strong">' + esc(c.subjectCn) + '</div><div class="cell-sub mono">' + shortId(c.serialNumberHex) + '</div></td>' +
+        '<td><span class="scope-chip">' + esc(c.profile) + '</span></td>' +
+        '<td>' + src + '</td>' +
+        '<td><div class="cell-sub">' + fmtDate(c.notBefore) + '</div><div class="cell-sub">→ ' + fmtDate(c.notAfter) + '</div></td>' +
+        '<td>' + status + '</td>' +
+        '<td></td>';
+      if (c.status === 'valid') {
+        var btn = document.createElement('button');
+        btn.className = 'btn btn-sm btn-danger';
+        btn.textContent = 'İptal et';
+        btn.addEventListener('click', function () {
+          openModal('Sertifikayı iptal et',
+            '<p>“' + esc(c.subjectCn) + '” sertifikası iptal edilecek. Bu işlem <strong>geri alınamaz</strong>; '
+            + 'sertifika anında OCSP ve CRL üzerinden iptal edilmiş olarak görünür.</p>'
+            + '<label>İptal nedeni</label><select id="revoke-reason">'
+            + '<option value="unspecified">Belirtilmemiş</option>'
+            + '<option value="keyCompromise">Anahtar ele geçirildi</option>'
+            + '<option value="superseded">Yenisiyle değiştirildi</option>'
+            + '<option value="cessationOfOperation">Kullanımdan kaldırıldı</option></select>', function () {
+            return post('/admin/certificates/revoke', { serialNumberHex: c.serialNumberHex, reason: $('revoke-reason').value })
+              .then(function () { showOk('Sertifika iptal edildi.'); return loadCerts(); });
+          }, 'İptal et');
+        });
+        tr.children[5].appendChild(btn);
+      }
+      tb.appendChild(tr);
+    });
+    renderRevocation();
+  }
+
+  async function loadCerts() {
+    try {
+      var data = await get('/admin/certificates');
+      state.certs = data.certificates || [];
+      renderCerts();
+      renderOverview();
+    } catch (e) { showErr(e.message); }
+  }
+
+  // ---------- ACME ----------
+  async function loadAcme() {
+    try {
+      var data = await get('/admin/acme-orders');
+      state.orders = data.orders || [];
+      state.acmeAccounts = data.accounts || [];
+
+      $('order-count').textContent = state.orders.length;
+      var ob = $('orders-body');
+      if (!state.orders.length) { ob.innerHTML = '<tr><td colspan="4" class="empty">ACME siparişi yok.</td></tr>'; }
+      else {
+        ob.innerHTML = '';
+        state.orders.forEach(function (o) {
+          var badge = o.status === 'valid' ? '<span class="badge badge-ok">tamamlandı</span>'
+            : o.status === 'pending' ? '<span class="badge badge-warn">beklemede</span>'
+            : '<span class="badge badge-neutral">' + esc(o.status) + '</span>';
+          var idents = (o.identifiers || []).map(function (i) { return '<span class="scope-chip">' + esc(i.value) + '</span>'; }).join('');
+          ob.innerHTML += '<tr><td>' + idents + '</td><td>' + badge + '</td>'
+            + '<td class="mono cell-sub">' + (o.certificateSerial ? shortId(o.certificateSerial) : '—') + '</td>'
+            + '<td>' + fmtDate(o.createdAt) + '</td></tr>';
+        });
+      }
+
+      var ab = $('acme-accounts-body');
+      if (!state.acmeAccounts.length) { ab.innerHTML = '<tr><td colspan="3" class="empty">ACME hesabı yok.</td></tr>'; }
+      else {
+        ab.innerHTML = '';
+        state.acmeAccounts.forEach(function (a) {
+          ab.innerHTML += '<tr><td class="mono">' + shortId(a.accountId) + '</td>'
+            + '<td>' + esc((a.contact || []).join(', ') || '—') + '</td>'
+            + '<td><span class="badge badge-ok">' + esc(a.status) + '</span></td></tr>';
+        });
+      }
+      renderOverview();
+    } catch (e) { showErr(e.message); }
+  }
+
+  // ---------- İPTAL ----------
+  function renderRevocation() {
+    var revoked = state.certs.filter(function (c) { return c.status === 'revoked'; });
+    $('revocation-stats').innerHTML =
+      '<div class="stat"><div class="stat-label">İptal edilen</div><div class="stat-value">' + revoked.length + '</div>'
+        + '<div class="stat-note">CRL ve OCSP üzerinden yayınlanır</div></div>' +
+      '<div class="stat"><div class="stat-label">OCSP</div><div class="stat-value" style="font-size:14px;padding-top:8px">status.trust.fitfak.net/ocsp</div>'
+        + '<div class="stat-note">RFC 6960 · POST</div></div>' +
+      '<div class="stat"><div class="stat-label">CRL</div><div class="stat-value" style="font-size:14px;padding-top:8px">status.trust.fitfak.net/crl</div>'
+        + '<div class="stat-note">RFC 5280 · 5 dk önbellek</div></div>';
+
+    var tb = $('revoked-body');
+    if (!revoked.length) { tb.innerHTML = '<tr><td colspan="4" class="empty">İptal edilmiş sertifika yok.</td></tr>'; return; }
+    tb.innerHTML = '';
+    revoked.forEach(function (c) {
+      tb.innerHTML += '<tr><td class="cell-strong">' + esc(c.subjectCn) + '</td>'
+        + '<td class="mono cell-sub">' + esc(c.serialNumberHex) + '</td>'
+        + '<td><span class="scope-chip">' + esc(c.profile) + '</span></td>'
+        + '<td>' + fmtDate(c.revokedAt) + '</td></tr>';
+    });
+  }
+
+  // ---------- GENEL BAKIŞ ----------
+  function renderOverview() {
+    var activeUsers = state.users.filter(function (u) { return u.status === 'active'; }).length;
+    var admins = state.users.filter(function (u) { return u.role === 'admin'; }).length;
+    var validCerts = state.certs.filter(function (c) { return c.status === 'valid'; }).length;
+    var revokedCerts = state.certs.length - validCerts;
+    $('overview-stats').innerHTML =
+      '<div class="stat"><div class="stat-label">Kullanıcılar</div><div class="stat-value">' + state.users.length + '</div>'
+        + '<div class="stat-note">' + activeUsers + ' aktif · ' + admins + ' yönetici</div></div>' +
+      '<div class="stat"><div class="stat-label">Uygulamalar</div><div class="stat-value">' + state.apps.length + '</div>'
+        + '<div class="stat-note">OAuth2 istemcisi</div></div>' +
+      '<div class="stat"><div class="stat-label">Sertifikalar</div><div class="stat-value">' + validCerts + '</div>'
+        + '<div class="stat-note">' + revokedCerts + ' iptal edilmiş</div></div>' +
+      '<div class="stat"><div class="stat-label">ACME siparişleri</div><div class="stat-value">' + state.orders.length + '</div>'
+        + '<div class="stat-note">' + state.acmeAccounts.length + ' hesap</div></div>';
+
+    $('endpoints-body').innerHTML =
+      '<tr><td class="cell-strong">Kimlik / SSO</td><td class="mono">session.fitfak.net</td><td class="mono cell-sub">/oauth/authorize · /oauth/token · /.well-known/jwks.json</td></tr>' +
+      '<tr><td class="cell-strong">Cihaz kodu</td><td class="mono">session.fitfak.net</td><td class="mono cell-sub">/oauth/device/code · /device</td></tr>' +
+      '<tr><td class="cell-strong">ACME</td><td class="mono">trust.fitfak.net</td><td class="mono cell-sub">/acme/directory</td></tr>' +
+      '<tr><td class="cell-strong">OCSP</td><td class="mono">status.trust.fitfak.net</td><td class="mono cell-sub">/ocsp</td></tr>' +
+      '<tr><td class="cell-strong">CRL</td><td class="mono">status.trust.fitfak.net</td><td class="mono cell-sub">/crl</td></tr>';
+  }
+
+  // ---------- başlangıç ----------
+  async function loadAll() {
+    await Promise.all([loadUsers(), loadApps(), loadCerts(), loadAcme()]);
+  }
+  $('btn-refresh-all').addEventListener('click', function () {
+    clearBanners();
+    loadAll().then(function () { showOk('Yenilendi.'); });
+  });
+
+  get('/oauth/userinfo').then(function (me) {
+    $('whoami').innerHTML = 'Oturum: <strong style="color:#fff">' + esc(me.preferred_username || me.sub) + '</strong>';
+  }).catch(function () { $('whoami').textContent = 'Oturum bilgisi alınamadı'; });
+
+  loadAll();
+}());
+</script>
+</body>
+</html>
