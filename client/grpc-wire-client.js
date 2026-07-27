@@ -1,5 +1,17 @@
 'use strict';
 
+// ESKİMİŞ (superseded) -- yeni kod bunu KULLANMAMALI.
+//
+// Bu, veritabanına bağlanmak için elle yazılmış bir gRPC istemcisiydi.
+// Yerini @fitfak/database'in kendi istemcisi aldı; bağlantı artık
+// core/db-bootstrap.js üzerinden kuruluyor ve bootstrap TLS -> enrolment ->
+// mTLS akışının tamamını, sertifika yenilemeyi ve yeniden başlatmada
+// sertifikadan devam etmeyi kapsıyor.
+//
+// Burada yalnızca test/mtls-demo.js'in mTLS el sıkışma davranışını
+// göstermek için duruyor. Veritabanı erişimi için kullanılmıyor.
+
+
 const http2 = require('node:http2');
 const { encodeMessage, decodeMessage } = require('./wire/protobuf'); 
 
