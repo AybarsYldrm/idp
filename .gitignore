@@ -141,3 +141,23 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# ---- fitfak-idp: sır taşıyan dizinler ----------------------------------------
+# Bunların hiçbiri depoya girmemeli. Bir kez girdiğinde git geçmişinde kalır ve
+# tek çare ilgili kimlik bilgisini döndürmektir (bkz. SECURITY-ROTATION.md).
+#
+# NOT: .gitignore satır sonu yorumu DESTEKLEMEZ -- "dir/  # açıklama" yazmak
+# deseni boşluklarla ve '#' ile birlikte alır, dolayısıyla hiçbir şeyi eşlemez.
+
+# ES256 token imzalama anahtarı
+.keys/
+# kök + ara CA özel anahtarları
+.certs/
+# veritabanına bağlanmak için kullanılan mTLS istemci anahtarı
+.identity/
+# şifreli veritabanı dizini
+.data/
+# TSA seri sayacı
+.tsa/
+# sunucu/istemci TLS özel anahtarları
+certs/*.key
