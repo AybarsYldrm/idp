@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FITFAK UI — tasarım paketi</title>
+<link rel="stylesheet" href="/static/fitfak-ui.css">
+</head>
+<body>
+
+<!--
+  Bu sayfa tasarım paketinin canlı referansı.
+
+  Başka bir servise taşımak için gereken tek şey:
+      <link rel="stylesheet" href=".../fitfak-ui.css">
+  Yapı aracı, derleme adımı ya da bağımlılık yok.
+
+  Kendi vurgu renginizi almak için tek bir değişkeni ezin:
+      :root { --fk-accent: #0a7c5a; --fk-accent-hover: #086349; }
+  Geri kalan her şey (odak halkası, düğme, anahtar, rozet) ona uyar.
+-->
+
+<header class="fk-header">
+  <div class="fk-container fk-container--wide fk-header__inner">
+    <a class="fk-brand" href="/">
+      <span class="fk-brand__mark">F</span>
+      FITFAK UI
+    </a>
+    <span class="fk-grow"></span>
+    <span class="fk-badge">tasarım paketi</span>
+  </div>
+</header>
+
+<main class="fk-container fk-container--wide" style="padding-top:2rem;padding-bottom:4rem">
+  <div class="fk-stack-lg">
+
+    <section>
+      <h1>Bileşenler</h1>
+      <p class="fk-muted">
+        Açık ve koyu tema, sistem tercihine göre otomatik. Bu sayfayı işletim
+        sisteminizin tema ayarını değiştirerek deneyebilirsiniz.
+      </p>
+    </section>
+
+    <section class="fk-card">
+      <div class="fk-card__header">
+        <h2 class="fk-card__title">Düğmeler</h2>
+        <p class="fk-card__subtitle">Hepsi en az 44px yükseklikte — dokunma hedefi alt sınırı.</p>
+      </div>
+      <div class="fk-row">
+        <button class="fk-btn fk-btn--primary">Birincil</button>
+        <button class="fk-btn fk-btn--secondary">İkincil</button>
+        <button class="fk-btn fk-btn--ghost">Sade</button>
+        <button class="fk-btn fk-btn--danger">Tehlikeli</button>
+        <button class="fk-btn fk-btn--primary" aria-busy="true">Yükleniyor</button>
+        <button class="fk-btn fk-btn--primary" disabled>Devre dışı</button>
+      </div>
+    </section>
+
+    <section class="fk-card">
+      <div class="fk-card__header">
+        <h2 class="fk-card__title">Form</h2>
+        <p class="fk-card__subtitle">
+          Alanlar 16px yazı tipi kullanır: daha küçüğü iOS Safari'de odaklanınca
+          sayfayı yakınlaştırır.
+        </p>
+      </div>
+      <label class="fk-field">
+        <span class="fk-label">E-posta</span>
+        <input class="fk-input" type="email" placeholder="ad@fitfak.net" autocomplete="email">
+        <span class="fk-hint">Hesabınıza bağlı doğrulanmış adres.</span>
+      </label>
+      <label class="fk-field">
+        <span class="fk-label">Parola</span>
+        <input class="fk-input" type="password" autocomplete="current-password">
+        <span class="fk-hint">Parola bu sayfadan çıkmaz — SRP ile doğrulanır.</span>
+      </label>
+      <label class="fk-field">
+        <span class="fk-label">Doğrulama kodu</span>
+        <input class="fk-input fk-input--code" inputmode="numeric" maxlength="6" placeholder="000000">
+      </label>
+      <label class="fk-field">
+        <span class="fk-label">Hakkında</span>
+        <textarea class="fk-textarea" placeholder="Kısa bir tanıtım"></textarea>
+      </label>
+      <label class="fk-field">
+        <span class="fk-label">Dil</span>
+        <select class="fk-select">
+          <option>Türkçe</option>
+          <option>English</option>
+        </select>
+      </label>
+      <label class="fk-field">
+        <span class="fk-label">Hatalı alan</span>
+        <input class="fk-input" aria-invalid="true" value="geçersiz@">
+      </label>
+    </section>
+
+    <section class="fk-card">
+      <div class="fk-card__header"><h2 class="fk-card__title">Bildirimler</h2></div>
+      <div class="fk-stack-sm">
+        <div class="fk-alert fk-alert--error">Kimlik doğrulama başarısız.</div>
+        <div class="fk-alert fk-alert--success">Profiliniz güncellendi.</div>
+        <div class="fk-alert fk-alert--warning">Yeni bir cihazdan giriş yapıldı.</div>
+        <div class="fk-alert fk-alert--info">Doğrulama kodu e-postanıza gönderildi.</div>
+      </div>
+    </section>
+
+    <section class="fk-card">
+      <div class="fk-card__header">
+        <h2 class="fk-card__title">Hesap seçici</h2>
+        <p class="fk-card__subtitle">Aynı tarayıcıda açık hesaplar.</p>
+      </div>
+      <ul class="fk-list">
+        <li class="fk-list__item">
+          <button class="fk-option">
+            <span class="fk-avatar fk-avatar--fallback">AY</span>
+            <span class="fk-grow">
+              <span class="fk-option__title">Aybars Yıldırım</span><br>
+              <span class="fk-option__meta">aybars@fitfak.net</span>
+            </span>
+            <span class="fk-badge fk-badge--success">aktif</span>
+          </button>
+        </li>
+        <li class="fk-list__item">
+          <button class="fk-option">
+            <span class="fk-avatar fk-avatar--fallback">TK</span>
+            <span class="fk-grow">
+              <span class="fk-option__title">Test Kullanıcı</span><br>
+              <span class="fk-option__meta">test@fitfak.net</span>
+            </span>
+          </button>
+        </li>
+      </ul>
+    </section>
+
+    <section class="fk-card">
+      <div class="fk-card__header">
+        <h2 class="fk-card__title">Tercihler</h2>
+        <p class="fk-card__subtitle">Güvenlik uyarıları kapatılamaz — devre dışı anahtar bunu gösterir.</p>
+      </div>
+      <div class="fk-stack-sm">
+        <label class="fk-switch">
+          <input type="checkbox" checked>
+          <span class="fk-switch__track"></span>
+          <span class="fk-grow">Yeni cihaz uyarısı</span>
+        </label>
+        <label class="fk-switch">
+          <input type="checkbox">
+          <span class="fk-switch__track"></span>
+          <span class="fk-grow">Ürün duyuruları</span>
+        </label>
+        <label class="fk-switch">
+          <input type="checkbox" checked disabled>
+          <span class="fk-switch__track"></span>
+          <span class="fk-grow">Güvenlik uyarıları <span class="fk-badge">zorunlu</span></span>
+        </label>
+      </div>
+    </section>
+
+    <section class="fk-card">
+      <div class="fk-card__header">
+        <h2 class="fk-card__title">Oturumlar</h2>
+        <p class="fk-card__subtitle">Dar ekranda yatay kayar, sayfa taşmaz.</p>
+      </div>
+      <div class="fk-table-wrap">
+        <table class="fk-table">
+          <thead>
+            <tr><th>Cihaz</th><th>IP</th><th>Son görülme</th><th>Durum</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Chrome — Windows</td><td class="fk-mono">203.0.113.7</td><td>az önce</td>
+              <td><span class="fk-badge fk-badge--success">bu cihaz</span></td>
+              <td><button class="fk-btn fk-btn--ghost fk-btn--sm" disabled>Kapat</button></td>
+            </tr>
+            <tr>
+              <td>Safari — iOS</td><td class="fk-mono">198.51.100.4</td><td>2 saat önce</td>
+              <td><span class="fk-badge">etkin</span></td>
+              <td><button class="fk-btn fk-btn--ghost fk-btn--sm">Kapat</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="fk-card">
+      <div class="fk-card__header"><h2 class="fk-card__title">Rozetler</h2></div>
+      <div class="fk-row">
+        <span class="fk-badge">nötr</span>
+        <span class="fk-badge fk-badge--success">doğrulandı</span>
+        <span class="fk-badge fk-badge--warning">beklemede</span>
+        <span class="fk-badge fk-badge--danger">iptal edildi</span>
+      </div>
+    </section>
+
+    <section class="fk-card">
+      <div class="fk-card__header">
+        <h2 class="fk-card__title">Giriş kartı — birleşik örnek</h2>
+      </div>
+      <div class="fk-container fk-container--narrow">
+        <div class="fk-card fk-card--flat" style="border-color:var(--fk-border)">
+          <div class="fk-card__header fk-center-text">
+            <span class="fk-brand__mark" style="margin:0 auto .75rem">F</span>
+            <h2 class="fk-card__title">Oturum açın</h2>
+            <p class="fk-card__subtitle">FITFAK hesabınızla devam edin</p>
+          </div>
+          <label class="fk-field">
+            <span class="fk-label">E-posta</span>
+            <input class="fk-input" type="email" autocomplete="email">
+          </label>
+          <label class="fk-field">
+            <span class="fk-label">Parola</span>
+            <input class="fk-input" type="password" autocomplete="current-password">
+          </label>
+          <button class="fk-btn fk-btn--primary fk-btn--block">Devam et</button>
+          <hr class="fk-divider">
+          <p class="fk-small fk-muted fk-center-text" style="margin:0">
+            Parolanız bu sayfadan çıkmaz.
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+</body>
+</html>

@@ -1154,6 +1154,10 @@ async function main() {
     '/login': 'demo-login.html',
     '/portal': 'portal.html',
     '/device': 'demo-login.html',
+    '/hesap': 'portal.html',   // Türkçe takma ad
+    // Tasarım paketinin canlı referansı. Diğer servisler fitfak-ui.css'i
+    // kopyalayıp bu sayfaya bakarak aynı görünümü kurabilir.
+    '/design': 'design-pack.html',
   };
 
   function servePage(res, file) {
