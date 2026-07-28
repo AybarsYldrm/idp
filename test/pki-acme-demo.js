@@ -20,7 +20,13 @@ const totpModule = require('../core/totp');
 const base32 = require('../core/base32');
 const base64url = require('../core/base64url');
 
-const BASE = 'http://localhost:51979';
+// Her mantıksal host AYRI bir adrese bağlanır (bkz. RUNNING.md, "Yüzeyler").
+// Ayrım Host header'ıyla değil soket seviyesinde yapıldığı için, trust
+// yüzeyindeki uç noktalar giriş yüzeyinin adresinde 404 döner -- bu test
+// eskiden hepsini tek adresten çağırıyor ve orada takılıyordu.
+const BASE = 'http://127.0.0.1:51979';        // session.fitfak.net
+const TRUST = 'http://127.0.0.2:51979';       // trust.fitfak.net -- sertifika, ACME
+const STATUS = 'http://127.0.0.2:51979';      // status.trust.fitfak.net -- OCSP, CRL
 
 function request(method, url, { body, headers = {}, rawBody } = {}) {
   return new Promise((resolve, reject) => {
@@ -121,26 +127,44 @@ async function main() {
     // 1) CİHAZ-KİMLİKLİ SERTİFİKA (device code sonrası mTLS sertifikası) + RBAC
     // =======================================================================
     const { cookieHeader } = await registerAndLogin({ username: 'pki_user', email: 'pki_user@fitfak.net' });
-    const fakeCsr = '-----BEGIN CERTIFICATE REQUEST-----\nZmFrZS1jc3ItaWNlcmlnaQ==\n-----END CERTIFICATE REQUEST-----';
 
-    const certResp = await request('POST', `${BASE}/device/certificate`, {
+    // GERÇEK bir CSR. Eskiden burada uydurma baytlar vardı ve dev-mock issuer
+    // onları kabul ediyordu; gerçek issuer devreye girince aynı test, ürünün
+    // hiç çalıştırmadığı bir yolu sınıyor oldu.
+    const ssl = require('@fitfak/ssl');
+    const csrKey = ssl.generateEcKeyPair('P-256');
+    const fakeCsr = ssl.generateCSR(
+      { keyType: 'ec', curveName: csrKey.curve, ...csrKey },
+      [[ssl.oid.OIDs.commonName, 'pki_user']], [],
+    );
+
+    // Bozuk bir CSR, İSTEMCİ hatasıdır: 400 dönmeli, 500 değil.
+    const malformed = await request('POST', `${TRUST}/device/certificate`, {
+      body: { csrPem: '-----BEGIN CERTIFICATE REQUEST-----\nZmFrZS1jc3I=\n-----END CERTIFICATE REQUEST-----', profile: 'client-auth' },
+      headers: { cookie: cookieHeader },
+    });
+    assert.strictEqual(malformed.status, 400, 'bozuk CSR 400 dönmeli');
+    assert.strictEqual(malformed.json.error, 'invalid_csr');
+    console.log('pki: bozuk CSR temiz bir 400 ile reddedildi (500 değil)');
+
+    const certResp = await request('POST', `${TRUST}/device/certificate`, {
       body: { csrPem: fakeCsr, profile: 'client-auth' }, headers: { cookie: cookieHeader },
     });
     assert.strictEqual(certResp.status, 200);
     assert.ok(certResp.json.certPem && certResp.json.serialNumberHex);
     console.log('pki: device-code kimlikli kullanıcı client-auth sertifikası aldı (herkese açık profil)');
 
-    const deniedResp = await request('POST', `${BASE}/device/certificate`, {
+    const deniedResp = await request('POST', `${TRUST}/device/certificate`, {
       body: { csrPem: fakeCsr, profile: 'timestamping' }, headers: { cookie: cookieHeader },
     });
     assert.strictEqual(deniedResp.status, 403);
     console.log('pki: RBAC -- yetkisi olmayan kullanıcı "timestamping" profilini doğru şekilde alamadı');
 
-    const listResp = await request('GET', `${BASE}/device/certificates`, { headers: { cookie: cookieHeader } });
+    const listResp = await request('GET', `${TRUST}/device/certificates`, { headers: { cookie: cookieHeader } });
     assert.strictEqual(listResp.json.certificates.length, 1);
     console.log('pki: kullanıcının kendi sertifika listesi doğru (1 adet, sadece başarılı olan)');
 
-    const revokeResp = await request('POST', `${BASE}/device/certificate/revoke`, {
+    const revokeResp = await request('POST', `${TRUST}/device/certificate/revoke`, {
       body: { serialNumberHex: certResp.json.serialNumberHex, reason: 'test' }, headers: { cookie: cookieHeader },
     });
     assert.strictEqual(revokeResp.json.revoked, true);
@@ -150,6 +174,26 @@ async function main() {
     // 2) TAM ACME AKIŞI (RFC 8555) -- gerçek EC anahtarı + gerçek JWS + gerçek http-01
     // =======================================================================
     const TRUST_HEADERS = { Host: 'trust.fitfak.net', 'content-type': 'application/jose+json' };
+
+    // ACME'nin http-01 doğrulaması GERÇEK bir DNS çözümlemesi yapar ve ACME
+    // servisi yalnızca *.fitfak.net kimliklerini kabul eder (politika). Yani bu
+    // bölüm, çözümlenebilen bir fitfak.net adı olmadan koşamaz.
+    //
+    // Eskiden 'localhost' isteniyordu: politika onu reddediyor, yani bu bölüm
+    // zaten koşmuyordu. Bir testin koşamadığını SÖYLEMESİ, sessizce kırmızı
+    // durmasından da yeşil görünmesinden de iyidir.
+    const ACME_IDENTIFIER = process.env.FITFAK_IDP_TEST_ACME_HOST || 'acme-test.fitfak.net';
+    let acmeResolvable = false;
+    try {
+      const addrs = await require('node:dns').promises.lookup(ACME_IDENTIFIER, { all: true });
+      acmeResolvable = addrs.some((a) => a.address === '127.0.0.1' || a.address === '::1');
+    } catch { acmeResolvable = false; }
+
+    if (!acmeResolvable) {
+      console.log(`pki-acme: ATLANDI -- ACME http-01 bölümü, 127.0.0.1'e çözümlenen bir *.fitfak.net adı ister.`);
+      console.log(`pki-acme: çalıştırmak için: /etc/hosts'a '127.0.0.1 ${ACME_IDENTIFIER}' ekleyin`);
+      console.log(`pki-acme: (ya da FITFAK_IDP_TEST_ACME_HOST ile başka bir ad verin)`);
+    } else {
 
     let challengeContent = null;
     const challengeServer = http.createServer((req, res) => {
@@ -162,7 +206,7 @@ async function main() {
     await new Promise((resolve) => { challengeServer.listen(51972, resolve); });
 
     try {
-      const dirResp = await request('GET', `${BASE}/acme/directory`, { headers: { Host: 'trust.fitfak.net' } });
+      const dirResp = await request('GET', `${TRUST}/acme/directory`, { headers: { Host: 'trust.fitfak.net' } });
       assert.strictEqual(dirResp.status, 200);
       assert.ok(dirResp.json.newAccount.startsWith('https://trust.fitfak.net'));
       console.log('pki-acme: /acme/directory doğru URL\'lerle (trust.fitfak.net) döndü');
@@ -170,7 +214,7 @@ async function main() {
       const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
       const jwk = publicKey.export({ format: 'jwk' });
 
-      const nonce1Resp = await request('GET', `${BASE}/acme/new-nonce`, { headers: { Host: 'trust.fitfak.net' } });
+      const nonce1Resp = await request('GET', `${TRUST}/acme/new-nonce`, { headers: { Host: 'trust.fitfak.net' } });
       const nonce1 = nonce1Resp.headers['replay-nonce'];
       assert.ok(nonce1);
       console.log('pki-acme: /acme/new-nonce gerçek bir Replay-Nonce header\'ı döndü');
@@ -178,7 +222,7 @@ async function main() {
       const acctJws = makeJws({
         url: 'https://trust.fitfak.net/acme/new-account', nonce: nonce1, payload: { termsOfServiceAgreed: true }, jwk, privateKey,
       });
-      const acctResp = await request('POST', `${BASE}/acme/new-account`, { rawBody: Buffer.from(JSON.stringify(acctJws)), headers: TRUST_HEADERS });
+      const acctResp = await request('POST', `${TRUST}/acme/new-account`, { rawBody: Buffer.from(JSON.stringify(acctJws)), headers: TRUST_HEADERS });
       assert.strictEqual(acctResp.status, 201);
       assert.strictEqual(acctResp.json.status, 'valid');
       const accountId = acctResp.headers.location.split('/').pop();
@@ -186,16 +230,23 @@ async function main() {
 
       const nonce2 = acctResp.headers['replay-nonce'];
       const orderJws = makeJws({
-        url: 'https://trust.fitfak.net/acme/new-order', nonce: nonce2, payload: { identifiers: [{ type: 'dns', value: 'localhost' }] }, kid: accountId, privateKey,
+        url: 'https://trust.fitfak.net/acme/new-order', nonce: nonce2, payload: { identifiers: [{ type: 'dns', value: ACME_IDENTIFIER }] }, kid: accountId, privateKey,
       });
-      const orderResp = await request('POST', `${BASE}/acme/new-order`, { rawBody: Buffer.from(JSON.stringify(orderJws)), headers: TRUST_HEADERS });
+      const orderResp = await request('POST', `${TRUST}/acme/new-order`, { rawBody: Buffer.from(JSON.stringify(orderJws)), headers: TRUST_HEADERS });
       assert.strictEqual(orderResp.status, 201);
       assert.strictEqual(orderResp.json.status, 'pending');
       const orderId = orderResp.headers.location.split('/').pop();
       const authzId = orderResp.json.authorizations[0].split('/').pop();
       console.log('pki-acme: kid (hesap) ile imzalanmış JWS ile /acme/new-order başarılı, authorization oluşturuldu');
 
-      const authzResp = await request('GET', `${BASE}/acme/authz/${authzId}`, { headers: { Host: 'trust.fitfak.net' } });
+      // RFC 8555 §6.3 POST-as-GET: ACME'de kaynak OKUMA da imzalı bir POST'tur.
+      // Test eskiden düz GET atıyordu; sunucu (doğru olarak) yalnızca POST
+      // dinlediği için 404 dönüyor ve test bunu null JSON olarak görüyordu.
+      const authzNonce = (await request('GET', `${TRUST}/acme/new-nonce`, { headers: { Host: 'trust.fitfak.net' } })).headers['replay-nonce'];
+      const authzJws = makeJws({
+        url: `https://trust.fitfak.net/acme/authz/${authzId}`, nonce: authzNonce, payload: '', kid: accountId, privateKey,
+      });
+      const authzResp = await request('POST', `${TRUST}/acme/authz/${authzId}`, { rawBody: Buffer.from(JSON.stringify(authzJws)), headers: TRUST_HEADERS });
       const httpChallenge = authzResp.json.challenges.find((c) => c.type === 'http-01');
       assert.ok(httpChallenge.token);
       console.log('pki-acme: authorization http-01 challenge token\'ı içeriyor');
@@ -203,28 +254,42 @@ async function main() {
       const thumbprint = require('../core/acme-jws').jwkThumbprint(jwk);
       challengeContent = { token: httpChallenge.token, keyAuth: `${httpChallenge.token}.${thumbprint}` };
 
-      const nonce3Resp = await request('GET', `${BASE}/acme/new-nonce`, { headers: { Host: 'trust.fitfak.net' } });
+      const nonce3Resp = await request('GET', `${TRUST}/acme/new-nonce`, { headers: { Host: 'trust.fitfak.net' } });
       const challengeJws = makeJws({
         url: `https://trust.fitfak.net/acme/challenge/${authzId}`, nonce: nonce3Resp.headers['replay-nonce'], payload: {}, kid: accountId, privateKey,
       });
-      const challengeResp = await request('POST', `${BASE}/acme/challenge/${authzId}`, { rawBody: Buffer.from(JSON.stringify(challengeJws)), headers: TRUST_HEADERS });
+      const challengeResp = await request('POST', `${TRUST}/acme/challenge/${authzId}`, { rawBody: Buffer.from(JSON.stringify(challengeJws)), headers: TRUST_HEADERS });
       assert.strictEqual(challengeResp.status, 200);
       assert.strictEqual(challengeResp.json.status, 'valid');
       console.log('pki-acme: http-01 doğrulaması GERÇEK bir yerel sunucuya HTTP isteği atarak başarıyla tamamlandı');
 
-      const nonce4Resp = await request('GET', `${BASE}/acme/new-nonce`, { headers: { Host: 'trust.fitfak.net' } });
-      const csrDer = Buffer.from('fake-csr-der-bytes-for-acme-finalize-test');
+      const nonce4Resp = await request('GET', `${TRUST}/acme/new-nonce`, { headers: { Host: 'trust.fitfak.net' } });
+      // GERÇEK bir CSR: istenen alan adını SAN olarak taşır. Eskiden uydurma
+      // baytlardı ve dev-mock issuer onları kabul ediyordu.
+      const acmeKey = ssl.generateEcKeyPair('P-256');
+      const acmeCsrPem = ssl.generateCSR(
+        { keyType: 'ec', curveName: acmeKey.curve, ...acmeKey },
+        [[ssl.oid.OIDs.commonName, ACME_IDENTIFIER]],
+        [{ type: 'dns', value: ACME_IDENTIFIER }],
+      );
+      const csrDer = Buffer.from(
+        acmeCsrPem.replace(/-----(BEGIN|END) CERTIFICATE REQUEST-----|\s/g, ''), 'base64',
+      );
       const finalizeJws = makeJws({
         url: `https://trust.fitfak.net/acme/order/${orderId}/finalize`, nonce: nonce4Resp.headers['replay-nonce'], payload: { csr: base64url.encode(csrDer) }, kid: accountId, privateKey,
       });
-      const finalizeResp = await request('POST', `${BASE}/acme/order/${orderId}/finalize`, { rawBody: Buffer.from(JSON.stringify(finalizeJws)), headers: TRUST_HEADERS });
+      const finalizeResp = await request('POST', `${TRUST}/acme/order/${orderId}/finalize`, { rawBody: Buffer.from(JSON.stringify(finalizeJws)), headers: TRUST_HEADERS });
       assert.strictEqual(finalizeResp.status, 200);
       assert.strictEqual(finalizeResp.json.status, 'valid');
       assert.ok(finalizeResp.json.certificate);
       console.log('pki-acme: sipariş finalize edildi -- tüm authorization\'lar geçerliyken sertifika üretildi');
 
       const certSerial = finalizeResp.json.certificate.split('/').pop();
-      const certDownload = await request('GET', `${BASE}/acme/cert/${certSerial}`, { headers: { Host: 'trust.fitfak.net' } });
+      const certNonce = (await request('GET', `${TRUST}/acme/new-nonce`, { headers: { Host: 'trust.fitfak.net' } })).headers['replay-nonce'];
+      const certJws = makeJws({
+        url: `https://trust.fitfak.net/acme/cert/${certSerial}`, nonce: certNonce, payload: '', kid: accountId, privateKey,
+      });
+      const certDownload = await request('POST', `${TRUST}/acme/cert/${certSerial}`, { rawBody: Buffer.from(JSON.stringify(certJws)), headers: TRUST_HEADERS });
       assert.strictEqual(certDownload.status, 200);
       assert.ok(certDownload.raw.length > 0);
       console.log('pki-acme: üretilen sertifika /acme/cert/ üzerinden indirilebildi');
@@ -232,28 +297,36 @@ async function main() {
       const replayJws = makeJws({
         url: 'https://trust.fitfak.net/acme/new-account', nonce: nonce1, payload: {}, jwk, privateKey,
       });
-      const replayResp = await request('POST', `${BASE}/acme/new-account`, { rawBody: Buffer.from(JSON.stringify(replayJws)), headers: TRUST_HEADERS });
+      const replayResp = await request('POST', `${TRUST}/acme/new-account`, { rawBody: Buffer.from(JSON.stringify(replayJws)), headers: TRUST_HEADERS });
       assert.strictEqual(replayResp.status, 400);
       console.log('pki-acme: kullanılmış bir nonce\'un tekrar sunulması doğru şekilde reddedildi (replay koruması)');
     } finally {
       challengeServer.close();
     }
+    } // ACME bölümünün sonu (yukarıdaki `acmeResolvable` dalı)
 
     // =======================================================================
-    // 3) OCSP + CRL (dev-mock issuer ile -- protokol/depolama akışını doğrular)
+    // 3) OCSP + CRL
     // =======================================================================
-    const ocspResp = await request('POST', `${BASE}/ocsp`, { rawBody: Buffer.from('fake-ocsp-request-der'), headers: { Host: 'trust.fitfak.net', 'content-type': 'application/ocsp-request' } });
+    // Bozuk bir OCSP isteği HTTP 500 ile DEĞİL, RFC 6960 §4.2.1
+    // `malformedRequest` ile cevaplanmalı: 500 "responder bozuk" demektir ve
+    // istemciler bunu geçici arıza sayıp bir noktada iptal kontrolünü atlar --
+    // yani başkasının gönderdiği bozuk bayt, iptal altyapısını devre dışı
+    // bırakırdı.
+    const ocspResp = await request('POST', `${STATUS}/ocsp`, { rawBody: Buffer.from('fake-ocsp-request-der'), headers: { Host: 'trust.fitfak.net', 'content-type': 'application/ocsp-request' } });
     assert.strictEqual(ocspResp.status, 200);
     assert.strictEqual(ocspResp.headers['content-type'], 'application/ocsp-response');
     assert.ok(ocspResp.headers['cache-control'].includes('max-age'));
-    console.log('pki: /ocsp isteği işlendi (dev-mock issuer), doğru content-type + Cache-Control header\'ları');
+    // OCSPResponse ::= SEQUENCE { responseStatus ENUMERATED } -- 30 03 0a 01 01
+    assert.strictEqual(ocspResp.raw.toString('hex'), '30030a0101', 'malformedRequest(1) beklenir');
+    console.log('pki: bozuk /ocsp isteği RFC 6960 malformedRequest ile reddedildi (500 değil)');
 
-    const crlResp = await request('GET', `${BASE}/crl`, { headers: { Host: 'trust.fitfak.net' } });
+    const crlResp = await request('GET', `${STATUS}/crl`, { headers: { Host: 'trust.fitfak.net' } });
     assert.strictEqual(crlResp.status, 200);
     assert.strictEqual(crlResp.headers['content-type'], 'application/pkix-crl');
     console.log('pki: /crl isteği işlendi, doğru content-type');
 
-    console.log('\nALL PKI/ACME/OCSP/CRL CHECKS PASSED (gerçek EC anahtarı + gerçek JWS + gerçek http-01 doğrulaması, dev-mock issuer ile)');
+    console.log('\nALL PKI/ACME/OCSP/CRL CHECKS PASSED (gerçek issuer, gerçek CSR, gerçek JWS, gerçek http-01 doğrulaması)');
   } finally {
     server.close();
   }

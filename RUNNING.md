@@ -148,9 +148,19 @@ npm run test:hardening    # köken kapısı (CSRF), kullanıcı kotası
 npm run test:db           # IdP <-> veritabanı, canlı gRPC sunucusuna karşı
 ```
 
-Bu ortamda `mtls-demo`, `http-transport-demo` ve `pki-acme-demo` TLS materyali
-gerektirdiği için çalışmaz — bu üçü bu daldaki değişikliklerden önce de aynı
-sebeple çalışmıyordu.
+`pki-acme-demo`'nun ACME bölümü, 127.0.0.1'e çözümlenen bir `*.fitfak.net` adı
+ister: http-01 doğrulaması GERÇEK bir DNS çözümlemesi yapar ve ACME servisi
+politika gereği yalnızca `*.fitfak.net` kabul eder. Böyle bir ad yoksa o bölüm
+sebebini yazıp atlanır — testin geri kalanı (sertifika, RBAC, iptal, OCSP, CRL)
+her durumda koşar. Tam akışı çalıştırmak için:
+
+```sh
+echo '127.0.0.1 acme-test.fitfak.net' | sudo tee -a /etc/hosts
+node test/pki-acme-demo.js
+```
+
+`mtls-demo` ve `http-transport-demo` TLS materyali gerektirdiği için bu ortamda
+çalışmaz.
 
 ## Önce yapılması gerekenler
 

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const ssl = require('@fitfak/ssl');
 const { policyForProfile } = require('./pki-policy');
+const { AppError } = require('./errors');
 
 // trust.fitfak.net'in imzalama tarafı.
 //
@@ -135,9 +136,22 @@ class ProductionPkiIssuer {
       throw new Error(`Bilinmeyen sertifika profili '${profile}'. Kullanılabilir: ${Object.keys(PROFILE_MAP).join(', ')}`);
     }
 
-    const csr = ssl.parseCSR(csrPem);
+    // CSR baytları İSTEMCİDEN gelir. Ayrıştırma hatası bir SUNUCU hatası değil,
+    // bir istek hatasıdır: 500 dönmek, istemcinin gönderdiği bozuk baytı bizim
+    // arızamız gibi gösterir ve arayan taraf düzeltebileceği bir şey olduğunu
+    // anlayamaz.
+    let csr;
+    try {
+      csr = ssl.parseCSR(csrPem);
+    } catch (err) {
+      throw new AppError('invalid_csr', `CSR okunamadı: ${err.message}`, { httpStatus: 400 });
+    }
     if (!ssl.verifyCSR(csr)) {
-      throw new Error('CSR öz-imzası geçersiz -- anahtar sahipliği kanıtlanamadı');
+      throw new AppError(
+        'invalid_csr',
+        'CSR öz-imzası geçersiz -- anahtar sahipliği kanıtlanamadı',
+        { httpStatus: 400 },
+      );
     }
 
     const email = subjectOverride.email || null;
