@@ -4,33 +4,38 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>fitfak kimlik</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Yazı tipi tasarım paketinden gelir (--fk-font / --fk-mono): sistem yığını.
+     Harici bir font CDN'i yükleniyordu; bir kimlik sağlayıcısında bu, HER
+     ziyaretçinin IP'sini üçüncü bir tarafa göndermek ve o taraf erişilemez
+     olduğunda giriş sayfasının görünümünü ona bağlamak demekti. -->
 <link rel="stylesheet" href="/static/fitfak-ui.css">
 <style>
+  /* Renkler tasarım paketinden türetiliyor -- kendi paleti YOK.
+     Böylece koyu tema, vurgu rengi ve odak halkası /design ile aynı; sabit
+     bir palet, bu sayfayı sistemin geri kalanından ayrı düşürürdü. */
   :root {
-    --bg: #fafafa;
-    --surface: #ffffff;
-    --ink: #0a0a0a;
-    --ink-2: #52525b;
-    --ink-3: #a1a1aa;
-    --line: #e4e4e7;
-    --line-strong: #d4d4d8;
-    --bg-hover: #f4f4f5;
-    --ok: #166534;
-    --ok-bg: #f0fdf4;
-    --bad: #991b1b;
-    --bad-bg: #fef2f2;
-    --radius: 8px;
+    --ink-contrast: var(--fk-bg);
+    --bg: var(--fk-bg);
+    --surface: var(--fk-surface);
+    --ink: var(--fk-text);
+    --ink-2: var(--fk-text-muted);
+    --ink-3: var(--fk-text-subtle);
+    --line: var(--fk-border);
+    --line-strong: var(--fk-border-strong);
+    --bg-hover: var(--fk-surface-2);
+    --ok: var(--fk-success);
+    --ok-bg: var(--fk-success-bg);
+    --bad: var(--fk-danger);
+    --bad-bg: var(--fk-danger-bg);
+    --radius: var(--fk-radius);
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
-    font-family: 'Inter', system-ui, sans-serif; font-size: 13.5px; line-height: 1.5;
+    font-family: var(--fk-font); font-size: 13.5px; line-height: 1.5;
     display: flex; align-items: center; justify-content: center; padding: 32px 16px;
   }
-  code, .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+  code, .mono { font-family: var(--fk-mono); }
   a { color: var(--ink); font-weight: 500; }
   button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
@@ -67,14 +72,14 @@
     transition: border-color 0.15s;
   }
   input:focus { border-color: var(--ink); }
-  input[type=text].mono-input { font-family: 'IBM Plex Mono', monospace; letter-spacing: 0.14em; text-align: center; font-size: 15px; font-weight: 500; }
+  input[type=text].mono-input { font-family: var(--fk-mono); letter-spacing: 0.14em; text-align: center; font-size: 15px; font-weight: 500; }
 
-  .btn { width: 100%; padding: 10px 14px; border-radius: 6px; border: 1px solid var(--line-strong); background: #fff; color: var(--ink); font: inherit; font-weight: 500; cursor: pointer; margin-top: 16px; transition: 0.15s ease; }
+  .btn { width: 100%; padding: 10px 14px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--fk-surface); color: var(--ink); font: inherit; font-weight: 500; cursor: pointer; margin-top: 16px; transition: 0.15s ease; }
   .btn:disabled { opacity: 0.55; cursor: wait; }
   .btn:hover { background: var(--bg-hover); border-color: var(--ink-3); }
   
-  .btn-primary { background: var(--ink); color: #fff; border-color: var(--ink); font-weight: 600; }
-  .btn-primary:hover { background: #27272a; border-color: #27272a; }
+  .btn-primary { background: var(--ink); color: var(--ink-contrast); border-color: var(--ink); font-weight: 600; }
+  .btn-primary:hover { background: color-mix(in srgb, var(--ink) 88%, var(--fk-bg)); border-color: color-mix(in srgb, var(--ink) 88%, var(--fk-bg)); }
   
   .btn-secondary { background: var(--surface); color: var(--ink); border: 1px solid var(--line-strong); }
   
@@ -97,8 +102,8 @@
 
   .banner { padding: 11px 14px; border-radius: 6px; font-size: 12.5px; margin-bottom: 18px; display: none; font-weight: 500; }
   .banner.show { display: block; }
-  .banner-err { background: var(--bad-bg); color: var(--bad); border: 1px solid #fecaca; }
-  .banner-ok { background: var(--ok-bg); color: var(--ok); border: 1px solid #bbf7d0; }
+  .banner-err { background: var(--bad-bg); color: var(--bad); border: 1px solid transparent; }
+  .banner-ok { background: var(--ok-bg); color: var(--ok); border: 1px solid transparent; }
 
   .secret-box { background: var(--bg-hover); border: 1px dashed var(--ink-3); border-radius: 6px; padding: 14px; margin: 16px 0; word-break: break-all; font-size: 12.5px; }
   .secret-box .label { color: var(--ink-2); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; display: block; font-weight: 600; }
@@ -107,14 +112,14 @@
   .session-row:last-child { border-bottom: none; }
   .session-meta { font-size: 13.5px; font-weight: 500; }
   .session-meta .ua { color: var(--ink-2); font-size: 11.5px; margin-top: 3px; font-weight: 400; }
-  .badge-current { display: inline-block; background: var(--ink); color: #fff; font-size: 10px; padding: 2.5px 7px; border-radius: 4px; margin-left: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .badge-current { display: inline-block; background: var(--ink); color: var(--ink-contrast); font-size: 10px; padding: 2.5px 7px; border-radius: 4px; margin-left: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
 
   .hint { font-size: 12.5px; color: var(--ink-2); margin-top: 8px; }
 
   /* ---- Hesap Seçici (Monokrom) ---- */
   .account-row { display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); cursor: pointer; width: 100%; text-align: left; font: inherit; margin-bottom: 8px; transition: 0.15s; }
   .account-row:hover { border-color: var(--ink); background: var(--bg-hover); }
-  .account-avatar { width: 38px; height: 38px; border-radius: 50%; background: var(--ink); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 14px; flex-shrink: 0; }
+  .account-avatar { width: 38px; height: 38px; border-radius: 50%; background: var(--ink); color: var(--ink-contrast); display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 14px; flex-shrink: 0; }
   .account-name { font-weight: 600; font-size: 13.5px; }
   .account-email { font-size: 11.5px; color: var(--ink-2); margin-top: 2px; }
 </style>

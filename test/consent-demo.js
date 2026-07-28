@@ -261,7 +261,30 @@ async function main() {
   const anonymous = await request(port, `/consent/info?request=${encodeURIComponent(otherId)}`);
   check('oturumsuz görüntülenemiyor', anonymous.status === 401);
 
-  console.log('\n[13] /consent sayfası oturumsuz girişe yönlendiriyor');
+  console.log('\n[13] Girişe gönderilen dönüş adresi GERÇEKTEN çalışıyor');
+  // Bu kontrol bir hatayı yakaladı: dönüş adresi İÇ isimlerle
+  // (?clientId=...) kuruluyordu, sunucu ise snake_case okuyor. Kullanıcı
+  // giriş yapıyor, geri dönüyor ve "Geçersiz client_id" görüyordu -- yani
+  // "kaldığın yerden devam et" tam da devam etmesi gereken noktada kırılıyordu.
+  const anon = await request(port, `/oauth/authorize?${authorizeQuery}`);
+  check('oturumsuz istek girişe gidiyor', anon.status === 302 && anon.location.startsWith('/login'));
+
+  const backTo = decodeURIComponent(new URL(anon.location, 'http://x').searchParams.get('return_to'));
+  check('dönüş adresi /oauth/authorize', backTo.startsWith('/oauth/authorize?'));
+  const backParams = new URL(backTo, 'http://x').searchParams;
+  check('client_id snake_case olarak taşınıyor', backParams.get('client_id') === 'ucuncu-taraf');
+  check('redirect_uri taşınıyor', backParams.get('redirect_uri') === 'https://app.example.com/cb');
+  check('code_challenge taşınıyor', !!backParams.get('code_challenge'));
+  check('code_challenge_method taşınıyor', backParams.get('code_challenge_method') === 'S256');
+  check('state taşınıyor', backParams.get('state') === 'durum-1');
+
+  // Ve o adres, oturum açılmış hâlde gerçekten çalışıyor mu?
+  const resumed = await request(port, backTo, { cookies: jarHeader(jar) });
+  check('giriş sonrası devam ediyor (400 değil)', resumed.status === 302);
+  check('onay ekranına ya da client\'a gidiyor',
+    resumed.location.startsWith('/consent?request=') || resumed.location.startsWith('https://app.example.com/cb'));
+
+  console.log('\n[14] /consent sayfası oturumsuz girişe yönlendiriyor');
   const page = await request(port, `/consent?request=${encodeURIComponent(otherId)}`);
   check('302 -> /login', page.status === 302 && page.location.startsWith('/login'));
   check('sorgu dizesi korunuyor', decodeURIComponent(page.location).includes(`/consent?request=${otherId}`));

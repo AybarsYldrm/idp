@@ -73,7 +73,13 @@
     document.body.appendChild(current);
   }
 
+  // Tercih sayfasının KENDİSİNDE bant gösterilmez: aynı soruyu, cevabı zaten
+  // önünde duran kullanıcıya ikinci kez sormak, üstelik listenin üzerini
+  // örterek sormak olurdu.
+  var PREFERENCE_PAGES = ['/cookies', '/cerezler'];
+
   function init() {
+    if (PREFERENCE_PAGES.indexOf(location.pathname) >= 0) return;
     fetch('/api/cookies', { credentials: 'same-origin' })
       .then(function (res) { return res.json(); })
       .then(function (data) { if (data.needsDecision) show(); })

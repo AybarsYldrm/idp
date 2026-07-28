@@ -742,13 +742,30 @@ async function main() {
   // Yetkilendirme isteğinin parametreleri, onay ekranından sonra da lazım. URL'de
   // taşımak yerine bir yardımcıda toplanıp sunucuda saklanıyor (bkz.
   // services/consent-service.js -- "Bekleyen yetkilendirme isteği").
+  // İç isimler camelCase, tel üzerindeki isimler snake_case. Aradaki eşleme TEK
+  // bir yerde: girişe gönderip geri döndürürken URL'i iç isimlerle yeniden
+  // kurmak, kullanıcıyı `/oauth/authorize?clientId=...` gibi -- sunucunun
+  // OKUYAMADIĞI -- bir adrese döndürürdü. Yani "giriş yap, sonra kaldığın
+  // yerden devam et" akışı, tam da devam etmesi gereken noktada kırılırdı.
+  const AUTHORIZE_PARAM_NAMES = {
+    clientId: 'client_id', redirectUri: 'redirect_uri', responseType: 'response_type',
+    scope: 'scope', state: 'state',
+    codeChallenge: 'code_challenge', codeChallengeMethod: 'code_challenge_method',
+    prompt: 'prompt',
+  };
+
   function authorizationParams(q) {
-    return {
-      clientId: q.get('client_id'), redirectUri: q.get('redirect_uri'),
-      responseType: q.get('response_type'), scope: q.get('scope'), state: q.get('state'),
-      codeChallenge: q.get('code_challenge'), codeChallengeMethod: q.get('code_challenge_method'),
-      prompt: q.get('prompt'),
-    };
+    const out = {};
+    for (const [internal, wire] of Object.entries(AUTHORIZE_PARAM_NAMES)) out[internal] = q.get(wire);
+    return out;
+  }
+
+  function authorizationUrl(params) {
+    const q = new URLSearchParams();
+    for (const [internal, wire] of Object.entries(AUTHORIZE_PARAM_NAMES)) {
+      if (params[internal] != null && params[internal] !== '') q.set(wire, params[internal]);
+    }
+    return `/oauth/authorize?${q.toString()}`;
   }
 
   async function finishAuthorization(req, res, params, { consentGranted = false } = {}) {
@@ -767,7 +784,7 @@ async function main() {
         }));
         return res.end();
       }
-      const back = `/oauth/authorize?${new URLSearchParams(Object.entries(params).filter(([, v]) => v != null)).toString()}`;
+      const back = authorizationUrl(params);
       res.statusCode = 302;
       res.setHeader('location', `/login?return_to=${encodeURIComponent(safeRedirect(back, { fallback: '/portal', selfOrigin: ISSUER }))}&choose_account=1`);
       return res.end();
@@ -788,7 +805,7 @@ async function main() {
     }
 
     if (result.requiresLogin) {
-      const back = `/oauth/authorize?${new URLSearchParams(Object.entries(params).filter(([, v]) => v != null)).toString()}`;
+      const back = authorizationUrl(params);
       res.statusCode = 302;
       res.setHeader('location', `/login?return_to=${encodeURIComponent(safeRedirect(back, { fallback: '/portal', selfOrigin: ISSUER }))}`);
       return res.end();
