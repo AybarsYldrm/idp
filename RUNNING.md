@@ -106,7 +106,17 @@ diskteki sertifikadan devam eder, yenileme mTLS üzerinden yapılır. Sır gerç
 tek kullanımlıktır (`maxUses: 1`) ve bu, ancak yeniden başlatma onu harcamadığı
 için mümkün.
 
-`FITFAK_IDP_DB_ID` ilk çalıştırmada loga basılır; kalıcı olarak ayarlayın.
+## `.identity/` dizinini yedekleyin
+
+İki dosya var ve ikisi de 0600:
+
+| Dosya | İçerik | Kaybolursa |
+|---|---|---|
+| `identity.json` | mTLS sertifikası ve özel anahtar | Yeniden enrolment gerekir (yeni bir sır) |
+| `database.json` | `dbId` + veritabanı istemci sırrı | **Veritabanı bir daha AÇILAMAZ** |
+
+İkincisi kritiktir: istemci sırrı sunucuda SAKLANMAZ, veritabanı oluşturulurken
+bir kez döner. Bu dosyayı yedeklemeden `.identity/` dizinini silmeyin.
 
 ## Yüzeyler
 

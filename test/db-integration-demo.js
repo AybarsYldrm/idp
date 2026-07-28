@@ -113,10 +113,11 @@ async function main() {
   check('kimlik dosyası 0600', mode === 0o600);
 
   console.log('\n[3] IdP şemasını uyguluyor ve koleksiyonlarını kullanıyor');
-  const created = await first.handle.createDatabase('kimlik');
-  const database = await first.handle.openDatabase({
-    dbId: created.dbId, clientSecret: created.clientSecret,
-  });
+  // ÜRÜNÜN yaptığı gibi: bootstrap'ın açtığı veritabanı kullanılıyor
+  // (oauth-server.js#bootstrapDatabase şemayı tam olarak buna uygular).
+  // Test eskiden AYRI bir veritabanı oluşturup şemayı ona uyguluyordu; o
+  // yüzden bootstrap'ın kendi veritabanını yeniden açabildiği hiç sınanmadı.
+  const database = first.db;
   await database.applySchemaRegistry(schema);
   // Uzak istemcide listCollections() ayrıntı nesneleri döner (yerelde dizi);
   // isim alanına indirgiyoruz.
@@ -181,11 +182,27 @@ async function main() {
   check('enrolment sırrı TEKRAR kullanılmadı', consumed === 1);
   check('kanal yine mTLS', second.identity.client.channelInfo().mutual === true);
 
-  const reopened = await second.handle.openDatabase({
-    dbId: created.dbId, clientSecret: created.clientSecret,
-  });
-  const stillThere = await reopened.collection('users').findOne('email', 'a@fitfak.net');
-  check('veriler yerinde', stillThere && stillThere.username === 'aybars');
+  // Veritabanının kendisi de yeniden AÇILABİLMELİ. Bu kontrol bir hata
+  // yakaladı: bootstrap ilk açılışta veritabanını oluşturup dönen istemci
+  // sırrını KULLANIP ATIYOR, sonraki açılışta ise kök sırla açmayı deniyordu.
+  // O iki değer aynı değil ve sunucu istemci sırrını saklamıyor -- yani sistem
+  // BİR KEZ çalışıp sonra kendi veritabanını bir daha açamıyordu. Test bunu
+  // göremiyordu çünkü sırrı bellekte taşıyıp elle geri veriyordu.
+  check('veritabanı tutamağı diske yazıldı', fs.existsSync(path.join(identityDir, 'database.json')));
+  const handleMode = (await fsp.stat(path.join(identityDir, 'database.json'))).mode & 0o777;
+  check('tutamak dosyası 0600', handleMode === 0o600);
+
+  check('bootstrap veritabanını KENDİSİ açtı', !!second.db);
+  const reopenedByBootstrap = await second.db.collection('users').findOne('email', 'a@fitfak.net');
+  check('bootstrap\'ın açtığı veritabanında veriler yerinde',
+    reopenedByBootstrap && reopenedByBootstrap.username === 'aybars');
+  const storedHandle = JSON.parse(await fsp.readFile(path.join(identityDir, 'database.json'), 'utf8'));
+  check('tutamakta dbId var', !!storedHandle.dbId);
+  check('tutamakta istemci sırrı var', !!storedHandle.clientSecret);
+  // Sır KÖK SIRRIN kendisi değil: sunucu oluşturma anında kendi sırrını üretir
+  // ve bir daha vermez. Eskiden bootstrap kök sırla açmayı deniyordu.
+  check('sır kök sırdan FARKLI',
+    storedHandle.clientSecret !== config.db.rootSecret.toString('base64'));
 
   console.log('\n[6] Sırsız ve sertifikasız bağlanma denemesi reddediliyor');
   await fsp.rm(identityDir, { recursive: true, force: true });
