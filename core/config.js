@@ -99,7 +99,13 @@ function load() {
       idp: optional('FITFAK_IDP_BIND_IDP', '127.0.0.1'),      // session.fitfak.net
       trust: optional('FITFAK_IDP_BIND_TRUST', '127.0.0.2'),  // trust.fitfak.net
       admin: optional('FITFAK_IDP_BIND_ADMIN', '127.0.0.3'),  // one.fitfak.net
-      status: optional('FITFAK_IDP_BIND_STATUS', '31.58.245.241'), // status./time.trust.fitfak.net
+      // status.trust.fitfak.net / time.trust.fitfak.net.
+      //
+      // Varsayılan olarak trust adresine düşer, üretimdeki genel IP'ye DEĞİL.
+      // Makineye özgü bir adresi koda varsayılan yazmak, o makine dışındaki her
+      // çalıştırmayı EADDRNOTAVAIL ile düşürür -- geliştirme, test, CI dahil.
+      // Üretimde açıkça verilir: FITFAK_IDP_BIND_STATUS=31.58.245.241
+      status: optional('FITFAK_IDP_BIND_STATUS', optional('FITFAK_IDP_BIND_TRUST', '127.0.0.2')),
     },
 
     keyDir: optional('FITFAK_IDP_KEY_DIR', path.join(root, '.keys')),

@@ -1,5 +1,7 @@
 'use strict';
 
+const { completeLogin } = require('./login-completion');
+
 const { AppError } = require('../core/errors');
 const authService = require('./auth-service');
 const { scanFindAll } = require('../db/query-utils');
@@ -68,7 +70,8 @@ async function beginAuthentication({ db, webauthnService, username, purpose = 'p
 }
 
 async function finishAuthentication({
-  db, sessionManager, webauthnService, challengeId, credential, mfaChallengeToken, ip, userAgent, fingerprintId,
+  db, sessionManager, webauthnService, challengeId, credential, mfaChallengeToken,
+  ip, userAgent, fingerprintId, deviceId = null, isNewDeviceCookie = false, mailer = null,
 }) {
   const creds = db.collection('webauthn_credentials');
   const row = await creds.findOne('credentialId', credential.id);
@@ -87,7 +90,10 @@ async function finishAuthentication({
     if (!pending || pending.userId !== row.userId) {
       throw new AppError('invalid_mfa_challenge', 'Geçersiz veya süresi dolmuş 2FA isteği', { httpStatus: 401 });
     }
-    return sessionManager.createSession({ userId: row.userId, ip, userAgent, fingerprintId });
+    return completeLogin({
+      db, sessionManager, userId: row.userId, ip, userAgent, fingerprintId,
+      deviceId, isNewDeviceCookie, mailer, method: 'parola + güvenlik anahtarı',
+    });
   }
 
   // BİRİNCİL yöntem modu (parolasız giriş): sadece UV (user verification) doğrulanmışsa
@@ -102,7 +108,10 @@ async function finishAuthentication({
   // Yine de savunma katmanı olarak burada bırakıyoruz -- eski/uyumsuz istemciler veya
   // ileride 'preferred' ile çağrılan başka bir akış için.
   if (authResult.userVerified) {
-    return sessionManager.createSession({ userId: row.userId, ip, userAgent, fingerprintId });
+    return completeLogin({
+      db, sessionManager, userId: row.userId, ip, userAgent, fingerprintId,
+      deviceId, isNewDeviceCookie, mailer, method: 'passkey',
+    });
   }
 
   const user = await db.collection('users').get(row.userId);

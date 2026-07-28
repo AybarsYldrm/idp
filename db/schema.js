@@ -58,6 +58,58 @@ module.exports = {
       { no: 10, name: 'lastSeenAt', type: 'uint64' },
       { no: 11, name: 'revoked', type: 'bool' },
       { no: 12, name: 'revokedReason', type: 'string' },
+      // Oturumun bağlı olduğu tarayıcı. Aynı (userId, deviceId) için yeni bir
+      // oturum satırı AÇILMAZ; var olan tazelenir. Bkz. core/device-binding.js.
+      { no: 13, name: 'deviceId', type: 'string', index: true },
+    ],
+  },
+
+  // Kullanıcı başına görülmüş tarayıcılar. Adım yükseltme ve şüpheli giriş
+  // bildirimi bu tabloya dayanır: hiç görülmemiş bir cihazdan giriş, parola
+  // doğru olsa bile ikinci faktör ister ve kullanıcıya haber verilir.
+  user_devices: {
+    fields: [
+      // userId:deviceId -- tekil arama için tek anahtar. İki alanı ayrı ayrı
+      // sorgulayıp kesişim almak, her giriş için iki tur demek olurdu.
+      { no: 2, name: 'userDeviceKey', type: 'string', blindIndex: true, required: true },
+      { no: 3, name: 'userId', type: 'string', index: true, required: true },
+      { no: 4, name: 'deviceId', type: 'string' },
+      { no: 5, name: 'firstSeenAt', type: 'uint64' },
+      { no: 6, name: 'lastSeenAt', type: 'uint64' },
+      { no: 7, name: 'firstIp', type: 'string' },
+      { no: 8, name: 'lastIp', type: 'string' },
+      { no: 9, name: 'userAgent', type: 'string' },
+      { no: 10, name: 'label', type: 'string' },
+      { no: 11, name: 'trusted', type: 'bool' },
+      { no: 12, name: 'loginCount', type: 'uint64' },
+    ],
+  },
+  // Kullanıcı profili. `users` tablosundan AYRI tutuluyor: profil verisi
+  // (avatar özellikle) her kimlik doğrulama okumasında gereksiz yere taşınırdı,
+  // oysa users satırı her istekte okunuyor.
+  user_profiles: {
+    fields: [
+      { no: 2, name: 'userId', type: 'string', index: true, required: true },
+      { no: 3, name: 'displayName', type: 'string' },
+      { no: 4, name: 'bio', type: 'string' },
+      { no: 5, name: 'locale', type: 'string' },
+      { no: 6, name: 'timezone', type: 'string' },
+      // Temizlenmiş avatar baytları. Nesne deposu (object-store) yerine burada:
+      // o depo gömülü motorun DDK'sına ve yerel disk yoluna bağlıdır, IdP ise
+      // uzak bir veritabanına gRPC ile de bağlanabilmeli. 256 KB'lık bir sınır
+      // kaydı taşımaz.
+      { no: 7, name: 'avatarBytes', type: 'bytes' },
+      { no: 8, name: 'avatarContentType', type: 'string' },
+      { no: 9, name: 'avatarWidth', type: 'int32' },
+      { no: 10, name: 'avatarHeight', type: 'int32' },
+      // Avatarın ETag'i: değişmediyse tarayıcı yeniden indirmesin.
+      { no: 11, name: 'avatarEtag', type: 'string' },
+      { no: 12, name: 'updatedAt', type: 'uint64' },
+      // E-posta tercihleri. Güvenlik uyarıları KAPATILAMAZ (aşağıya bkz.),
+      // bu yüzden burada yalnızca kapatılabilir olanlar var.
+      { no: 13, name: 'notifyProduct', type: 'bool' },
+      { no: 14, name: 'notifyNewDevice', type: 'bool' },
+      { no: 15, name: 'notifyNewsletter', type: 'bool' },
     ],
   },
   refresh_tokens: {
@@ -79,6 +131,33 @@ module.exports = {
       { no: 5, name: 'redirectUris', type: 'string' },
       { no: 6, name: 'allowedScopes', type: 'string' },
       { no: 7, name: 'createdAt', type: 'uint64' },
+      // Bizim kendi uygulamalarımız. Onay ekranı ATLANIR: kullanıcıya
+      // "FITFAK, FITFAK hesabınıza erişmek istiyor" diye sormanın bir anlamı
+      // yok, ve anlamsız onay ekranları kullanıcıyı gerçek olanları da
+      // okumadan onaylamaya alıştırır. Yalnızca admin verebilir.
+      { no: 8, name: 'firstParty', type: 'bool' },
+      { no: 9, name: 'clientUri', type: 'string' },
+    ],
+  },
+
+  // Kullanıcının bir uygulamaya verdiği KALICI izin. Onay ekranı her seferinde
+  // gösterilmesin diye var, ama asıl işlevi kaydı tutmak: kullanıcı "hangi
+  // uygulamalar hesabıma erişebiliyor" sorusunu ancak bu tabloya bakarak
+  // cevaplayabilir ve ancak buradan geri alabilir.
+  //
+  // İzin KAPSAM BAZINDA saklanıyor. Uygulama sonradan daha fazlasını isterse
+  // (yeni bir scope), eski izin onu kapsamaz ve onay ekranı yeniden çıkar --
+  // aksi halde bir kez onay almış uygulama, sessizce yetkisini genişletirdi.
+  oauth_grants: {
+    fields: [
+      // userId:clientId -- tek anahtarla arama.
+      { no: 2, name: 'userClientKey', type: 'string', blindIndex: true, required: true },
+      { no: 3, name: 'userId', type: 'string', index: true, required: true },
+      { no: 4, name: 'clientId', type: 'string', index: true, required: true },
+      { no: 5, name: 'scope', type: 'string' },
+      { no: 6, name: 'grantedAt', type: 'uint64' },
+      { no: 7, name: 'updatedAt', type: 'uint64' },
+      { no: 8, name: 'lastUsedAt', type: 'uint64' },
     ],
   },
   ephemeral_state: {
@@ -103,6 +182,22 @@ module.exports = {
       { no: 12, name: 'createdAt', type: 'uint64' },
       { no: 13, name: 'issuedVia', type: 'string' },
       { no: 14, name: 'skidHex', type: 'string', index: true },
+    ],
+  },
+  // Certificate Transparency log girdileri (RFC 6962).
+  //
+  // EKLEME-YALNIZCA: bu koleksiyona güncelleme/silme yolu yok. Merkle ağacı
+  // geçmişi değiştirmeyi kanıtlanabilir kılar; bir kaydı hiç yazmamaya karşı
+  // koruma ise log'un birden fazla tarafça izlenmesidir.
+  ct_log_entries: {
+    fields: [
+      { no: 2, name: 'dedupeKey', type: 'string', index: true, required: true },
+      { no: 3, name: 'leafIndex', type: 'uint64', index: true },
+      { no: 4, name: 'timestamp', type: 'uint64' },
+      { no: 5, name: 'entryType', type: 'int32' },
+      { no: 6, name: 'leafHashB64', type: 'string' },
+      { no: 7, name: 'merkleLeafB64', type: 'string' },
+      { no: 8, name: 'sctB64', type: 'string' },
     ],
   },
   acme_accounts: {

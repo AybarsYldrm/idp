@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>İzin isteniyor — FITFAK</title>
+<link rel="stylesheet" href="/static/fitfak-ui.css">
+</head>
+<body>
+
+<!--
+  Onay ekranı. Kendi stili YOK -- tamamı tasarım paketinden (/static/fitfak-ui.css)
+  geliyor; /design sayfası bu bileşenlerin canlı referansı.
+
+  Sayfa hiçbir şeyi kendi başına bilmez: ne istendiğini /consent/info'dan sorar.
+  Yetkilendirme parametreleri adres çubuğunda TAŞINMAZ, sunucuda durur ve buraya
+  yalnızca opak bir `request` tanıtıcısı gelir -- gösterilen ile onaylanan
+  arasındaki bağı adres çubuğunun kopartamaması için.
+-->
+
+<main class="fk-center">
+  <div class="fk-container fk-container--narrow">
+
+    <div id="loading" class="fk-card fk-center-text">
+      <p class="fk-muted" style="margin:0">Yükleniyor…</p>
+    </div>
+
+    <div id="failed" class="fk-card fk-hidden">
+      <div class="fk-card__header fk-center-text">
+        <h1 class="fk-card__title">İstek görüntülenemedi</h1>
+      </div>
+      <div class="fk-alert fk-alert--error" id="failed-message"></div>
+      <a class="fk-btn fk-btn--secondary fk-btn--block" href="/portal">Hesabıma dön</a>
+    </div>
+
+    <form id="consent" class="fk-card fk-hidden" novalidate>
+      <div class="fk-card__header fk-center-text">
+        <span class="fk-brand__mark" style="margin:0 auto .75rem">F</span>
+        <h1 class="fk-card__title"><span id="client-name"></span> erişim istiyor</h1>
+        <p class="fk-card__subtitle">
+          Bu uygulamaya <strong id="account-label"></strong> hesabınız adına
+          aşağıdaki izinleri vermek üzeresiniz.
+        </p>
+      </div>
+
+      <ul class="fk-list" id="scopes"></ul>
+
+      <p class="fk-small fk-muted" style="margin:1rem 0 0">
+        İzin verdiğinizde bu uygulamaya
+        <strong id="redirect-host" class="fk-mono"></strong> adresine
+        yönlendirileceksiniz. İzni istediğiniz zaman
+        <a href="/profile#apps">hesabınızdan</a> geri alabilirsiniz.
+      </p>
+
+      <div id="error" class="fk-alert fk-alert--error fk-hidden" style="margin-top:1rem"></div>
+
+      <hr class="fk-divider">
+
+      <!--
+        Sıra bilinçli: reddetme önce ve nötr düğme olarak. Onay ekranlarında
+        "izin ver" düğmesini vurgulamak, kullanıcıyı okumadan onaylamaya
+        alıştırır; buradaki asıl amaç kullanıcının seçmesi, onaylaması değil.
+      -->
+      <div class="fk-row">
+        <button type="button" class="fk-btn fk-btn--secondary fk-grow" id="deny">Reddet</button>
+        <button type="submit" class="fk-btn fk-btn--primary fk-grow" id="allow">İzin ver</button>
+      </div>
+    </form>
+
+  </div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var params = new URLSearchParams(location.search);
+  var requestId = params.get('request');
+
+  var $ = function (id) { return document.getElementById(id); };
+  function show(el) { el.classList.remove('fk-hidden'); }
+  function hide(el) { el.classList.add('fk-hidden'); }
+
+  function fail(message) {
+    hide($('loading')); hide($('consent'));
+    $('failed-message').textContent = message;
+    show($('failed'));
+  }
+
+  // Sunucudan gelen her metin textContent ile yazılıyor, innerHTML ile değil:
+  // uygulama adı ve izin açıklamaları kayıt sırasında girilen serbest metinler.
+  function scopeItem(scope) {
+    var li = document.createElement('li');
+    li.className = 'fk-list__item';
+
+    var wrap = document.createElement('div');
+    wrap.style.padding = '0.875rem 1rem';
+
+    var head = document.createElement('div');
+    head.className = 'fk-row';
+    head.style.gap = '0.5rem';
+
+    var title = document.createElement('span');
+    title.className = 'fk-option__title';
+    title.textContent = scope.title;
+    head.appendChild(title);
+
+    if (scope.sensitive) {
+      var warn = document.createElement('span');
+      warn.className = 'fk-badge fk-badge--warning';
+      warn.textContent = 'geniş yetki';
+      head.appendChild(warn);
+    }
+    if (scope.isNew === false) {
+      var old = document.createElement('span');
+      old.className = 'fk-badge';
+      old.textContent = 'daha önce verildi';
+      head.appendChild(old);
+    }
+
+    var detail = document.createElement('p');
+    detail.className = 'fk-small fk-muted';
+    detail.style.margin = '0.25rem 0 0';
+    detail.textContent = scope.detail;
+
+    wrap.appendChild(head);
+    wrap.appendChild(detail);
+    li.appendChild(wrap);
+    return li;
+  }
+
+  function render(info) {
+    $('client-name').textContent = info.client.name;
+    $('redirect-host').textContent = info.client.redirectHost;
+    $('account-label').textContent = info.account.email || info.account.username;
+
+    var list = $('scopes');
+    list.textContent = '';
+    info.scopes.forEach(function (s) { list.appendChild(scopeItem(s)); });
+
+    hide($('loading'));
+    show($('consent'));
+  }
+
+  async function decide(approve) {
+    $('allow').disabled = true;
+    $('deny').disabled = true;
+    hide($('error'));
+    try {
+      var res = await fetch('/consent/decide', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ request: requestId, approve: approve }),
+      });
+      var data = await res.json();
+      if (!res.ok) throw new Error(data.message || data.error || 'İşlem tamamlanamadı');
+      // Yönlendirme adresini SUNUCU üretir. Sayfanın kendisi bir redirect_uri
+      // uydurabilseydi, onay ekranı açık yönlendirme aracı olurdu.
+      location.replace(data.redirectTo);
+    } catch (err) {
+      $('error').textContent = err.message;
+      show($('error'));
+      $('allow').disabled = false;
+      $('deny').disabled = false;
+    }
+  }
+
+  $('consent').addEventListener('submit', function (e) { e.preventDefault(); decide(true); });
+  $('deny').addEventListener('click', function () { decide(false); });
+
+  if (!requestId) {
+    // Doğrudan /consent'e gelen kullanıcı için gösterilecek bir istek yok.
+    location.replace('/portal');
+  } else {
+    fetch('/consent/info?request=' + encodeURIComponent(requestId), { credentials: 'same-origin' })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          if (!res.ok) throw new Error(data.message || 'Bu onay isteği bulunamadı ya da süresi doldu.');
+          return data;
+        });
+      })
+      .then(render)
+      .catch(function (err) { fail(err.message); });
+  }
+})();
+</script>
+
+</body>
+</html>

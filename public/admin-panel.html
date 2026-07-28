@@ -4,42 +4,49 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>fitfak kimlik — yönetim</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Yazı tipi tasarım paketinden gelir (--fk-font / --fk-mono): sistem yığını.
+     Harici bir font CDN'i yükleniyordu; bir kimlik sağlayıcısında bu, HER
+     ziyaretçinin IP'sini üçüncü bir tarafa göndermek ve o taraf erişilemez
+     olduğunda giriş sayfasının görünümünü ona bağlamak demekti. -->
+<link rel="stylesheet" href="/static/fitfak-ui.css">
 <style>
+  /* Renkler tasarım paketinden türetiliyor -- bkz. demo-login.html'deki not.
+     Kenar çubuğu KASITLI olarak her iki temada da koyu: yönetim yüzeyi, giriş
+     yüzeyinden bakışta ayırt edilebilmeli. */
   :root {
-    --bg: #ffffff;
+    --ink-contrast: var(--fk-bg);
+    --bg: var(--fk-surface);
     --bg-sidebar: #0a0a0a;
-    --bg-subtle: #fafafa;
-    --bg-hover: #f4f4f5;
-    --ink: #0a0a0a;
-    --ink-2: #52525b;
-    --ink-3: #a1a1aa;
-    --line: #e4e4e7;
-    --line-strong: #d4d4d8;
+    --bg-subtle: var(--fk-bg);
+    --bg-hover: var(--fk-surface-2);
+    --ink: var(--fk-text);
+    --ink-2: var(--fk-text-muted);
+    --ink-3: var(--fk-text-subtle);
+    --line: var(--fk-border);
+    --line-strong: var(--fk-border-strong);
     --sidebar-ink: #a1a1aa;
     --sidebar-ink-active: #ffffff;
     --sidebar-hover: #1c1c1f;
-    --ok: #166534;
-    --ok-bg: #f0fdf4;
-    --warn: #854d0e;
-    --warn-bg: #fefce8;
-    --bad: #991b1b;
-    --bad-bg: #fef2f2;
+    --ok: var(--fk-success);
+    --ok-bg: var(--fk-success-bg);
+    --warn: var(--fk-warning);
+    --warn-bg: var(--fk-warning-bg);
+    --bad: var(--fk-danger);
+    --bad-bg: var(--fk-danger-bg);
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
-    font-family: 'Inter', system-ui, sans-serif; font-size: 14px; line-height: 1.5;
+    font-family: var(--fk-font); font-size: 14px; line-height: 1.5;
     display: grid; grid-template-columns: 240px 1fr; min-height: 100vh;
   }
-  .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+  .mono { font-family: var(--fk-mono); }
   button, input, select { font: inherit; }
   button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
   /* ---------- sidebar ---------- */
   aside { background: var(--bg-sidebar); color: var(--sidebar-ink); padding: 20px 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+  /* Kenar çubuğu her iki temada da koyu -- yukarıdaki nota bakın. */
   .brand { padding: 0 20px 22px; font-weight: 700; font-size: 15px; color: #fff; letter-spacing: -0.01em; }
   .brand span { color: var(--ink-3); font-weight: 400; }
   .nav-group { margin-bottom: 20px; }
@@ -69,7 +76,7 @@
   .table-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: var(--bg-subtle); border-bottom: 1px solid var(--line); }
   .table-head h2 { font-size: 13px; font-weight: 600; margin: 0; }
   table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; padding: 9px 16px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); font-weight: 600; border-bottom: 1px solid var(--line); background: #fff; }
+  th { text-align: left; padding: 9px 16px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); font-weight: 600; border-bottom: 1px solid var(--line); background: var(--fk-surface); }
   td { padding: 11px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; font-size: 13px; }
   tr:last-child td { border-bottom: none; }
   tbody tr:hover { background: var(--bg-subtle); }
@@ -79,18 +86,18 @@
 
   /* ---------- badges ---------- */
   .badge { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2.5px 7px; border-radius: 3px; letter-spacing: 0.02em; border: 1px solid transparent; }
-  .badge-ok { background: var(--ok-bg); color: var(--ok); border-color: #bbf7d0; }
-  .badge-warn { background: var(--warn-bg); color: var(--warn); border-color: #fef08a; }
-  .badge-bad { background: var(--bad-bg); color: var(--bad); border-color: #fecaca; }
+  .badge-ok { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+  .badge-warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+  .badge-bad { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
   .badge-neutral { background: var(--bg-hover); color: var(--ink-2); border-color: var(--line-strong); }
-  .badge-dark { background: var(--ink); color: #fff; }
+  .badge-dark { background: var(--ink); color: var(--ink-contrast); }
 
   /* ---------- buttons ---------- */
-  .btn { border: 1px solid var(--line-strong); background: #fff; color: var(--ink); padding: 6px 12px; border-radius: 5px; cursor: pointer; font-size: 12.5px; font-weight: 500; }
+  .btn { border: 1px solid var(--line-strong); background: var(--fk-surface); color: var(--ink); padding: 6px 12px; border-radius: 5px; cursor: pointer; font-size: 12.5px; font-weight: 500; }
   .btn:hover { background: var(--bg-hover); border-color: var(--ink-3); }
-  .btn-primary { background: var(--ink); color: #fff; border-color: var(--ink); }
-  .btn-primary:hover { background: #27272a; border-color: #27272a; }
-  .btn-danger { color: var(--bad); border-color: #fecaca; }
+  .btn-primary { background: var(--ink); color: var(--ink-contrast); border-color: var(--ink); }
+  .btn-primary:hover { background: color-mix(in srgb, var(--ink) 88%, var(--fk-bg)); border-color: color-mix(in srgb, var(--ink) 88%, var(--fk-bg)); }
+  .btn-danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
   .btn-danger:hover { background: var(--bad-bg); border-color: var(--bad); }
   .btn-sm { padding: 4px 9px; font-size: 11.5px; }
   .btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -98,7 +105,7 @@
   /* ---------- forms / modal ---------- */
   .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(10,10,10,0.45); z-index: 50; align-items: center; justify-content: center; padding: 20px; }
   .modal-backdrop.open { display: flex; }
-  .modal { background: #fff; border-radius: 8px; width: 100%; max-width: 480px; max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 50px rgba(0,0,0,0.25); }
+  .modal { background: var(--fk-surface); border-radius: 8px; width: 100%; max-width: 480px; max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 50px rgba(0,0,0,0.25); }
   .modal-head { padding: 18px 22px; border-bottom: 1px solid var(--line); font-weight: 600; font-size: 15px; }
   .modal-body { padding: 22px; }
   .modal-foot { padding: 14px 22px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; background: var(--bg-subtle); }
@@ -106,7 +113,7 @@
   label:first-child { margin-top: 0; }
   input[type=text], input[type=url], select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 5px; font-size: 13px; }
   input:focus, select:focus, textarea:focus { border-color: var(--ink); }
-  textarea { min-height: 72px; resize: vertical; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+  textarea { min-height: 72px; resize: vertical; font-family: var(--fk-mono); font-size: 12px; }
   .field-hint { font-size: 11.5px; color: var(--ink-3); margin-top: 5px; }
   .check-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; }
   .check-row input { width: auto; }
@@ -114,10 +121,10 @@
 
   .banner { padding: 11px 14px; border-radius: 5px; font-size: 13px; margin-bottom: 18px; display: none; }
   .banner.show { display: block; }
-  .banner-err { background: var(--bad-bg); color: var(--bad); border: 1px solid #fecaca; }
-  .banner-ok { background: var(--ok-bg); color: var(--ok); border: 1px solid #bbf7d0; }
+  .banner-err { background: var(--bad-bg); color: var(--bad); border: 1px solid transparent; }
+  .banner-ok { background: var(--ok-bg); color: var(--ok); border: 1px solid transparent; }
 
-  .secret-reveal { background: var(--ink); color: #fff; padding: 12px 14px; border-radius: 5px; word-break: break-all; margin: 12px 0; font-size: 12.5px; }
+  .secret-reveal { background: var(--ink); color: var(--ink-contrast); padding: 12px 14px; border-radius: 5px; word-break: break-all; margin: 12px 0; font-size: 12.5px; }
   .secret-reveal .label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); margin-bottom: 5px; }
 
   .scope-chip { display: inline-block; background: var(--bg-hover); border: 1px solid var(--line-strong); padding: 2px 7px; border-radius: 3px; font-size: 11px; margin: 1px 3px 1px 0; }

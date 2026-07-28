@@ -87,7 +87,22 @@ async function handleOcspRequest({ db, pkiIssuer, ocspRequestDer }) {
 
   // İsteği önce ayrıştır: hangi serilerin sorulduğunu bilmeden hangi kayıtları
   // okuyacağımızı da bilemeyiz.
-  const request = pki.parseOcspRequest(ocspRequestDer);
+  //
+  // Ayrıştırılamayan bir istek HTTP 500 ile CEVAPLANMAZ. 500, "responder
+  // bozuk" demektir; istemciler bunu geçici bir arıza sayar, yeniden dener ve
+  // bir noktada iptal kontrolünü tamamen atlar -- yani başkasının gönderdiği
+  // bozuk bayt, bizim iptal altyapımızı devre dışı bırakmış olur. RFC 6960
+  // bunun için imzasız bir `malformedRequest` yanıtı tanımlar (§4.2.1):
+  // düzeltmesi gereken tarafı doğru gösterir.
+  let request;
+  try {
+    request = pki.parseOcspRequest(ocspRequestDer);
+  } catch (err) {
+    return pki.buildOcspErrorResponse('malformedRequest');
+  }
+  if (!request || !Array.isArray(request.requests) || request.requests.length === 0) {
+    return pki.buildOcspErrorResponse('malformedRequest');
+  }
 
   const issuerRevoked = await findRevokedIssuer(certs, pkiIssuer);
 

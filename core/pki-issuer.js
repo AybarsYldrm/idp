@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const ssl = require('@fitfak/ssl');
 const { policyForProfile } = require('./pki-policy');
+const { AppError } = require('./errors');
 
 // trust.fitfak.net'in imzalama tarafı.
 //
@@ -98,11 +99,18 @@ function loadOrCreateCa(caDir) {
 }
 
 class ProductionPkiIssuer {
-  constructor(caDir) {
+  /**
+   * @param {string} caDir
+   * @param {object} [opts]
+   * @param {object} [opts.ctLog]  RFC 6962 log'u. Verilirse her uç sertifika
+   *   önce ÖNSERTİFİKA olarak log'a yazılır ve dönen SCT sertifikaya gömülür.
+   */
+  constructor(caDir, { ctLog = null } = {}) {
     this.caDir = caDir;
     const { rootCA, subCA } = loadOrCreateCa(caDir);
     this.rootCA = rootCA;
     this.subCA = subCA;
+    this.ctLog = ctLog;
   }
 
   /** İstemcilere dağıtılacak zincir (ara + kök). */
@@ -128,9 +136,22 @@ class ProductionPkiIssuer {
       throw new Error(`Bilinmeyen sertifika profili '${profile}'. Kullanılabilir: ${Object.keys(PROFILE_MAP).join(', ')}`);
     }
 
-    const csr = ssl.parseCSR(csrPem);
+    // CSR baytları İSTEMCİDEN gelir. Ayrıştırma hatası bir SUNUCU hatası değil,
+    // bir istek hatasıdır: 500 dönmek, istemcinin gönderdiği bozuk baytı bizim
+    // arızamız gibi gösterir ve arayan taraf düzeltebileceği bir şey olduğunu
+    // anlayamaz.
+    let csr;
+    try {
+      csr = ssl.parseCSR(csrPem);
+    } catch (err) {
+      throw new AppError('invalid_csr', `CSR okunamadı: ${err.message}`, { httpStatus: 400 });
+    }
     if (!ssl.verifyCSR(csr)) {
-      throw new Error('CSR öz-imzası geçersiz -- anahtar sahipliği kanıtlanamadı');
+      throw new AppError(
+        'invalid_csr',
+        'CSR öz-imzası geçersiz -- anahtar sahipliği kanıtlanamadı',
+        { httpStatus: 400 },
+      );
     }
 
     const email = subjectOverride.email || null;
@@ -150,7 +171,7 @@ class ProductionPkiIssuer {
     const notAfter = new Date(notBefore.getTime() + mapping.days * 86400000);
     const serialNumberHex = ssl.newSerial();
 
-    const issued = ssl.issueCertificateFromCSR(csr, this.subCA, {
+    const baseOptions = {
       profile: mapping.sslProfile,
       subjectOverride: subject,
       includeCsrSans: false,
@@ -166,6 +187,36 @@ class ProductionPkiIssuer {
       // çalışır. Yalnızca birini vermek, o biri düştüğünde doğrulayıcıyı
       // "iptal durumu bilinmiyor" ile baş başa bırakır.
       crlUrls: [CRL_URL],
+    };
+
+    // ---- Certificate Transparency ------------------------------------------
+    //
+    // SCT sertifikanın İÇİNE yazılır, ama SCT'yi almak için sertifikayı log'a
+    // göndermek gerekir. RFC 6962 bu döngüyü ÖNSERTİFİKA ile kırar: aynı seri
+    // ve aynı içerikle, ama "poison" uzantısıyla (kritik ve hiçbir istemcinin
+    // tanımadığı, dolayısıyla hiçbir yerde geçerli sayılmayan) bir sertifika
+    // imzalanır, log onu kabul edip SCT döner, sonra AYNI TBS poison yerine
+    // SCT listesiyle yeniden imzalanır.
+    //
+    // İki sertifikanın aynı seriyi taşıması kasıtlıdır: izleyiciler log'daki
+    // önsertifika ile sahada gördükleri sertifikayı böyle eşleştirir.
+    let sctExtension = null;
+    if (this.ctLog) {
+      const precert = ssl.issueCertificateFromCSR(csr, this.subCA, {
+        ...baseOptions,
+        extraExtensions: [ssl.buildPoisonExtension()],
+      });
+      const issuerSpkiDer = new (require('node:crypto').X509Certificate)(this.subCA.certPem)
+        .publicKey.export({ type: 'spki', format: 'der' });
+      const sct = await this.ctLog.add({
+        certDer: precert.der, issuerSpkiDer, precert: true,
+      });
+      sctExtension = ssl.buildSctListExtension([sct]);
+    }
+
+    const issued = ssl.issueCertificateFromCSR(csr, this.subCA, {
+      ...baseOptions,
+      ...(sctExtension ? { extraExtensions: [sctExtension] } : {}),
     });
 
     const skid = issued.skid;

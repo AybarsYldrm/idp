@@ -51,7 +51,10 @@ async function main() {
   await fsp.rm(keyDir, { recursive: true, force: true });
   const signingKeyPair = loadOrCreateSigningKeyPair(keyDir);
 
-  const db = createMockDb(['users', 'webauthn_credentials', 'totp_credentials', 'sessions', 'refresh_tokens', 'oauth_clients', 'ephemeral_state', 'certificates', 'acme_accounts', 'acme_orders', 'acme_authorizations']);
+  // Koleksiyon listesi db/schema.js'ten türetiliyor. Elle yazılmış bir liste,
+  // şemaya yeni bir koleksiyon eklendiğinde sessizce eskir ve testi gerçek
+  // sunucunun çalıştığı yapılandırmadan ayırır.
+  const db = createMockDb(Object.keys(require('../db/schema')));
   const sessionManager = new SessionManager({
     store: authService.createSessionStoreAdapter(db),
     signingKeyPair, issuer: 'https://session.fitfak.net', cookieDomain: '.fitfak.net',
@@ -59,7 +62,10 @@ async function main() {
   const webauthn = new WebAuthnService({ rpId: RP_ID, rpName: 'Fitfak Kimlik', origin: ORIGIN });
   const antiBot = { rateLimiter: new LoginProtection(), pow: new ProofOfWorkService() };
   const clientStore = createStaticClientStore([
-    { clientId: 'dns-fitfak-net', name: 'DNS Paneli', redirectUris: ['https://dns.fitfak.net/callback'], allowedScopes: ['openid', 'profile', 'dns:read'] },
+    // firstParty: kendi panelimiz, onay ekranı atlanır. Üçüncü taraf bir
+    // client'ta silent SSO artık yetmez -- kullanıcı onayı da gerekir; o yol
+    // test/consent-demo.js'te.
+    { clientId: 'dns-fitfak-net', name: 'DNS Paneli', redirectUris: ['https://dns.fitfak.net/callback'], allowedScopes: ['openid', 'profile', 'dns:read'], firstParty: true },
   ]);
   const oauthService = new OAuthService({ sessionManager, clientStore, db, issuer: 'https://session.fitfak.net' });
 

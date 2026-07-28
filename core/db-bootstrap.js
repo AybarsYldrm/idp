@@ -40,6 +40,10 @@ const crypto = require('node:crypto');
 // duran kalıcı bir arka kapı olurdu.
 
 const IDENTITY_FILE = 'identity.json';
+// Veritabanı tutamağı: dbId + istemci sırrı. Sır sunucuda SAKLANMAZ (yalnızca
+// oluşturma anında bir kez döner), yani bu dosya kaybolursa veritabanı bir daha
+// açılamaz. Kimlik dosyasıyla aynı muamele: 0600, temp+rename.
+const DB_HANDLE_FILE = 'database.json';
 
 function log(logger, level, message) {
   if (logger && typeof logger[level] === 'function') logger[level](message);
@@ -71,15 +75,33 @@ async function loadStoredIdentity(dir) {
   }
 }
 
-async function storeIdentity(dir, identity) {
+async function writeSecretFile(dir, name, payload) {
   await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
-  const file = path.join(dir, IDENTITY_FILE);
+  const file = path.join(dir, name);
   const tmp = `${file}.tmp`;
-  // Özel anahtar diske yazılıyor: 0600 ile ve önce geçici dosyaya, sonra rename.
-  // Doğrudan yazmak, süreç yazarken ölürse yarım bir kimlik dosyası bırakır ve
-  // sonraki açılış onu "var ama bozuk" olarak bulur.
-  await fsp.writeFile(tmp, JSON.stringify(identity, null, 2), { mode: 0o600 });
+  // 0600 ile ve önce geçici dosyaya, sonra rename. Doğrudan yazmak, süreç
+  // yazarken ölürse yarım bir dosya bırakır ve sonraki açılış onu "var ama
+  // bozuk" olarak bulur.
+  await fsp.writeFile(tmp, JSON.stringify(payload, null, 2), { mode: 0o600 });
   await fsp.rename(tmp, file);
+}
+
+async function storeIdentity(dir, identity) {
+  return writeSecretFile(dir, IDENTITY_FILE, identity);
+}
+
+async function storeDbHandle(dir, handleInfo) {
+  return writeSecretFile(dir, DB_HANDLE_FILE, handleInfo);
+}
+
+async function loadStoredDbHandle(dir) {
+  try {
+    const stored = JSON.parse(await fsp.readFile(path.join(dir, DB_HANDLE_FILE), 'utf8'));
+    if (!stored.dbId || !stored.clientSecret) return null;
+    return stored;
+  } catch (_) {
+    return null;
+  }
 }
 
 /**
@@ -212,21 +234,57 @@ async function connectToDatabase({ config, logger = null }) {
 
   const handle = await connectDatabase({ target: dbCfg.remoteTarget, identity });
 
+  // ---- veritabanı tutamağı -------------------------------------------------
+  //
+  // `createDatabase` istemci sırrını SUNUCUDA SAKLAMAZ; bir kez döner ve o
+  // kadar (bkz. @fitfak/database grpc/client.js). Yani onu kaybeden taraf
+  // veriyi de kaybeder.
+  //
+  // Önceki hâli tam olarak bunu yapıyordu: ilk açılışta oluşturuyor, dönen
+  // sırrı kullanıp atıyor, sonraki açılışta `rootSecret` ile açmayı deniyordu.
+  // O iki değer aynı değil. Sonuç: sistem BİR KEZ çalışıyor, sonra kendi
+  // veritabanını bir daha açamıyordu -- ve bu, enrolment'ın yeniden
+  // başlatmada çalıştığını doğrulayan testin bile göremediği bir yerdeydi
+  // (test, sırrı bellekte taşıyordu).
+  //
+  // Sır artık kimlikle aynı muameleyi görüyor: 0600, temp+rename.
+  const dbHandleFile = path.join(dbCfg.identityDir, DB_HANDLE_FILE);
+  const storedHandle = await loadStoredDbHandle(dbCfg.identityDir);
+
   let db;
-  if (dbCfg.dbId) {
+  if (storedHandle) {
+    db = await handle.openDatabase({
+      dbId: storedHandle.dbId, clientSecret: storedHandle.clientSecret,
+    });
+    log(logger, 'info', `[bootstrap] Veritabanı açıldı: dbId=${storedHandle.dbId}`);
+  } else if (dbCfg.dbId) {
+    // Elle taşınan yapılandırma: dbId ortamdan, sır kök sırdan. Sunucu
+    // tarafındaki veritabanı bu sırla oluşturulmuşsa çalışır.
     db = await handle.openDatabase({
       dbId: dbCfg.dbId,
       clientSecret: dbCfg.rootSecret.toString('base64'),
     });
+    await storeDbHandle(dbCfg.identityDir, {
+      dbId: dbCfg.dbId, clientSecret: dbCfg.rootSecret.toString('base64'),
+    });
   } else {
     const created = await handle.createDatabase('kimlik');
+    // Sır ÖNCE saklanıyor, sonra kullanılıyor: aradaki bir çökme, açılamayan
+    // bir veritabanı bırakırdı.
+    await storeDbHandle(dbCfg.identityDir, {
+      dbId: created.dbId, clientSecret: created.clientSecret,
+    });
     log(logger, 'warn',
       `[bootstrap] Yeni veritabanı oluşturuldu: dbId=${created.dbId}\n`
-      + '  Bu değeri FITFAK_IDP_DB_ID olarak kaydedin.');
+      + `  Erişim sırrı ${dbHandleFile} dosyasında (0600). Bu dosya kaybolursa\n`
+      + '  veritabanı bir daha AÇILAMAZ -- yedekleyin.');
     db = await handle.openDatabase({ dbId: created.dbId, clientSecret: created.clientSecret });
   }
 
   return { handle, identity, db, mode: 'mtls' };
 }
 
-module.exports = { connectToDatabase, loadStoredIdentity, storeIdentity };
+module.exports = {
+  connectToDatabase, loadStoredIdentity, storeIdentity,
+  loadStoredDbHandle, storeDbHandle, DB_HANDLE_FILE,
+};

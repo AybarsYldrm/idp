@@ -1,0 +1,396 @@
+/*
+ * FITFAK UI — paylaşılan tasarım paketi.
+ *
+ * Bu dosya tek başına taşınabilir: başka bir servise kopyalanıp <link> ile
+ * eklendiğinde aynı görünümü verir. Hiçbir yapı aracı, hiçbir bağımlılık,
+ * hiçbir derleme adımı yok -- bir CSS dosyası ve o kadar.
+ *
+ * Tasarım kararları:
+ *
+ * - Renkler token olarak tanımlı (--fk-*). Bir servis kendi vurgu rengini
+ *   yalnızca --fk-accent'i ezerek alır; başka hiçbir şeye dokunmaz.
+ * - Açık ve koyu tema ikisi de destekleniyor ve KULLANICININ SİSTEM TERCİHİNE
+ *   uyuyor. Tek tema dayatmak, gece çalışan birine beyaz ekran vermektir.
+ * - Odak halkası (:focus-visible) hiçbir yerde kaldırılmıyor. `outline: none`
+ *   klavye kullanıcısını sayfada kaybeder ve bu, en sık yapılan erişilebilirlik
+ *   hatasıdır.
+ * - Dokunma hedefleri en az 44px. Bu, WCAG'in önerdiği alt sınır ve telefonda
+ *   yanlış tuşa basmanın önündeki tek gerçek engel.
+ * - Hareket azaltma tercihi (prefers-reduced-motion) tüm geçişleri kapatır --
+ *   vestibüler rahatsızlığı olan kullanıcılar için animasyon bir tercih değil.
+ */
+
+/* ── Tasarım tokenları ───────────────────────────────────────────────────── */
+:root {
+  --fk-accent: #4f46e5;
+  --fk-accent-hover: #4338ca;
+  --fk-accent-contrast: #ffffff;
+
+  --fk-bg: #f6f7f9;
+  --fk-surface: #ffffff;
+  --fk-surface-2: #f9fafb;
+  --fk-border: #e4e7ec;
+  --fk-border-strong: #d0d5dd;
+
+  --fk-text: #101828;
+  --fk-text-muted: #667085;
+  --fk-text-subtle: #98a2b3;
+
+  --fk-danger: #d92d20;
+  --fk-danger-bg: #fef3f2;
+  --fk-success: #067647;
+  --fk-success-bg: #ecfdf3;
+  --fk-warning: #b54708;
+  --fk-warning-bg: #fffaeb;
+
+  --fk-radius: 10px;
+  --fk-radius-sm: 6px;
+  --fk-radius-lg: 16px;
+
+  --fk-shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .10);
+  --fk-shadow-lg: 0 4px 6px -2px rgba(16, 24, 40, .03), 0 12px 16px -4px rgba(16, 24, 40, .08);
+
+  --fk-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --fk-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fk-accent: #7c74ff;
+    --fk-accent-hover: #9b95ff;
+    --fk-accent-contrast: #0b0d12;
+
+    --fk-bg: #0b0d12;
+    --fk-surface: #14171f;
+    --fk-surface-2: #1a1e28;
+    --fk-border: #262b36;
+    --fk-border-strong: #333a48;
+
+    --fk-text: #e7eaf0;
+    --fk-text-muted: #98a2b3;
+    --fk-text-subtle: #6b7280;
+
+    --fk-danger: #f97066;
+    --fk-danger-bg: #2b1513;
+    --fk-success: #47cd89;
+    --fk-success-bg: #0f2419;
+    --fk-warning: #f79009;
+    --fk-warning-bg: #2b1c08;
+
+    --fk-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+    --fk-shadow-lg: 0 12px 24px rgba(0, 0, 0, .55);
+  }
+}
+
+/* Servisin kendi temasını dayatması gerekirse: <html data-fk-theme="light"> */
+:root[data-fk-theme="light"] { color-scheme: light; }
+:root[data-fk-theme="dark"] { color-scheme: dark; }
+
+/* ── Temel ──────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--fk-font);
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--fk-text);
+  background: var(--fk-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 { margin: 0 0 .5rem; line-height: 1.25; font-weight: 600; letter-spacing: -.011em; }
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.175rem; }
+h3 { font-size: 1rem; }
+p { margin: 0 0 1rem; }
+a { color: var(--fk-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre, .fk-mono { font-family: var(--fk-mono); font-size: .875em; }
+
+/* Odak halkası tek bir yerde tanımlı ve hiçbir bileşende kaldırılmıyor. */
+:focus-visible {
+  outline: 2px solid var(--fk-accent);
+  outline-offset: 2px;
+  border-radius: var(--fk-radius-sm);
+}
+
+/* ── Yerleşim ───────────────────────────────────────────────────────────── */
+.fk-shell { min-height: 100vh; display: flex; flex-direction: column; }
+
+.fk-center {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+}
+
+.fk-container { width: 100%; max-width: 960px; margin: 0 auto; padding: 0 1.25rem; }
+.fk-container--narrow { max-width: 460px; }
+.fk-container--wide { max-width: 1200px; }
+
+.fk-stack > * + * { margin-top: 1rem; }
+.fk-stack-sm > * + * { margin-top: .5rem; }
+.fk-stack-lg > * + * { margin-top: 1.75rem; }
+
+.fk-row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+.fk-row--between { justify-content: space-between; }
+.fk-row--end { justify-content: flex-end; }
+.fk-grow { flex: 1 1 auto; min-width: 0; }
+
+/* ── Kart ───────────────────────────────────────────────────────────────── */
+.fk-card {
+  background: var(--fk-surface);
+  border: 1px solid var(--fk-border);
+  border-radius: var(--fk-radius-lg);
+  box-shadow: var(--fk-shadow);
+  padding: 1.75rem;
+}
+.fk-card--flat { box-shadow: none; }
+.fk-card__header { margin-bottom: 1.25rem; }
+.fk-card__title { margin: 0; font-size: 1.25rem; }
+.fk-card__subtitle { margin: .35rem 0 0; color: var(--fk-text-muted); font-size: .9rem; }
+
+/* ── Başlık çubuğu ──────────────────────────────────────────────────────── */
+.fk-header {
+  background: var(--fk-surface);
+  border-bottom: 1px solid var(--fk-border);
+  padding: .875rem 0;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.fk-header__inner { display: flex; align-items: center; gap: 1rem; }
+.fk-brand { display: flex; align-items: center; gap: .625rem; font-weight: 600; color: var(--fk-text); }
+.fk-brand:hover { text-decoration: none; }
+.fk-brand__mark {
+  width: 28px; height: 28px; border-radius: 8px;
+  background: var(--fk-accent); color: var(--fk-accent-contrast);
+  display: grid; place-items: center; font-size: .8rem; font-weight: 700;
+}
+
+/* ── Form ───────────────────────────────────────────────────────────────── */
+.fk-field { display: block; margin-bottom: 1rem; }
+.fk-label {
+  display: block; margin-bottom: .375rem;
+  font-size: .875rem; font-weight: 500; color: var(--fk-text);
+}
+.fk-hint { margin-top: .375rem; font-size: .8125rem; color: var(--fk-text-muted); }
+
+.fk-input, .fk-select, .fk-textarea {
+  width: 100%;
+  /* 16px, iOS Safari'nin odaklanınca sayfayı yakınlaştırmasını engelleyen eşik.
+     Daha küçük bir değer, mobilde her form alanında istenmeyen zoom demek. */
+  font: inherit;
+  font-size: 16px;
+  color: var(--fk-text);
+  background: var(--fk-surface);
+  border: 1px solid var(--fk-border-strong);
+  border-radius: var(--fk-radius);
+  padding: .625rem .75rem;
+  min-height: 44px;
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.fk-textarea { min-height: 96px; resize: vertical; }
+.fk-input:hover, .fk-select:hover, .fk-textarea:hover { border-color: var(--fk-text-subtle); }
+.fk-input:focus, .fk-select:focus, .fk-textarea:focus {
+  outline: none;
+  border-color: var(--fk-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fk-accent) 22%, transparent);
+}
+.fk-input[aria-invalid="true"] { border-color: var(--fk-danger); }
+.fk-input:disabled, .fk-select:disabled, .fk-textarea:disabled {
+  background: var(--fk-surface-2); color: var(--fk-text-subtle); cursor: not-allowed;
+}
+
+/* Tek kullanımlık kod alanı: rakamlar eşit genişlikte olmalı ki kod okunurken
+   haneler kaysın diye tereddüt edilmesin. */
+.fk-input--code {
+  font-family: var(--fk-mono);
+  font-size: 1.375rem;
+  letter-spacing: .35em;
+  text-align: center;
+  padding-left: .35em;
+}
+
+/* ── Düğme ──────────────────────────────────────────────────────────────── */
+.fk-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  font: inherit; font-size: .9375rem; font-weight: 500;
+  min-height: 44px;
+  padding: .625rem 1.125rem;
+  border-radius: var(--fk-radius);
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background-color .12s ease, border-color .12s ease, opacity .12s ease;
+}
+.fk-btn:hover { text-decoration: none; }
+.fk-btn:disabled, .fk-btn[aria-busy="true"] { opacity: .6; cursor: not-allowed; }
+
+.fk-btn--primary { background: var(--fk-accent); color: var(--fk-accent-contrast); }
+.fk-btn--primary:hover:not(:disabled) { background: var(--fk-accent-hover); }
+
+.fk-btn--secondary {
+  background: var(--fk-surface); color: var(--fk-text); border-color: var(--fk-border-strong);
+}
+.fk-btn--secondary:hover:not(:disabled) { background: var(--fk-surface-2); }
+
+.fk-btn--ghost { background: transparent; color: var(--fk-text-muted); }
+.fk-btn--ghost:hover:not(:disabled) { background: var(--fk-surface-2); color: var(--fk-text); }
+
+.fk-btn--danger { background: var(--fk-danger); color: #fff; }
+.fk-btn--danger:hover:not(:disabled) { filter: brightness(.92); }
+
+.fk-btn--block { width: 100%; }
+.fk-btn--sm { min-height: 36px; padding: .375rem .75rem; font-size: .875rem; }
+
+/* Yükleniyor göstergesi: metni GİZLEMİYOR, yanına ekliyor. Metni gizlemek,
+   ekran okuyucu kullanıcısının düğmenin ne yaptığını kaybetmesine yol açar. */
+.fk-btn[aria-busy="true"]::after {
+  content: ""; width: 14px; height: 14px;
+  border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%;
+  animation: fk-spin .6s linear infinite;
+}
+@keyframes fk-spin { to { transform: rotate(360deg); } }
+
+/* ── Uyarı kutuları ─────────────────────────────────────────────────────── */
+.fk-alert {
+  padding: .75rem 1rem;
+  border-radius: var(--fk-radius);
+  border: 1px solid transparent;
+  font-size: .9rem;
+}
+.fk-alert--error { background: var(--fk-danger-bg); border-color: color-mix(in srgb, var(--fk-danger) 30%, transparent); color: var(--fk-danger); }
+.fk-alert--success { background: var(--fk-success-bg); border-color: color-mix(in srgb, var(--fk-success) 30%, transparent); color: var(--fk-success); }
+.fk-alert--warning { background: var(--fk-warning-bg); border-color: color-mix(in srgb, var(--fk-warning) 30%, transparent); color: var(--fk-warning); }
+.fk-alert--info { background: var(--fk-surface-2); border-color: var(--fk-border); color: var(--fk-text-muted); }
+
+/* ── Rozet ──────────────────────────────────────────────────────────────── */
+.fk-badge {
+  display: inline-flex; align-items: center; gap: .3rem;
+  padding: .125rem .5rem;
+  border-radius: 999px;
+  font-size: .75rem; font-weight: 500;
+  background: var(--fk-surface-2); color: var(--fk-text-muted);
+  border: 1px solid var(--fk-border);
+}
+.fk-badge--success { background: var(--fk-success-bg); color: var(--fk-success); border-color: transparent; }
+.fk-badge--danger { background: var(--fk-danger-bg); color: var(--fk-danger); border-color: transparent; }
+.fk-badge--warning { background: var(--fk-warning-bg); color: var(--fk-warning); border-color: transparent; }
+
+/* ── Liste / hesap seçici ───────────────────────────────────────────────── */
+.fk-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--fk-border); border-radius: var(--fk-radius); overflow: hidden; }
+.fk-list__item { border-bottom: 1px solid var(--fk-border); }
+.fk-list__item:last-child { border-bottom: none; }
+
+.fk-option {
+  display: flex; align-items: center; gap: .875rem; width: 100%;
+  padding: .875rem 1rem; min-height: 44px;
+  background: var(--fk-surface); border: none; cursor: pointer;
+  font: inherit; color: var(--fk-text); text-align: left;
+}
+.fk-option:hover { background: var(--fk-surface-2); text-decoration: none; }
+.fk-option__title { font-weight: 500; }
+.fk-option__meta { font-size: .8125rem; color: var(--fk-text-muted); }
+
+/* ── Avatar ─────────────────────────────────────────────────────────────── */
+.fk-avatar {
+  width: 40px; height: 40px; border-radius: 50%;
+  object-fit: cover;
+  background: var(--fk-surface-2);
+  border: 1px solid var(--fk-border);
+  flex: none;
+}
+.fk-avatar--lg { width: 72px; height: 72px; }
+.fk-avatar--fallback {
+  display: grid; place-items: center;
+  background: var(--fk-accent); color: var(--fk-accent-contrast);
+  font-weight: 600; border-color: transparent;
+}
+
+/* ── Tablo ──────────────────────────────────────────────────────────────── */
+.fk-table-wrap { overflow-x: auto; border: 1px solid var(--fk-border); border-radius: var(--fk-radius); }
+.fk-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+.fk-table th, .fk-table td { padding: .75rem 1rem; text-align: left; border-bottom: 1px solid var(--fk-border); }
+.fk-table th { background: var(--fk-surface-2); font-weight: 500; color: var(--fk-text-muted); font-size: .8125rem; white-space: nowrap; }
+.fk-table tr:last-child td { border-bottom: none; }
+
+/* ── Anahtar (toggle) ───────────────────────────────────────────────────── */
+.fk-switch { display: flex; align-items: center; gap: .75rem; min-height: 44px; cursor: pointer; }
+.fk-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.fk-switch__track {
+  width: 40px; height: 24px; border-radius: 999px;
+  background: var(--fk-border-strong); flex: none;
+  transition: background-color .15s ease; position: relative;
+}
+.fk-switch__track::after {
+  content: ""; position: absolute; top: 3px; left: 3px;
+  width: 18px; height: 18px; border-radius: 50%; background: #fff;
+  transition: transform .15s ease;
+}
+.fk-switch input:checked + .fk-switch__track { background: var(--fk-accent); }
+.fk-switch input:checked + .fk-switch__track::after { transform: translateX(16px); }
+.fk-switch input:focus-visible + .fk-switch__track { outline: 2px solid var(--fk-accent); outline-offset: 2px; }
+.fk-switch input:disabled + .fk-switch__track { opacity: .5; cursor: not-allowed; }
+
+/* ── Yardımcılar ────────────────────────────────────────────────────────── */
+.fk-muted { color: var(--fk-text-muted); }
+.fk-subtle { color: var(--fk-text-subtle); }
+.fk-small { font-size: .8125rem; }
+.fk-center-text { text-align: center; }
+.fk-hidden { display: none !important; }
+.fk-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fk-divider { height: 1px; background: var(--fk-border); border: 0; margin: 1.25rem 0; }
+
+/* Ekran okuyucuya görünür, göze görünmez. "Atla" bağlantıları ve form
+   etiketleri için -- display:none kullanmak onları ekran okuyucudan da gizler. */
+.fk-sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* ── Çerez bandı ────────────────────────────────────────────────────────── */
+/* Sayfanın ALTINDA ve içeriğin ÜSTÜNDE değil: bir çerez bandının okumak
+   istediğiniz şeyi kapatması, kararı okumadan vermenizi sağlamak içindir. */
+.fk-cookie-banner {
+  position: fixed; left: 1rem; right: 1rem; bottom: 1rem; z-index: 50;
+  max-width: 560px; margin: 0 auto;
+  display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;
+  padding: 1rem 1.25rem;
+  background: var(--fk-surface); color: var(--fk-text);
+  border: 1px solid var(--fk-border); border-radius: var(--fk-radius-lg);
+  box-shadow: var(--fk-shadow-lg);
+}
+.fk-cookie-banner__text { flex: 1 1 260px; min-width: 0; }
+.fk-cookie-banner__text p { margin: .35rem 0 .5rem; color: var(--fk-text-muted); }
+/* İki düğme de aynı ağırlıkta -- birini vurgulamak seçimi ortadan kaldırır. */
+.fk-cookie-banner__actions { display: flex; gap: .5rem; flex: 0 0 auto; }
+
+@media (max-width: 520px) {
+  .fk-cookie-banner { left: .5rem; right: .5rem; bottom: .5rem; }
+  .fk-cookie-banner__actions { width: 100%; }
+  .fk-cookie-banner__actions .fk-btn { flex: 1 1 auto; }
+}
+
+/* ── Hareket azaltma ────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Küçük ekran ────────────────────────────────────────────────────────── */
+@media (max-width: 520px) {
+  .fk-card { padding: 1.25rem; border-radius: var(--fk-radius); }
+  .fk-center { padding: .75rem; align-items: start; padding-top: 2rem; }
+  .fk-row { gap: .5rem; }
+  .fk-btn--block-sm { width: 100%; }
+}

@@ -226,7 +226,9 @@
 
     // ---- çoklu hesap (Microsoft/Google tarzı hesap seçici) ----
     listAccounts: () => getJson('/auth/accounts'),
-    switchAccount: (sessionId) => postJson('/auth/switch-account', { sessionId }),
+    // returnTo sunucuya gönderilir; sunucu doğrulayıp yanıtta `redirectTo`
+    // olarak geri verir (bkz. core/safe-redirect.js).
+    switchAccount: (sessionId, returnTo) => postJson('/auth/switch-account', { sessionId, returnTo }),
     logoutAll: () => postJson('/auth/logout-all'),
 
     // ---- anti-bot ----

@@ -14,6 +14,9 @@ const { WebAuthnService } = require('./core/webauthn');
 const { ProofOfWorkService } = require('./core/proof-of-work');
 const { DbEphemeralStore, PrefixedEphemeralStore } = require('./core/ephemeral-store');
 const { LoginProtection } = require('./core/rate-limiter');
+const { createSameOriginGuard } = require('./core/same-origin');
+const { UserQuota } = require('./core/user-quota');
+const cookieConsent = require('./core/cookie-consent');
 const {
   Server, Service, GRPC_STATUS, GrpcError, requireBearerAuth,
 } = require('./core/http-transport');
@@ -25,6 +28,9 @@ const { AcmeService } = require('./services/acme-service');
 const ocspService = require('./services/ocsp-service');
 const crlService = require('./services/crl-service');
 const { createStatusHandler, createPolicyHandler } = require('./services/status-server');
+const { createCtLog, createCtHandler, CT_PATH_PREFIX } = require('./services/ct-log-service');
+const { safeRedirect } = require('./core/safe-redirect');
+const deviceBinding = require('./core/device-binding');
 const { AppError } = require('./core/errors');
 const schema = require('./db/schema');
 
@@ -32,6 +38,8 @@ const authService = require('./services/auth-service');
 const webauthnServiceModule = require('./services/webauthn-service');
 const { OAuthService, createDbClientStore } = require('./services/oauth-service');
 const srpAuthService = require('./services/srp-auth-service');
+const profileService = require('./services/profile-service');
+const consentService = require('./services/consent-service');
 
 // ----------------------------------------------------------------------------
 // 🏗️ YAPILANDIRMA
@@ -52,12 +60,35 @@ const TRUST_HOST = config.trustHost;
 const TRUST_ISSUER = process.env.FITFAK_IDP_TRUST_ISSUER || `https://${TRUST_HOST}`;
 const KEY_DIR = config.keyDir;
 
+// Gerçek çift-yönlü (bidi) akış yalnızca gerçek HTTP/2 üzerinden mümkün; düz
+// porttaki her şey HTTP/1.1 ile çalışıyor. 0 verilerek kapatılabilir -- test
+// ortamında sertifika dosyaları olmayabilir ve bunun için ayrı bir port açmak
+// gereksiz.
+const HTTP2_PORT = Number(process.env.FITFAK_IDP_HTTP2_PORT || 0);
+
 // Mantıksal host başına bir bağlama adresi. Ayrım Host header'ıyla DEĞİL soket
 // seviyesinde yapılır: Host, istemcinin yazdığı bir dizedir; yerel adres değildir.
 const IDP_IP = config.bind.idp;       // session.fitfak.net
 const PKI_IP = config.bind.trust;     // trust.fitfak.net
 const ADMIN_IP = config.bind.admin;   // one.fitfak.net
 const STATUS_IP = config.bind.status; // status.trust.fitfak.net / time.trust.fitfak.net
+
+// Durum değiştiren, COOKIE ile kimliklenen uç noktalar için köken kapısı.
+// Gerekçesi core/same-origin.js'in başında. Geliştirmede sayfa doğrudan
+// http://127.0.0.1:PORT üzerinden açılıyor; o kökeni yalnızca üretim DIŞINDA
+// listeye alıyoruz -- üretimde tek geçerli köken ISSUER'dır.
+const DEV_ORIGINS = config.isProduction ? [] : [
+  `http://${IDP_IP}:${PORT}`, `http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`,
+];
+const requireSameOrigin = createSameOriginGuard({
+  allowedOrigins: [ISSUER, ...DEV_ORIGINS],
+});
+// trust.fitfak.net'teki uç noktaları çağıran sayfa session.fitfak.net'te
+// duruyor: istek köken-ötesi ama site-içi. Gerekçe core/same-origin.js'te.
+const requireTrustOrigin = createSameOriginGuard({
+  allowedOrigins: [ISSUER, TRUST_ISSUER, ...DEV_ORIGINS],
+  allowSameSite: true,
+});
 
 // ----------------------------------------------------------------------------
 // 🏗️ VERİTABANI KURULUMU
@@ -163,6 +194,9 @@ function wrapHandler(fn) {
     } catch (e) {
       const status = e.httpStatus || 500;
       if (status >= 500) console.error('[fitfak-idp] beklenmeyen hata:', e);
+      // "Çok sık denediniz" deyip ne zaman denenebileceğini söylememek,
+      // istemciyi daha sık denemeye iter.
+      if (e.retryAfterSeconds) res.setHeader('retry-after', String(e.retryAfterSeconds));
       sendJson(res, status, { error: e.code || 'internal_error', error_description: e.message || 'İç sunucu hatası' });
     }
   };
@@ -199,7 +233,13 @@ async function main() {
     console.warn('[fitfak-idp] UYARI: PKI/ACME/OCSP/CRL SAHTE (dev-mock) issuer ile çalışıyor -- ÜRETİMDE KULLANMAYIN.');
   }
   
-  const pkiIssuer = new ProductionPkiIssuer(path.join(__dirname, '.certs'));
+  // CT log'u önce kurulur: sertifika üretimi ona bağlı (önsertifika -> SCT ->
+  // sertifika). Log yoksa sertifikalar SCT'siz üretilir, üretim durmaz.
+  const ctLog = createCtLog({ db, keyDir: config.keyDir });
+  const ctPublicKeyPem = require('node:fs').readFileSync(
+    path.join(config.keyDir, 'ct-log.pub'), 'utf8',
+  );
+  const pkiIssuer = new ProductionPkiIssuer(config.caDir, { ctLog });
   const acmeService = new AcmeService({
     db, pkiIssuer, nonceStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'acmenonce:'), issuer: TRUST_ISSUER,
     http01Port: Number(process.env.FITFAK_IDP_ACME_HTTP01_PORT || 80),
@@ -216,6 +256,11 @@ async function main() {
         name: 'DNS Paneli',
         redirectUris: [process.env.FITFAK_IDP_DNS_REDIRECT_URI || 'https://fitfak.net/oauth/callback'],
         allowedScopes: ['openid', 'profile', 'dns:read', 'dns:write'],
+        clientUri: 'https://fitfak.net',
+        // Kendi panelimiz: onay ekranı atlanır. "FITFAK, FITFAK hesabınıza
+        // erişmek istiyor" diye sormak kullanıcıya bilgi vermez, yalnızca onu
+        // onay ekranlarını okumadan geçmeye alıştırır.
+        firstParty: true,
       });
       console.warn(`[fitfak-idp] DNS Paneli OAuth client'ı tohumlandı.`);
     }
@@ -228,6 +273,15 @@ async function main() {
     userCodeStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'usercode:'),
     deviceCodePollIntervalS: Number(process.env.FITFAK_IDP_DEVICE_POLL_INTERVAL_S || 5),
   });
+  // Onay ekranına giderken yetkilendirme isteğinin saklandığı yer.
+  const consentStore = new PrefixedEphemeralStore(sharedEphemeralStore, 'consent:');
+
+  // Giriş YAPMIŞ kullanıcının pahalı işlemleri için kota. Giriş öncesini
+  // koruyan LoginProtection'dan ayrı bir eksen -- gerekçesi core/user-quota.js'te.
+  const userQuota = new UserQuota();
+  async function requireUserQuota(userId, action) {
+    return userQuota.enforce(userId, action);
+  }
 
   // --------------------------------------------------------------------------
   // ✉️ SABİT SMTP / E-POSTA YAPILANDIRMASI
@@ -341,12 +395,33 @@ async function main() {
     return { ...session, username: userRow.username, email };
   }
 
+  // Cihaz kimliği için ayrı bir HMAC anahtarı: token imzalama anahtarıyla aynı
+  // sırrı kullanmak, iki farklı amacı tek anahtara bağlar ve birini döndürmeyi
+  // diğerini de kırmadan imkânsız kılar.
+  const deviceSecret = crypto.createHash('sha256')
+    .update(config.db.rootSecret || Buffer.alloc(32))
+    .update('fitfak-device-binding-v1')
+    .digest();
+
+  function currentDevice(req) {
+    return deviceBinding.resolveDevice(req, { secret: deviceSecret, parseCookies });
+  }
+
   async function applyFullLoginCookies(req, res, session) {
     const accountsList = await addSessionToAccountsList(req, { sessionId: session.sessionId, userId: session.userId });
-    res.setHeader('set-cookie', [
+    const cookiesToSet = [
       ...sessionManager.buildSsoCookies({ accessToken: session.accessToken, refreshToken: session.refreshToken }),
       sessionManager.buildAccountsListCookie(accountsList),
-    ]);
+    ];
+    // Cihaz çerezi yalnızca yeni üretildiğinde yazılır; her yanıtta yeniden
+    // yazmak süresini sürekli uzatır ve "bu tarayıcıyı ne zamandır tanıyoruz"
+    // sorusunu anlamsızlaştırır.
+    if (session.deviceId && session.isNewDeviceCookie) {
+      cookiesToSet.push(deviceBinding.buildDeviceCookie(session.deviceId, {
+        secret: deviceSecret, cookieDomain: COOKIE_DOMAIN,
+      }));
+    }
+    res.setHeader('set-cookie', cookiesToSet);
   }
 
   async function resolveUserIdForMfaSetup(req, body) {
@@ -517,9 +592,11 @@ async function main() {
 
   server.addHttpHandler({ method: 'POST', path: '/auth/login/totp' }, wrapHandler(async (req, res) => {
     const body = await readJsonBody(req);
+    const { deviceId, isNew } = currentDevice(req);
     const session = await authService.completeLoginWithTotp({
       db, sessionManager, mfaChallengeToken: body.mfaChallengeToken, code: body.code,
       ip: getIp(req), userAgent: req.headers['user-agent'], antiBot,
+      deviceId, isNewDeviceCookie: isNew, mailer,
     });
     await applyFullLoginCookies(req, res, session);
     sendJson(res, 200, { sessionId: session.sessionId, expiresIn: session.expiresIn });
@@ -535,9 +612,11 @@ async function main() {
 
   server.addHttpHandler({ method: 'POST', path: '/auth/webauthn/login/finish' }, wrapHandler(async (req, res) => {
     const body = await readJsonBody(req);
+    const { deviceId, isNew } = currentDevice(req);
     const result = await webauthnServiceModule.finishAuthentication({
       db, sessionManager, webauthnService: webauthn, challengeId: body.challengeId, credential: body.credential,
       mfaChallengeToken: body.mfaChallengeToken, ip: getIp(req), userAgent: req.headers['user-agent'],
+      deviceId, isNewDeviceCookie: isNew, mailer,
     });
     if (result.accessToken) {
       await applyFullLoginCookies(req, res, result);
@@ -548,13 +627,24 @@ async function main() {
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/auth/switch-account' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
     const body = await readJsonBody(req);
     const accounts = await resolveValidAccounts(req);
     const target = accounts.find((a) => a.sessionId === body.sessionId);
     if (!target) throw new AppError('not_found', 'Bu hesap bu tarayıcıda bulunamadı', { httpStatus: 404 });
     const tokens = await sessionManager.issueTokensForClient({ sessionId: target.sessionId, clientId: 'self', scope: 'openid profile' });
-    await applyFullLoginCookies(req, res, { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, sessionId: target.sessionId, userId: target.userId });
-    sendJson(res, 200, { switched: true, username: target.username });
+    await applyFullLoginCookies(req, res, {
+      accessToken: tokens.accessToken, refreshToken: tokens.refreshToken,
+      sessionId: target.sessionId, userId: target.userId,
+    });
+    // Hesap değiştirdikten sonra nereye gidileceği yanıtta dönüyor. Önceden
+    // yalnızca {switched:true} dönüyordu ve istemci nereye gideceğini
+    // bilmediği için kullanıcı seçim ekranında kalıyordu.
+    sendJson(res, 200, {
+      switched: true,
+      username: target.username,
+      redirectTo: safeRedirect(body.returnTo, { fallback: config.postLoginUrl, selfOrigin: ISSUER }),
+    });
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/auth/accounts' }, wrapHandler(async (req, res) => {
@@ -564,6 +654,7 @@ async function main() {
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/auth/logout' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
     const session = await resolveCurrentSession(req);
     if (session) await authService.logout({ sessionManager, sessionId: session.sessionId });
     const remainingAccounts = (await resolveValidAccounts(req)).filter((a) => !session || a.sessionId !== session.sessionId);
@@ -575,25 +666,42 @@ async function main() {
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/auth/logout-all' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
+    // Yetki, erişim token'ından DEĞİL bu tarayıcıdaki hesap listesinden geliyor.
+    //
+    // Önceki hâli resolveCurrentSession() istiyordu, yani geçerli bir erişim
+    // token'ı. Ama /auth/logout tam olarak o çerezi siliyor -- dolayısıyla
+    // "önce bir hesaptan çık, sonra hepsinden çık" dizisi 401 ile bitiyordu ve
+    // kullanıcı, tarayıcıda hâlâ açık duran diğer hesaplarını kapatamıyordu.
+    // Çıkış yapmanın kimlik kanıtı gerektirmesi zaten yanlış yönde bir kısıt:
+    // burada verilen karar "bu tarayıcıdaki her şeyi kapat".
+    const accounts = await resolveValidAccounts(req);
     const current = await resolveCurrentSession(req);
-    if (!current) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
 
-    // 1. Kullanıcının DB'deki tüm oturumlarını bul
-    const allSessions = await sessionManager.listSessions(current.userId);
-    
-    // 2. Sadece aktif olanları filtrele (gereksiz DB yükünü engelle)
-    const activeSessions = allSessions.filter((s) => !s.revoked);
-    
-    // 3. Tüm aktif oturumları "logout_all" sebebiyle revoke et
-    await Promise.all(activeSessions.map((s) => sessionManager.revokeSession(s.sessionId, 'logout_all')));
-    
-    // 4. Mevcut tarayıcıdaki tüm çerezleri temizle
+    const sessionIds = new Set(accounts.map((a) => a.sessionId));
+    if (current) sessionIds.add(current.sessionId);
+
+    // Bu tarayıcıda bilinen her hesabın TÜM oturumları kapatılır -- "her yerden
+    // çıkış yap" bunu ister, yalnızca bu tarayıcıdakileri değil.
+    const userIds = new Set(accounts.map((a) => a.userId));
+    if (current) userIds.add(current.userId);
+    for (const userId of userIds) {
+      for (const s of await sessionManager.listSessions(userId)) {
+        if (!s.revoked) sessionIds.add(s.sessionId);
+      }
+    }
+
+    let count = 0;
+    for (const sessionId of sessionIds) {
+      try { await sessionManager.revokeSession(sessionId, 'logout_all'); count += 1; }
+      catch (_) { /* zaten iptal edilmiş olabilir */ }
+    }
+
     res.setHeader('set-cookie', [
-      ...sessionManager.buildLogoutCookies(), 
-      sessionManager.expireAccountsListCookie()
+      ...sessionManager.buildLogoutCookies(),
+      sessionManager.expireAccountsListCookie(),
     ]);
-    
-    sendJson(res, 200, { loggedOut: true, count: activeSessions.length });
+    sendJson(res, 200, { loggedOut: true, count });
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/auth/sessions' }, wrapHandler(async (req, res) => {
@@ -621,6 +729,7 @@ async function main() {
   }), IDP_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/auth/sessions/revoke' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
     const current = await resolveCurrentSession(req);
     if (!current) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
     const body = await readJsonBody(req);
@@ -630,27 +739,229 @@ async function main() {
     sendJson(res, 200, { revoked: true });
   }), IDP_IP);
 
+  // Yetkilendirme isteğinin parametreleri, onay ekranından sonra da lazım. URL'de
+  // taşımak yerine bir yardımcıda toplanıp sunucuda saklanıyor (bkz.
+  // services/consent-service.js -- "Bekleyen yetkilendirme isteği").
+  // İç isimler camelCase, tel üzerindeki isimler snake_case. Aradaki eşleme TEK
+  // bir yerde: girişe gönderip geri döndürürken URL'i iç isimlerle yeniden
+  // kurmak, kullanıcıyı `/oauth/authorize?clientId=...` gibi -- sunucunun
+  // OKUYAMADIĞI -- bir adrese döndürürdü. Yani "giriş yap, sonra kaldığın
+  // yerden devam et" akışı, tam da devam etmesi gereken noktada kırılırdı.
+  const AUTHORIZE_PARAM_NAMES = {
+    clientId: 'client_id', redirectUri: 'redirect_uri', responseType: 'response_type',
+    scope: 'scope', state: 'state',
+    codeChallenge: 'code_challenge', codeChallengeMethod: 'code_challenge_method',
+    prompt: 'prompt',
+  };
+
+  function authorizationParams(q) {
+    const out = {};
+    for (const [internal, wire] of Object.entries(AUTHORIZE_PARAM_NAMES)) out[internal] = q.get(wire);
+    return out;
+  }
+
+  function authorizationUrl(params) {
+    const q = new URLSearchParams();
+    for (const [internal, wire] of Object.entries(AUTHORIZE_PARAM_NAMES)) {
+      if (params[internal] != null && params[internal] !== '') q.set(wire, params[internal]);
+    }
+    return `/oauth/authorize?${q.toString()}`;
+  }
+
+  async function finishAuthorization(req, res, params, { consentGranted = false } = {}) {
+    const accounts = await resolveValidAccounts(req);
+    const silent = String(params.prompt || '').split(/\s+/).includes('none');
+
+    // Birden fazla açık hesap varsa hangisi adına izin verildiği kullanıcıya
+    // sorulmalı. prompt=none bunu göstermeyi yasakladığı için hata döner --
+    // aksi halde IdP, kullanıcının kastetmediği hesabı seçerdi.
+    if (accounts.length >= 2) {
+      if (silent) {
+        res.statusCode = 302;
+        res.setHeader('location', oauthService._errorRedirect({
+          redirectUri: params.redirectUri, state: params.state,
+          error: 'account_selection_required', description: 'Birden fazla açık hesap var',
+        }));
+        return res.end();
+      }
+      const back = authorizationUrl(params);
+      res.statusCode = 302;
+      res.setHeader('location', `/login?return_to=${encodeURIComponent(safeRedirect(back, { fallback: '/portal', selfOrigin: ISSUER }))}&choose_account=1`);
+      return res.end();
+    }
+    const currentSession = accounts.length === 1
+      ? { userId: accounts[0].userId, sessionId: accounts[0].sessionId, revoked: false } : null;
+
+    const result = await oauthService.authorize({ ...params, currentSession, consentGranted });
+
+    if (result.requiresConsent) {
+      const pending = await consentService.createPendingAuthorization({
+        store: consentStore,
+        request: { params, userId: String(currentSession.userId), sessionId: currentSession.sessionId },
+      });
+      res.statusCode = 302;
+      res.setHeader('location', `/consent?request=${encodeURIComponent(pending)}`);
+      return res.end();
+    }
+
+    if (result.requiresLogin) {
+      const back = authorizationUrl(params);
+      res.statusCode = 302;
+      res.setHeader('location', `/login?return_to=${encodeURIComponent(safeRedirect(back, { fallback: '/portal', selfOrigin: ISSUER }))}`);
+      return res.end();
+    }
+
+    res.statusCode = 302;
+    res.setHeader('location', result.errorRedirect || result.redirectTo);
+    return res.end();
+  }
+
   server.addHttpHandler({ method: 'GET', path: '/oauth/authorize' }, wrapHandler(async (req, res) => {
     const url = new URL(req.url, ISSUER);
     const q = url.searchParams;
     const client = await clientStore.getClient(q.get('client_id'));
     if (!client || !client.redirectUris.includes(q.get('redirect_uri'))) throw new AppError('invalid_request', 'Geçersiz client_id ya da redirect_uri', { httpStatus: 400 });
+    return finishAuthorization(req, res, authorizationParams(q));
+  }), IDP_IP);
 
-    const accounts = await resolveValidAccounts(req);
-    if (accounts.length >= 2) {
-      res.statusCode = 302;
-      res.setHeader('location', `/static/demo-login.html?return_to=${encodeURIComponent(req.url)}&choose_account=1`);
-      return res.end();
+  // ---- onay ekranı ----------------------------------------------------------
+  // Sayfanın kendisi statik; ne istendiğini buradan öğrenir. `request`
+  // tanıtıcısı olmadan gösterilecek bir şey yok, o yüzden doğrudan /consent'e
+  // giren kullanıcı portala gider.
+  server.addHttpHandler({ method: 'GET', path: '/consent/info' }, wrapHandler(async (req, res) => {
+    const url = new URL(req.url, ISSUER);
+    const session = await resolveCurrentSession(req);
+    if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+
+    const pending = await consentService.readPendingAuthorization({ store: consentStore, id: url.searchParams.get('request') });
+    if (!pending) throw new AppError('not_found', 'Bu onay isteği bulunamadı ya da süresi doldu', { httpStatus: 404 });
+    // Bekleyen istek, onu BAŞLATAN oturuma bağlı. Aksi halde bir sekmede
+    // hesap değiştiren kullanıcı, diğer sekmedeki onayı yanlış hesap adına
+    // verebilirdi.
+    if (String(pending.userId) !== String(session.userId)) {
+      throw new AppError('not_found', 'Bu onay isteği bu hesaba ait değil', { httpStatus: 404 });
     }
-    const currentSession = accounts.length === 1 ? { userId: accounts[0].userId, sessionId: accounts[0].sessionId, revoked: false } : null;
+
+    const client = await clientStore.getClient(pending.params.clientId);
+    if (!client) throw new AppError('not_found', 'Uygulama bulunamadı', { httpStatus: 404 });
+
+    const scopes = consentService.resolveRequestedScopes({ requested: pending.params.scope, client });
+    const existing = await consentService.getGrant({ db, userId: session.userId, clientId: client.clientId });
+    const held = new Set(existing ? existing.scopes : []);
+    const profile = await profileService.getProfile({ db, userId: session.userId });
+
+    sendJson(res, 200, {
+      client: {
+        clientId: client.clientId, name: client.name, clientUri: client.clientUri || null,
+        // Kullanıcı nereye gönderileceğini görmeli: onay ekranındaki asıl
+        // soru "kime" değil, "nereye".
+        redirectHost: new URL(pending.params.redirectUri).host,
+      },
+      account: {
+        username: profile.username, email: profile.email,
+        displayName: profile.displayName, avatarUrl: profile.avatarUrl,
+      },
+      // Daha önce verilmiş izinler ayrı işaretleniyor: kullanıcı NEYİN yeni
+      // olduğunu görmeli, yoksa her seferinde aynı listeyi okumaya çalışır.
+      scopes: scopes.map((s) => ({ ...consentService.describeScope(s), isNew: !held.has(s) })),
+      previouslyGranted: existing ? existing.scopes : [],
+    });
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/consent/decide' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
+    const session = await resolveCurrentSession(req);
+    if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+    const body = await readJsonBody(req);
+
+    // Tek kullanımlık: tüketildikten sonra aynı tanıtıcı ikinci bir izin
+    // veremez.
+    const pending = await consentService.consumePendingAuthorization({ store: consentStore, id: body.request });
+    if (!pending) throw new AppError('not_found', 'Bu onay isteği bulunamadı ya da süresi doldu', { httpStatus: 404 });
+    if (String(pending.userId) !== String(session.userId)) {
+      throw new AppError('not_found', 'Bu onay isteği bu hesaba ait değil', { httpStatus: 404 });
+    }
+
+    const client = await clientStore.getClient(pending.params.clientId);
+    if (!client) throw new AppError('not_found', 'Uygulama bulunamadı', { httpStatus: 404 });
+
+    if (!body.approve) {
+      // Reddetme de bir cevaptır ve client'a İLETİLİR: kullanıcı reddettiğinde
+      // uygulamanın sonsuza kadar beklemesi değil, "hayır" demesi gerekir.
+      return sendJson(res, 200, {
+        redirectTo: oauthService._errorRedirect({
+          redirectUri: pending.params.redirectUri, state: pending.params.state,
+          error: 'access_denied', description: 'Kullanıcı izni reddetti',
+        }),
+      });
+    }
+
+    const scopes = consentService.resolveRequestedScopes({ requested: pending.params.scope, client });
+    await consentService.saveGrant({ db, userId: session.userId, clientId: client.clientId, scopes });
 
     const result = await oauthService.authorize({
-      clientId: q.get('client_id'), redirectUri: q.get('redirect_uri'), responseType: q.get('response_type'),
-      scope: q.get('scope'), state: q.get('state'), codeChallenge: q.get('code_challenge'), codeChallengeMethod: q.get('code_challenge_method'), currentSession,
+      ...pending.params,
+      currentSession: { userId: session.userId, sessionId: session.sessionId, revoked: false },
+      consentGranted: true,
     });
-    res.statusCode = 302;
-    res.setHeader('location', result.requiresLogin ? `/static/demo-login.html?return_to=${encodeURIComponent(req.url)}` : result.redirectTo);
-    res.end();
+    sendJson(res, 200, { redirectTo: result.errorRedirect || result.redirectTo });
+  }), IDP_IP);
+
+  // ---- çerez tercihleri -----------------------------------------------------
+  // İstatistik çerezi ile oturum çerezi AYRI kategoriler. Gerekçe
+  // core/cookie-consent.js'in başında: aynı kategoride sayıldıkları sürece ya
+  // istatistik rızasız yazılır ya da "hepsini reddet" oturumu kapatır.
+  //
+  // Uç noktalar oturum İSTEMEZ: rıza, giriş yapmamış ziyaretçi için de geçerli
+  // bir karardır ve tam olarak o ziyaretçiye sorulması gerekir.
+  server.addHttpHandler({ method: 'GET', path: '/api/cookies' }, wrapHandler(async (req, res) => {
+    const prefs = cookieConsent.readPreferences(req.headers.cookie);
+    sendJson(res, 200, {
+      ...cookieConsent.describeCatalog(),
+      preferences: cookieConsent.preferencesAreCurrent(prefs) ? prefs : null,
+      // Bant yalnızca karar VERİLMEMİŞSE gösterilir. Verilmiş bir kararı
+      // tekrar tekrar sormak, kullanıcıyı okumadan kabul etmeye iter.
+      needsDecision: !cookieConsent.preferencesAreCurrent(prefs),
+    });
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/api/cookies' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
+    const body = await readJsonBody(req);
+    const istatistik = body.istatistik === true;
+
+    const setCookies = [cookieConsent.buildPreferencesCookie({ istatistik }, { domain: COOKIE_DOMAIN })];
+    if (istatistik) {
+      // Zaten varsa yenisini yazmıyoruz: her onayda yeni tanıtıcı üretmek,
+      // ölçümü bozar ve kullanıcıya yeni bir tanıtıcı vermiş olurdu.
+      if (!cookieConsent.parseCookieHeader(req.headers.cookie)[cookieConsent.STATS_COOKIE]) {
+        setCookies.push(cookieConsent.buildStatisticsCookie({ domain: COOKIE_DOMAIN }));
+      }
+    } else {
+      // Rıza geri alındığında çerez SİLİNİR. "Bir daha yazmayız" demek yetmez:
+      // yazılmış olan hâlâ tarayıcıda durur ve her istekte gönderilir.
+      setCookies.push(cookieConsent.expireStatisticsCookie({ domain: COOKIE_DOMAIN }));
+    }
+    res.setHeader('set-cookie', setCookies);
+    sendJson(res, 200, { saved: true, istatistik });
+  }), IDP_IP);
+
+  // Verilmiş izinler: listeleme ve geri alma. /profile sayfasındaki "bağlı
+  // uygulamalar" bölümü bunları kullanır.
+  server.addHttpHandler({ method: 'GET', path: '/account/grants' }, wrapHandler(async (req, res) => {
+    const session = await resolveCurrentSession(req);
+    if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+    sendJson(res, 200, { grants: await consentService.listGrants({ db, userId: session.userId, clientStore }) });
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/account/grants/revoke' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
+    const session = await resolveCurrentSession(req);
+    if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+    const body = await readJsonBody(req);
+    sendJson(res, 200, await consentService.revokeGrant({
+      db, userId: session.userId, clientId: body.clientId, sessionManager,
+    }));
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/oauth/token' }, wrapHandler(async (req, res) => {
@@ -707,13 +1018,115 @@ async function main() {
   
   server.addHttpHandler({ method: 'GET', path: '/device' }, (req, res) => {
     const url = new URL(req.url, ISSUER);
-    const target = new URL('/static/demo-login.html', ISSUER);
+    const target = new URL('/login', ISSUER);
     target.searchParams.set('device', '1');
     if (url.searchParams.get('user_code')) target.searchParams.set('user_code', url.searchParams.get('user_code'));
     res.statusCode = 302;
     res.setHeader('location', `${target.pathname}${target.search}`);
     res.end();
   }, IDP_IP);
+
+  // ---- profil, avatar, tercihler, hesap silme --------------------------------
+  const profileStore = new PrefixedEphemeralStore(sharedEphemeralStore, 'profile:');
+
+  async function requireSession(req) {
+    const session = await resolveCurrentSession(req);
+    if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+    return session;
+  }
+
+  // Profil API'si /api/ altında; /profile SAYFANIN kendisidir. İkisi aynı yolda
+  // olamaz -- aynı method+path için ilk kayıtlı işleyici kazanır ve sayfa hiç
+  // sunulmazdı.
+  server.addHttpHandler({ method: 'GET', path: '/api/profile' }, wrapHandler(async (req, res) => {
+    const session = await requireSession(req);
+    sendJson(res, 200, await profileService.getProfile({ db, userId: session.userId }));
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/api/profile' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
+    const session = await requireSession(req);
+    const body = await readJsonBody(req);
+    sendJson(res, 200, await profileService.updateProfile({
+      db, userId: session.userId,
+      displayName: body.displayName, bio: body.bio, locale: body.locale, timezone: body.timezone,
+    }));
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/api/profile/notifications' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
+    const session = await requireSession(req);
+    const body = await readJsonBody(req);
+    sendJson(res, 200, await profileService.updateNotificationPreferences({
+      db, userId: session.userId,
+      product: body.product, newDevice: body.newDevice, newsletter: body.newsletter,
+    }));
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/api/profile/avatar' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
+    const session = await requireSession(req);
+    await requireUserQuota(session.userId, 'avatar');
+    // Gövde ham baytlar. content-type'a BAKILMIYOR: biçim kararı yalnızca
+    // baytlardan veriliyor (bkz. core/image-guard.js).
+    const raw = await readRawBody(req);
+    sendJson(res, 200, await profileService.setAvatar({ db, userId: session.userId, bytes: raw }));
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/api/profile/avatar/delete' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
+    const session = await requireSession(req);
+    sendJson(res, 200, await profileService.deleteAvatar({ db, userId: session.userId }));
+  }), IDP_IP);
+
+  server.addHttpHandler((req) => req.method === 'GET' && req.url.split('?')[0].startsWith('/profile/avatar/'),
+    wrapHandler(async (req, res) => {
+      const userId = req.url.split('?')[0].slice('/profile/avatar/'.length);
+      const avatar = await profileService.getAvatar({ db, userId });
+      if (!avatar) { res.statusCode = 404; return res.end(); }
+
+      if (req.headers['if-none-match'] === `"${avatar.etag}"`) {
+        res.statusCode = 304; return res.end();
+      }
+      res.statusCode = 200;
+      res.setHeader('content-type', avatar.contentType);
+      res.setHeader('etag', `"${avatar.etag}"`);
+      // Avatar baytları kullanıcı tarafından yüklenmiştir. Temizlenmiş olsa
+      // bile tarayıcıya "bunu asla belge olarak yorumlama" demek gerekir:
+      // nosniff olmadan içerik koklama, PNG'yi HTML sanabilir; CSP sandbox
+      // ise dosya bir şekilde belge olarak açılırsa script çalışmasını keser.
+      res.setHeader('x-content-type-options', 'nosniff');
+      res.setHeader('content-security-policy', "default-src 'none'; sandbox");
+      res.setHeader('content-disposition', 'inline');
+      // ETag URL'de taşındığı için uzun önbellek güvenli.
+      res.setHeader('cache-control', 'public, max-age=86400, immutable');
+      res.end(avatar.bytes);
+    }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/api/account/delete' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
+    const session = await requireSession(req);
+    await requireUserQuota(session.userId, 'account-delete');
+    sendJson(res, 200, await profileService.requestAccountDeletion({
+      db, userId: session.userId, mailer, ephemeralStore: profileStore,
+    }));
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/api/account/delete/confirm' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
+    const session = await requireSession(req);
+    await requireUserQuota(session.userId, 'account-delete-confirm');
+    const body = await readJsonBody(req);
+    const result = await profileService.confirmAccountDeletion({
+      db, userId: session.userId, code: body.code,
+      ephemeralStore: profileStore, sessionManager,
+    });
+    res.setHeader('set-cookie', [
+      ...sessionManager.buildLogoutCookies(),
+      sessionManager.expireAccountsListCookie(),
+    ]);
+    sendJson(res, 200, result);
+  }), IDP_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/oauth/userinfo' }, wrapHandler(async (req, res) => {
     const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=').map(decodeURIComponent)));
@@ -732,29 +1145,35 @@ async function main() {
   }), IDP_IP);
 
   // ADMİN PANELİ (Arayüz Sunumu) (IDP)
-  server.addHttpHandler({ method: 'GET', path: '/admin' }, (req, res) => {
-    const adminHtmlPath = path.join(__dirname, 'public', 'admin-panel.html');
-    if (fs.existsSync(adminHtmlPath)) {
-      res.statusCode = 200;
-      res.setHeader('content-type', 'text/html; charset=utf-8');
-      res.end(fs.readFileSync(adminHtmlPath));
-    } else {
-      res.statusCode = 404;
-      res.setHeader('content-type', 'text/plain; charset=utf-8');
-      res.end('HATA: public/admin-panel.html dosyası bulunamadı.');
+  // Yönetim yüzeyi one.fitfak.net (127.0.0.3) üzerinde, giriş yüzeyinden AYRI
+  // bir adreste. Ayrım yalnızca düzen için değil: session.fitfak.net herkese
+  // açıkken, yönetim adresi ağ seviyesinde kapatılabilir hale gelir. Aynı
+  // porttaki bir yol olsaydı, koruma yalnızca uygulama içindeki tek bir
+  // kontrole (requireAdmin) bağlı kalırdı.
+  server.addHttpHandler({ method: 'GET', path: '/admin' }, wrapHandler(async (req, res) => {
+    // Sayfanın kendisi de oturum ister ve yönetici değilse girişe yollar --
+    // aksi halde panel açılır, her AJAX çağrısı 403 döner ve kullanıcı ne
+    // olduğunu anlamaz.
+    const session = await resolveCurrentSession(req);
+    if (!session) {
+      res.statusCode = 302;
+      res.setHeader('location', `/login?return_to=${encodeURIComponent('/admin')}`);
+      return res.end();
     }
-  }, IDP_IP);
+    await requireAdmin(req);
+    servePage(res, 'admin-panel.html');
+  }), ADMIN_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/admin/users' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
     sendJson(res, 200, { users: await authService.listAllUsers({ db }) });
-  }), IDP_IP);
+  }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/admin/users/role' }, wrapHandler(async (req, res) => {
     const admin = await requireAdmin(req);
     const body = await readJsonBody(req);
     sendJson(res, 200, await authService.setUserRole({ db, targetUserId: body.userId, role: body.role, actingUserId: admin.userId }));
-  }), IDP_IP);
+  }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'GET', path: '/admin/sessions' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
@@ -763,20 +1182,20 @@ async function main() {
     if (!targetUserId) throw new AppError('invalid_argument', 'userId gerekli', { httpStatus: 400 });
     const sessions = await sessionManager.listSessions(targetUserId);
     sendJson(res, 200, { sessions: sessions.map((s) => ({ sessionId: s.sessionId, ip: s.ip, userAgent: s.userAgent, audiences: s.audiences, createdAt: s.createdAt, lastSeenAt: s.lastSeenAt, revoked: s.revoked })) });
-  }), IDP_IP);
+  }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/admin/sessions/revoke' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
     const body = await readJsonBody(req);
     await sessionManager.revokeSession(body.sessionId, 'admin_revoked');
     sendJson(res, 200, { revoked: true });
-  }), IDP_IP);
+  }), ADMIN_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/admin/oauth-clients' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
     const clients = await clientStore.listClients();
     sendJson(res, 200, { clients: clients.map((c) => ({ ...c, clientSecret: undefined, clientSecretMasked: `••••${c.clientSecret.slice(-4)}` })) });
-  }), IDP_IP);
+  }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/admin/oauth-clients' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
@@ -785,24 +1204,26 @@ async function main() {
     const clientSecret = body.clientSecret || crypto.randomBytes(24).toString('base64url');
     const created = await clientStore.createClient({ clientId: body.clientId, clientSecret, name: body.name || body.clientId, redirectUris: body.redirectUris, allowedScopes: body.allowedScopes || ['openid', 'profile'] });
     sendJson(res, 200, { ...created, clientSecret });
-  }), IDP_IP);
+  }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/admin/oauth-clients/update' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
     const body = await readJsonBody(req);
     sendJson(res, 200, await clientStore.updateClient(body.clientId, { name: body.name, redirectUris: body.redirectUris, allowedScopes: body.allowedScopes }));
-  }), IDP_IP);
+  }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/admin/oauth-clients/delete' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
     const body = await readJsonBody(req);
     sendJson(res, 200, await clientStore.deleteClient(body.clientId));
-  }), IDP_IP);
+  }), ADMIN_IP);
 
   // PKI ROTALARI (127.0.0.2)
   server.addHttpHandler({ method: 'POST', path: '/device/certificate' }, wrapHandler(async (req, res) => {
+    requireTrustOrigin(req);
     const session = await resolveCurrentSession(req);
     if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+    await requireUserQuota(session.userId, 'certificate');
     const body = await readJsonBody(req);
     const result = await certificateService.requestCertificate({ db, pkiIssuer, userId: session.userId, csrPem: body.csrPem, profile: body.profile || 'client-auth' });
     sendJson(res, 200, result);
@@ -815,6 +1236,7 @@ async function main() {
   }), PKI_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/device/certificate/revoke' }, wrapHandler(async (req, res) => {
+    requireTrustOrigin(req);
     const session = await resolveCurrentSession(req);
     if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
     const body = await readJsonBody(req);
@@ -839,6 +1261,14 @@ async function main() {
       || req.url.startsWith('/ocsp/'),
     statusHandler,
     STATUS_IP,
+  );
+
+  // Certificate Transparency log'u -- trust.fitfak.net/ct/v1/*
+  const ctHandler = createCtHandler({ ctLog, publicKeyPem: ctPublicKeyPem });
+  server.addHttpHandler(
+    (req) => req.url.split('?')[0].startsWith(CT_PATH_PREFIX),
+    ctHandler,
+    PKI_IP,
   );
 
   // trust.fitfak.net/policy -- politika dağıtımı (127.0.0.2)
@@ -891,8 +1321,8 @@ async function main() {
     const serial = req.url.split('/').pop(); const certPem = await acmeService.downloadCertificate(serial); res.setHeader('content-type', 'application/pem-certificate-chain'); res.end(certPem); 
   }), PKI_IP);
   
-  server.addHttpHandler({ method: 'GET', path: '/admin/certificates' }, wrapHandler(async (req, res) => { await requireAdmin(req); sendJson(res, 200, { certificates: await certificateService.listAllCertificates({ db }) }); }), IDP_IP);
-  server.addHttpHandler({ method: 'POST', path: '/admin/certificates/revoke' }, wrapHandler(async (req, res) => { const admin = await requireAdmin(req); const body = await readJsonBody(req); const result = await certificateService.revokeCertificate({ db, serialNumberHex: body.serialNumberHex, reason: body.reason, actingUserId: admin.userId, actingUserRole: 'admin' }); await crlService.invalidateCrlCache(new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:')); sendJson(res, 200, result); }), IDP_IP);
+  server.addHttpHandler({ method: 'GET', path: '/admin/certificates' }, wrapHandler(async (req, res) => { await requireAdmin(req); sendJson(res, 200, { certificates: await certificateService.listAllCertificates({ db }) }); }), ADMIN_IP);
+  server.addHttpHandler({ method: 'POST', path: '/admin/certificates/revoke' }, wrapHandler(async (req, res) => { const admin = await requireAdmin(req); const body = await readJsonBody(req); const result = await certificateService.revokeCertificate({ db, serialNumberHex: body.serialNumberHex, reason: body.reason, actingUserId: admin.userId, actingUserRole: 'admin' }); await crlService.invalidateCrlCache(new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:')); sendJson(res, 200, result); }), ADMIN_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/admin/acme-orders' }, wrapHandler(async (req, res) => {
       await requireAdmin(req);
@@ -916,7 +1346,7 @@ async function main() {
         });
       }
       sendJson(res, 200, { orders, accounts });
-    }));
+    }), ADMIN_IP);
     server.addHttpHandler({ method: 'POST', path: '/admin/users/cert-profiles' }, wrapHandler(async (req, res) => {
       await requireAdmin(req);
       const body = await readJsonBody(req);
@@ -927,7 +1357,7 @@ async function main() {
       const profiles = (body.certProfiles || []).filter((p) => allowed.includes(p));
       await users.update(body.userId, { certProfiles: JSON.stringify(profiles) });
       sendJson(res, 200, { updated: true, certProfiles: profiles });
-    }));
+    }), ADMIN_IP);
   
     // ---- istemci tarafı yapılandırması (giriş sayfasının nereye yönlendireceği vb.) ----
     // Giriş tamamlandığında kullanıcı buraya yönlendirilir. Varsayılan olarak IdP'nin
@@ -935,27 +1365,125 @@ async function main() {
     // uygulamanıza yönlendirebilirsiniz.
     server.addHttpHandler({ method: 'GET', path: '/config' }, (req, res) => {
       sendJson(res, 200, {
-        postLoginUrl: process.env.FITFAK_IDP_POST_LOGIN_URL || '/static/portal.html',
+        postLoginUrl: config.postLoginUrl,
         issuer: ISSUER,
         trustIssuer: TRUST_ISSUER,
       });
     });
 
-  // STATİK DOSYALAR VE ANA SAYFA (IDP)
+  // STATİK VARLIKLAR (IDP) -- yalnızca script/stil, HTML DEĞİL.
+  //
+  // /static/ altından HTML sunmak, temiz URL'lere konan kimlik kontrollerini
+  // atlatmanın yolu olurdu: /portal oturum ister ama /static/portal.html aynı
+  // sayfayı kontrolsüz verirdi. Sayfalar yalnızca kendi rotalarından erişilebilir.
   const PUBLIC_DIR = path.join(__dirname, 'public');
-  const STATIC_CONTENT_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+  const STATIC_CONTENT_TYPES = {
+    '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.woff2': 'font/woff2',
+  };
   server.addHttpHandler(
-    (req) => req.method === 'GET' && req.url.split('?')[0].startsWith('/static/'),
+    (req) => req.method === 'GET' && req.url.split('?')[0].startsWith('/static/')
+      && !req.url.split('?')[0].endsWith('.html'),
     (req, res) => {
       const rel = decodeURIComponent(req.url.split('?')[0].slice('/static/'.length));
       const filePath = path.join(PUBLIC_DIR, rel);
-      if (!filePath.startsWith(PUBLIC_DIR) || !fs.existsSync(filePath)) { res.statusCode = 404; res.end('bulunamadı'); return; }
-      res.setHeader('content-type', STATIC_CONTENT_TYPES[path.extname(filePath)] || 'application/octet-stream');
+      // path.join zaten '..' çözer; kontrolü ondan SONRA yapmak, '/static/../x'
+      // gibi girdilerin PUBLIC_DIR dışına çıkmasını engeller.
+      if (!filePath.startsWith(PUBLIC_DIR + path.sep) || !fs.existsSync(filePath)) {
+        res.statusCode = 404; res.end('bulunamadı'); return;
+      }
+      const type = STATIC_CONTENT_TYPES[path.extname(filePath)];
+      if (!type) { res.statusCode = 404; res.end('bulunamadı'); return; }
+      res.setHeader('content-type', type);
+      res.setHeader('x-content-type-options', 'nosniff');
+      res.setHeader('cache-control', 'public, max-age=3600');
       res.end(fs.readFileSync(filePath));
     },
     IDP_IP
   );
-  server.addHttpHandler({ method: 'GET', path: '/' }, (req, res) => { res.statusCode = 302; res.setHeader('location', '/static/demo-login.html'); res.end(); }, IDP_IP);
+  // ---- temiz URL'ler ---------------------------------------------------------
+  // Adres çubuğunda '.html' görünmemeli: dosya adı bir uygulama detayıdır,
+  // sayfayı yeniden adlandırmak ya da başka bir şeyle sunmak kullanıcıların
+  // yer imlerini kırmamalı.
+  const PAGES = {
+    '/login': 'demo-login.html',
+    '/portal': 'portal.html',
+    '/device': 'demo-login.html',
+    '/hesap': 'portal.html',   // Türkçe takma ad
+    '/profile': 'profile.html',
+    '/profil': 'profile.html', // Türkçe takma ad
+    '/consent': 'consent.html',
+    // Yazdığımız her çerezin listesi ve tercih ekranı. Oturum İSTEMEZ: rıza,
+    // giriş yapmamış ziyaretçi için de geçerli bir karardır.
+    '/cookies': 'cookies.html',
+    '/cerezler': 'cookies.html', // Türkçe takma ad
+    // Tasarım paketinin canlı referansı. Diğer servisler fitfak-ui.css'i
+    // kopyalayıp bu sayfaya bakarak aynı görünümü kurabilir.
+    '/design': 'design-pack.html',
+  };
+
+  function servePage(res, file) {
+    const filePath = path.join(PUBLIC_DIR, file);
+    if (!fs.existsSync(filePath)) { res.statusCode = 404; res.end('bulunamadı'); return; }
+    res.statusCode = 200;
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    // Giriş sayfaları önbelleğe alınmamalı: oturum durumuna göre farklı
+    // davranıyorlar ve bir ara önbellek bunu bilmiyor.
+    res.setHeader('cache-control', 'no-store');
+    res.setHeader('x-content-type-options', 'nosniff');
+    res.setHeader('x-frame-options', 'DENY');
+    res.setHeader('referrer-policy', 'strict-origin-when-cross-origin');
+    res.end(fs.readFileSync(filePath));
+  }
+
+  // Oturum isteyen sayfalar: oturumsuz açıldığında BOŞ bir sayfa göstermek
+  // yerine girişe gider ve girişten SONRA buraya geri döner. Eksik olan buydu --
+  // portala giren oturumsuz kullanıcı boş bir sayfa görüyordu ve girişten sonra
+  // da portala dönmenin bir yolu yoktu.
+  const AUTHENTICATED_PAGES = ['/portal', '/hesap', '/profile', '/profil', '/consent'];
+  for (const route of AUTHENTICATED_PAGES) {
+    const file = PAGES[route];
+    server.addHttpHandler({ method: 'GET', path: route }, wrapHandler(async (req, res) => {
+      const session = await resolveCurrentSession(req);
+      if (!session) {
+        res.statusCode = 302;
+        // Sorgu dizesi korunuyor: /consent?request=... girişten sonra o isteğe
+        // geri dönmeli, yoksa kullanıcı onay ekranını hiç göremez.
+        res.setHeader('location', `/login?return_to=${encodeURIComponent(safeRedirect(req.url, { fallback: '/portal', selfOrigin: ISSUER }))}`);
+        return res.end();
+      }
+      servePage(res, file);
+    }), IDP_IP);
+  }
+
+  for (const [route, file] of Object.entries(PAGES)) {
+    if (AUTHENTICATED_PAGES.includes(route)) continue; // yukarıda, kimlik kontrolüyle
+    server.addHttpHandler({ method: 'GET', path: route }, (req, res) => servePage(res, file), IDP_IP);
+  }
+
+  // Eski /static/*.html bağlantıları kalıcı olarak temiz URL'lere taşınıyor:
+  // dışarıda paylaşılmış bağlantılar kırılmasın.
+  server.addHttpHandler(
+    (req) => req.method === 'GET' && /^\/static\/[a-z-]+\.html$/.test(req.url.split('?')[0]),
+    (req, res) => {
+      const [pathname, query] = req.url.split('?');
+      const file = pathname.slice('/static/'.length);
+      const route = Object.keys(PAGES).find((r) => PAGES[r] === file);
+      res.statusCode = route ? 301 : 404;
+      if (route) res.setHeader('location', route + (query ? `?${query}` : ''));
+      res.end(route ? '' : 'bulunamadı');
+    },
+    IDP_IP,
+  );
+
+  server.addHttpHandler({ method: 'GET', path: '/' }, async (req, res) => {
+    const session = await resolveCurrentSession(req);
+    res.statusCode = 302;
+    res.setHeader('location', session ? '/portal' : '/login');
+    res.end();
+  }, IDP_IP);
 
   // gRPC SERVİSLERİ (IDP)
   function requireClientCredentials() {
@@ -983,10 +1511,23 @@ async function main() {
   });
 
   await new Promise((resolve) => server.listen(PORT, {
-     http2Port: HTTP2_PORT,
-     host: [...new Set([IDP_IP, PKI_IP, ADMIN_IP, STATUS_IP])]
-    }, resolve));
-  console.log(`[fitfak-idp] dinliyor: http://${IDP_IP}:${PORT} (IDP) ve http://${PKI_IP}:${PORT} (PKI)  issuer=${ISSUER}, rpId=${RP_ID}`);
+    ...(HTTP2_PORT ? { http2Port: HTTP2_PORT } : {}),
+    host: [...new Set([IDP_IP, PKI_IP, ADMIN_IP, STATUS_IP])],
+  }, resolve));
+  console.log(
+    `[fitfak-idp] dinliyor:\n`
+    + `  ${IDP_IP}:${PORT}    session.fitfak.net   (giris, OAuth, oturum)\n`
+    + `  ${PKI_IP}:${PORT}    trust.fitfak.net     (ACME, sertifika, /policy)\n`
+    + `  ${ADMIN_IP}:${PORT}    one.fitfak.net       (yonetim)\n`
+    + `  ${STATUS_IP}:${PORT}  status.trust.fitfak.net (OCSP, CRL, CA yayini)\n`
+    + `  issuer=${ISSUER} rpId=${RP_ID}`,
+  );
+  // Testler için: canlı sunucuya karşı koşan testlerin veritabanına ve oturum
+  // yöneticisine de erişmesi gerekiyor (kayıt tohumlamak, PoW + e-posta
+  // doğrulaması + TOTP kaydı zincirini her testte tekrarlamamak için oturum
+  // üretmek).
+  server._db = db;
+  server._sessionManager = sessionManager;
   return server;
 }
 

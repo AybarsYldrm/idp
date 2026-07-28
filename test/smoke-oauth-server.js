@@ -21,7 +21,8 @@ function request(method, url, { body, headers = {} } = {}) {
     const payload = body ? Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)) : null;
     const req = http.request(url, {
       method,
-      headers: { ...(payload ? { 'content-type': 'application/json', 'content-length': payload.length } : {}), ...headers },
+      // Tarayıcı taklidi: köken kapısı bu başlığa bakıyor (core/same-origin.js).
+      headers: { 'sec-fetch-site': 'same-origin', ...(payload ? { 'content-type': 'application/json', 'content-length': payload.length } : {}), ...headers },
     }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
@@ -134,7 +135,15 @@ async function main() {
     assert.strictEqual(loginStep2.status, 200);
     assert.ok(loginStep2.json.sessionId);
     const setCookieHeader = loginStep2.headers['set-cookie'];
-    assert.ok(Array.isArray(setCookieHeader) && setCookieHeader.length === 3, 'üç ayrı Set-Cookie header\'ı bekleniyor (access+refresh+accounts-listesi)');
+    // Sayı yerine İSİM kontrol ediliyor: sabit bir sayı, yeni bir çerez
+    // eklendiğinde (cihaz bağlama çerezi gibi) yanlış yere işaret eden bir
+    // hata verir ve asıl kontrol ettiği şeyi -- hangi çerezlerin verildiğini --
+    // hiç kontrol etmemiş olur.
+    assert.ok(Array.isArray(setCookieHeader), 'Set-Cookie başlıkları bir dizi olmalı');
+    const cookieNames = setCookieHeader.map((c) => c.split('=')[0]);
+    for (const expected of ['__Secure-fitfak_at', '__Secure-fitfak_rt', '__Secure-fitfak_accounts', '__Secure-fitfak_did']) {
+      assert.ok(cookieNames.includes(expected), `${expected} çerezi bekleniyor, gelenler: ${cookieNames.join(', ')}`);
+    }
     assert.ok(setCookieHeader.some((c) => c.includes('__Secure-fitfak_at') && c.includes('Domain=.fitfak.net') && c.includes('HttpOnly')));
     assert.ok(setCookieHeader.some((c) => c.includes('__Secure-fitfak_rt') && c.includes('Path=/oauth/token')));
     console.log('smoke: POST /auth/login/totp OK -- tam oturum verildi, GERÇEK Set-Cookie header\'ları (Domain=.fitfak.net; HttpOnly; Secure; SameSite=Lax) doğru üretildi');

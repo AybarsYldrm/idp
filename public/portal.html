@@ -4,22 +4,30 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hesabım — fitfak</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Yazı tipi tasarım paketinden gelir (--fk-font / --fk-mono): sistem yığını.
+     Harici bir font CDN'i yükleniyordu; bir kimlik sağlayıcısında bu, HER
+     ziyaretçinin IP'sini üçüncü bir tarafa göndermek ve o taraf erişilemez
+     olduğunda giriş sayfasının görünümünü ona bağlamak demekti. -->
+<link rel="stylesheet" href="/static/fitfak-ui.css">
 <style>
+  /* Renkler tasarım paketinden türetiliyor -- bkz. demo-login.html'deki not. */
   :root {
-    --bg: #ffffff; --bg-subtle: #fafafa; --bg-hover: #f4f4f5;
-    --ink: #0a0a0a; --ink-2: #52525b; --ink-3: #a1a1aa;
-    --line: #e4e4e7; --line-strong: #d4d4d8;
-    --ok: #166534; --ok-bg: #f0fdf4; --bad: #991b1b; --bad-bg: #fef2f2;
+    --ink-contrast: var(--fk-bg);
+    --bg: var(--fk-surface); --bg-subtle: var(--fk-bg); --bg-hover: var(--fk-surface-2);
+    --ink: var(--fk-text); --ink-2: var(--fk-text-muted); --ink-3: var(--fk-text-subtle);
+    --line: var(--fk-border); --line-strong: var(--fk-border-strong);
+    --ok: var(--fk-success); --ok-bg: var(--fk-success-bg);
+    --bad: var(--fk-danger); --bad-bg: var(--fk-danger-bg);
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg-subtle); color: var(--ink); font-family: 'Inter', system-ui, sans-serif; font-size: 14px; line-height: 1.5; }
-  .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+  body { margin: 0; background: var(--bg-subtle); color: var(--ink); font-family: var(--fk-font); font-size: 14px; line-height: 1.5; }
+  .mono { font-family: var(--fk-mono); }
   button, input, select { font: inherit; }
   button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
+  /* Üst çubuk ve sekmeler KASITLI olarak her iki temada da koyu: sabit bir
+     çapa olmaları, sayfanın geri kalanı tema değiştirirken yönü koruyor.
+     Aynı sebeple .code-out da koyu (ham çıktı, içerikten ayırt edilmeli). */
   header { background: #0a0a0a; color: #fff; padding: 0; position: sticky; top: 0; z-index: 10; }
   .header-inner { max-width: 960px; margin: 0 auto; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; }
   .brand { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
@@ -40,7 +48,7 @@
   h1 { font-size: 20px; font-weight: 600; margin: 0 0 5px; letter-spacing: -0.02em; }
   .sub { color: var(--ink-2); font-size: 13px; margin: 0 0 22px; }
 
-  .card { background: #fff; border: 1px solid var(--line); border-radius: 7px; margin-bottom: 16px; overflow: hidden; }
+  .card { background: var(--fk-surface); border: 1px solid var(--line); border-radius: 7px; margin-bottom: 16px; overflow: hidden; }
   .card-head { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
   .card-head h2 { font-size: 13.5px; font-weight: 600; margin: 0; }
   .card-body { padding: 18px; }
@@ -51,32 +59,32 @@
   .row-sub { font-size: 12px; color: var(--ink-3); margin-top: 2px; word-break: break-all; }
 
   .badge { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2.5px 7px; border-radius: 3px; border: 1px solid transparent; }
-  .badge-ok { background: var(--ok-bg); color: var(--ok); border-color: #bbf7d0; }
-  .badge-bad { background: var(--bad-bg); color: var(--bad); border-color: #fecaca; }
-  .badge-dark { background: var(--ink); color: #fff; }
+  .badge-ok { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+  .badge-bad { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+  .badge-dark { background: var(--ink); color: var(--ink-contrast); }
   .badge-neutral { background: var(--bg-hover); color: var(--ink-2); border-color: var(--line-strong); }
   .chip { display: inline-block; background: var(--bg-hover); border: 1px solid var(--line-strong); padding: 2px 7px; border-radius: 3px; font-size: 11px; margin: 1px 3px 1px 0; }
 
-  .btn { border: 1px solid var(--line-strong); background: #fff; color: var(--ink); padding: 6px 12px; border-radius: 5px; cursor: pointer; font-size: 12.5px; font-weight: 500; }
+  .btn { border: 1px solid var(--line-strong); background: var(--fk-surface); color: var(--ink); padding: 6px 12px; border-radius: 5px; cursor: pointer; font-size: 12.5px; font-weight: 500; }
   .btn:hover { background: var(--bg-hover); border-color: var(--ink-3); }
-  .btn-primary { background: var(--ink); color: #fff; border-color: var(--ink); }
-  .btn-primary:hover { background: #27272a; }
-  .btn-danger { color: var(--bad); border-color: #fecaca; }
+  .btn-primary { background: var(--ink); color: var(--ink-contrast); border-color: var(--ink); }
+  .btn-primary:hover { background: color-mix(in srgb, var(--ink) 88%, var(--fk-bg)); }
+  .btn-danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
   .btn-danger:hover { background: var(--bad-bg); border-color: var(--bad); }
   .btn:disabled { opacity: 0.5; cursor: wait; }
 
   label { display: block; font-size: 11.5px; font-weight: 600; color: var(--ink-2); margin: 14px 0 5px; text-transform: uppercase; letter-spacing: 0.04em; }
   label:first-child { margin-top: 0; }
   input[type=text], input[type=password], select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 5px; font-size: 13px; }
-  textarea { min-height: 110px; font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; resize: vertical; }
+  textarea { min-height: 110px; font-family: var(--fk-mono); font-size: 11.5px; resize: vertical; }
   .hint { font-size: 12px; color: var(--ink-3); margin-top: 6px; }
 
   .banner { padding: 11px 14px; border-radius: 5px; font-size: 13px; margin-bottom: 16px; display: none; }
   .banner.show { display: block; }
-  .banner-err { background: var(--bad-bg); color: var(--bad); border: 1px solid #fecaca; }
-  .banner-ok { background: var(--ok-bg); color: var(--ok); border: 1px solid #bbf7d0; }
+  .banner-err { background: var(--bad-bg); color: var(--bad); border: 1px solid transparent; }
+  .banner-ok { background: var(--ok-bg); color: var(--ok); border: 1px solid transparent; }
   .empty { padding: 26px 18px; text-align: center; color: var(--ink-3); font-size: 13px; }
-  .code-out { background: #0a0a0a; color: #e4e4e7; padding: 13px; border-radius: 5px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; margin-top: 12px; max-height: 220px; overflow-y: auto; }
+  .code-out { background: #0a0a0a; color: #e4e4e7; padding: 13px; border-radius: 5px; font-family: var(--fk-mono); font-size: 11px; white-space: pre-wrap; word-break: break-all; margin-top: 12px; max-height: 220px; overflow-y: auto; }
 </style>
 </head>
 <body>
@@ -90,6 +98,7 @@
         <div id="hdr-name" style="font-weight:600">—</div>
         <div id="hdr-email" style="color:#a1a1aa;font-size:11.5px">—</div>
       </div>
+      <a class="btn-ghost" href="/profile" style="text-decoration:none">Profilim</a>
       <button class="btn-ghost" id="btn-switch">Hesap değiştir</button>
       <button class="btn-ghost" id="btn-logout">Çıkış</button>
     </div>
@@ -281,7 +290,7 @@
   $('btn-reload-devices').addEventListener('click', function () { busy(this, loadDevices); });
   $('btn-logout-all').addEventListener('click', function () {
     var b = this;
-    busy(b, function () { return post('/auth/logout-all').then(function () { location.href = '/static/demo-login.html'; }); });
+    busy(b, function () { return post('/auth/logout-all').then(function () { location.href = '/login'; }); });
   });
 
   async function getNoCorsHeaders(url) {
@@ -368,27 +377,48 @@
         email: me.email, code: $('reset-code').value.trim(), newPassword: $('reset-newpass').value,
       }).then(function () {
         alert('Parolan değiştirildi. Güvenlik için tüm cihazlardan çıkış yapıldı — lütfen tekrar giriş yap.');
-        location.href = '/static/demo-login.html';
+        location.href = '/login';
       });
     });
   });
 
   $('btn-logout').addEventListener('click', function () {
     var b = this;
-    busy(b, function () { return post('/auth/logout').then(function () { location.href = '/static/demo-login.html'; }); });
+    busy(b, function () { return post('/auth/logout').then(function () { location.href = '/login'; }); });
   });
   $('btn-switch').addEventListener('click', function () {
-    location.href = '/static/demo-login.html?choose_account=1';
+    // return_to olmadan seçim yapan kullanıcı, seçtikten sonra portala DÖNMÜYOR
+    // ve giriş sayfasında kalıyordu.
+    location.href = '/login?choose_account=1&return_to=' + encodeURIComponent('/portal');
   });
 
-  loadMe()
-    .then(function () { return Promise.all([loadDevices(), loadCerts()]); })
-    .catch(function (e) {
-      if (String(e.message).indexOf('401') >= 0 || /unauth/i.test(e.message)) {
-        location.href = '/static/demo-login.html?return_to=' + encodeURIComponent('/static/portal.html');
-      } else { showErr(e.message); }
-    });
+  function onLoadError(e) {
+    if (String(e.message).indexOf('401') >= 0 || /unauth/i.test(e.message)) {
+      location.href = '/login?return_to=' + encodeURIComponent('/portal');
+      return true;
+    }
+    return false;
+  }
+
+  // Bölümler AYRI AYRI yükleniyor. Önceden hepsi tek bir Promise.all'daydı:
+  // trust.fitfak.net'e ulaşılamadığında -- ki o ayrı bir adrestir ve ayrı
+  // çökebilir -- sayfanın TAMAMI hata gösteriyordu, oysa hesap bilgileri ve
+  // cihaz listesi gayet yüklenmişti.
+  loadMe().catch(function (e) { if (!onLoadError(e)) showErr(e.message); });
+
+  loadDevices().catch(function (e) {
+    if (onLoadError(e)) return;
+    $('devices-list').innerHTML = '<div class="empty">Cihaz listesi yüklenemedi.</div>';
+  });
+
+  loadCerts().catch(function (e) {
+    if (onLoadError(e)) return;
+    $('certs-list').innerHTML = '<div class="empty">Sertifika servisine (trust.fitfak.net) ulaşılamadı.</div>';
+  });
 }());
 </script>
+
+<!-- Çerez bandı: yalnızca karar verilmemişse görünür (bkz. core/cookie-consent.js). -->
+<script src="/static/cookie-banner.js"></script>
 </body>
 </html>

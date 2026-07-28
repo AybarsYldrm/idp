@@ -55,15 +55,40 @@ class SessionManager {
    * vb.) için token üretmek üzere OAuth kod değişimi sırasında `issueTokensForClient`
    * kullanılır (aşağıda) -- BİR oturum, SSO sayesinde ZAMAN İÇİNDE BİRDEN FAZLA RP için
    * token üretebilir, bu yüzden bu bir DİZİ (tek bir string değil). */
-  async createSession({ userId, ip, userAgent, fingerprintId, scope = 'openid profile' }) {
+  async createSession({ userId, ip, userAgent, fingerprintId, deviceId = null, scope = 'openid profile' }) {
     const sessionId = crypto.randomUUID();
     const now = new Date();
     await this.store.createSession({
-      sessionId, userId, ip, userAgent, fingerprintId,
+      sessionId, userId, ip, userAgent, fingerprintId, deviceId,
       createdAt: now, lastSeenAt: now, revoked: false, audiences: ['self'], scope,
     });
     const tokens = await this._issueTokenPair({ sessionId, userId, audience: 'self', scope });
     return { sessionId, userId, ...tokens };
+  }
+
+  /**
+   * Aynı tarayıcıdan tekrar giriş: YENİ oturum açmak yerine var olanı tazeler.
+   *
+   * Önceki davranış her girişte koşulsuz yeni bir satır yaratıyordu, dolayısıyla
+   * bir kullanıcının oturumlar listesi kendi tekrar girişleriyle doluyordu.
+   * Bu yalnızca dağınık değil, güvenlik açısından da kötü: listede gerçekten
+   * yabancı bir oturum varsa kendi gürültüsünün içinde kaybolur ve kullanıcıya
+   * "hepsini kapat" dışında bir seçenek kalmaz.
+   *
+   * Tazeleme, oturumu YENİDEN AÇMAK değildir: iptal edilmiş bir oturum asla
+   * geri getirilmez (aşağıda revoked kontrolü), yalnızca hâlâ geçerli olan bir
+   * oturuma taze token verilir.
+   */
+  async refreshExistingSession({ sessionId, ip, userAgent, scope = 'openid profile' }) {
+    const session = await this.store.getSessionById(sessionId);
+    if (!session || session.revoked) {
+      throw new SessionError('session_revoked', 'oturum artık aktif değil');
+    }
+    await this.store.touchSession(sessionId, { lastSeenAt: new Date(), ip, userAgent });
+    const tokens = await this._issueTokenPair({
+      sessionId, userId: session.userId, audience: 'self', scope,
+    });
+    return { sessionId, userId: session.userId, reused: true, ...tokens };
   }
 
   /** Zaten kimliği doğrulanmış (SSO çerezi geçerli) bir oturum için, belirli bir OAuth
