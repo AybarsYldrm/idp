@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Çerezler — FITFAK</title>
+<link rel="stylesheet" href="/static/fitfak-ui.css">
+</head>
+<body>
+
+<!--
+  Çerez sayfası. Buradaki liste elle yazılmadı: /api/cookies, sistemin YAZDIĞI
+  çerezlerin kataloğunu döner (core/cookie-consent.js). Böylece yeni bir çerez
+  eklendiğinde açıklama listesi geride kalmaz.
+-->
+
+<header class="fk-header">
+  <div class="fk-container fk-header__inner">
+    <a class="fk-brand" href="/portal">
+      <span class="fk-brand__mark">F</span>
+      FITFAK Kimlik
+    </a>
+  </div>
+</header>
+
+<main class="fk-container" style="padding-top:2rem;padding-bottom:4rem">
+  <div class="fk-stack-lg">
+
+    <section>
+      <h1 style="margin:0 0 .35rem">Çerezler</h1>
+      <p class="fk-muted" style="margin:0">
+        Yazdığımız her çerez aşağıda. Reklam ya da izleme çerezi yok — olmadığı
+        için listede de yok.
+      </p>
+    </section>
+
+    <div id="saved" class="fk-alert fk-alert--success fk-hidden">Tercihiniz kaydedildi.</div>
+
+    <section class="fk-card">
+      <div class="fk-card__header">
+        <h2 class="fk-card__title">Tercihiniz</h2>
+      </div>
+      <div class="fk-stack-sm" id="categories"></div>
+      <hr class="fk-divider">
+      <div class="fk-row">
+        <button class="fk-btn fk-btn--primary" id="save">Kaydet</button>
+        <button class="fk-btn fk-btn--secondary" id="reject-optional">Yalnızca zorunlu olanlar</button>
+      </div>
+    </section>
+
+    <section class="fk-card">
+      <div class="fk-card__header">
+        <h2 class="fk-card__title">Tam liste</h2>
+      </div>
+      <div class="fk-table-wrap">
+        <table class="fk-table">
+          <thead>
+            <tr><th>Çerez</th><th>Kategori</th><th>Ne işe yarar</th><th>Süre</th></tr>
+          </thead>
+          <tbody id="cookie-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<script src="/static/cookie-banner.js"></script>
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+
+  function categoryRow(cat, checked) {
+    var label = document.createElement('label');
+    label.className = 'fk-switch';
+
+    var input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = cat.required ? true : checked;
+    input.disabled = !!cat.required;
+    input.dataset.key = cat.key;
+
+    var track = document.createElement('span');
+    track.className = 'fk-switch__track';
+
+    var text = document.createElement('span');
+    text.className = 'fk-grow';
+    var title = document.createElement('span');
+    title.textContent = cat.title + ' ';
+    text.appendChild(title);
+    if (cat.required) {
+      var badge = document.createElement('span');
+      badge.className = 'fk-badge';
+      badge.textContent = 'kapatılamaz';
+      text.appendChild(badge);
+    }
+    var detail = document.createElement('div');
+    detail.className = 'fk-small fk-muted';
+    detail.textContent = cat.detail;
+    text.appendChild(detail);
+
+    label.appendChild(input);
+    label.appendChild(track);
+    label.appendChild(text);
+    return label;
+  }
+
+  function cookieRow(c) {
+    var tr = document.createElement('tr');
+    [
+      { text: c.name, mono: true },
+      { badge: c.category },
+      { text: c.purpose },
+      { text: c.lifetime },
+    ].forEach(function (cell) {
+      var td = document.createElement('td');
+      if (cell.badge) {
+        var b = document.createElement('span');
+        b.className = 'fk-badge' + (cell.badge === 'zorunlu' ? '' : ' fk-badge--warning');
+        b.textContent = cell.badge;
+        td.appendChild(b);
+      } else {
+        td.textContent = cell.text;
+        if (cell.mono) td.className = 'fk-mono';
+      }
+      tr.appendChild(td);
+    });
+    return tr;
+  }
+
+  function save(istatistik) {
+    return fetch('/api/cookies', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ istatistik: istatistik }),
+    }).then(function (res) {
+      if (!res.ok) throw new Error('Tercih kaydedilemedi');
+      $('saved').classList.remove('fk-hidden');
+      // Bant açıksa kapansın: karar verildi.
+      if (window.FitfakCookieBanner) window.FitfakCookieBanner.dismiss();
+    });
+  }
+
+  fetch('/api/cookies', { credentials: 'same-origin' })
+    .then(function (res) { return res.json(); })
+    .then(function (data) {
+      var current = data.preferences || {};
+      data.categories.forEach(function (cat) {
+        $('categories').appendChild(categoryRow(cat, current[cat.key] === true));
+      });
+      data.cookies.forEach(function (c) { $('cookie-rows').appendChild(cookieRow(c)); });
+
+      $('save').addEventListener('click', function () {
+        var stat = document.querySelector('input[data-key="istatistik"]');
+        save(!!(stat && stat.checked));
+      });
+      $('reject-optional').addEventListener('click', function () {
+        var stat = document.querySelector('input[data-key="istatistik"]');
+        if (stat) stat.checked = false;
+        save(false);
+      });
+    });
+})();
+</script>
+
+</body>
+</html>

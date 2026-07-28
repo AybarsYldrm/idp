@@ -22,6 +22,8 @@
     "test:profile": "node test/profile-demo.js",
     "test:admin": "node test/admin-isolation-demo.js",
     "test:consent": "node test/consent-demo.js",
+    "test:cookies": "node test/cookie-consent-demo.js",
+    "test:hardening": "node test/hardening-demo.js",
     "test:db": "node test/db-integration-demo.js"
   },
   "notes": {

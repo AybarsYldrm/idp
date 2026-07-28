@@ -196,6 +196,33 @@
 
     <section class="fk-card">
       <div class="fk-card__header">
+        <h2 class="fk-card__title">Çerez bandı</h2>
+        <p class="fk-card__subtitle">
+          Sayfanın altında, sabit. İki düğme de aynı görsel ağırlıkta: birini
+          vurgulamak seçimi ortadan kaldırır. Canlı hâli
+          <code>/static/cookie-banner.js</code> ile gelir ve yalnızca karar
+          verilmemişse görünür.
+        </p>
+      </div>
+      <!-- Referans için position:static; gerçekte fixed. -->
+      <div class="fk-cookie-banner" style="position:static;max-width:none;margin:0">
+        <div class="fk-cookie-banner__text">
+          <strong>İstatistik çerezleri</strong>
+          <p class="fk-small">
+            Giriş akışının neresinde takıldığınızı toplu olarak görebilmek için
+            bir çerez yazmak istiyoruz. Hesabınıza bağlanmaz.
+          </p>
+          <a class="fk-small" href="/cookies">Yazdığımız tüm çerezler</a>
+        </div>
+        <div class="fk-cookie-banner__actions">
+          <button class="fk-btn fk-btn--secondary fk-btn--sm">İstemiyorum</button>
+          <button class="fk-btn fk-btn--secondary fk-btn--sm">Olur</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="fk-card">
+      <div class="fk-card__header">
         <h2 class="fk-card__title">Giriş kartı — birleşik örnek</h2>
       </div>
       <div class="fk-container fk-container--narrow">

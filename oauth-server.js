@@ -16,6 +16,7 @@ const { DbEphemeralStore, PrefixedEphemeralStore } = require('./core/ephemeral-s
 const { LoginProtection } = require('./core/rate-limiter');
 const { createSameOriginGuard } = require('./core/same-origin');
 const { UserQuota } = require('./core/user-quota');
+const cookieConsent = require('./core/cookie-consent');
 const {
   Server, Service, GRPC_STATUS, GrpcError, requireBearerAuth,
 } = require('./core/http-transport');
@@ -889,6 +890,45 @@ async function main() {
     sendJson(res, 200, { redirectTo: result.errorRedirect || result.redirectTo });
   }), IDP_IP);
 
+  // ---- çerez tercihleri -----------------------------------------------------
+  // İstatistik çerezi ile oturum çerezi AYRI kategoriler. Gerekçe
+  // core/cookie-consent.js'in başında: aynı kategoride sayıldıkları sürece ya
+  // istatistik rızasız yazılır ya da "hepsini reddet" oturumu kapatır.
+  //
+  // Uç noktalar oturum İSTEMEZ: rıza, giriş yapmamış ziyaretçi için de geçerli
+  // bir karardır ve tam olarak o ziyaretçiye sorulması gerekir.
+  server.addHttpHandler({ method: 'GET', path: '/api/cookies' }, wrapHandler(async (req, res) => {
+    const prefs = cookieConsent.readPreferences(req.headers.cookie);
+    sendJson(res, 200, {
+      ...cookieConsent.describeCatalog(),
+      preferences: cookieConsent.preferencesAreCurrent(prefs) ? prefs : null,
+      // Bant yalnızca karar VERİLMEMİŞSE gösterilir. Verilmiş bir kararı
+      // tekrar tekrar sormak, kullanıcıyı okumadan kabul etmeye iter.
+      needsDecision: !cookieConsent.preferencesAreCurrent(prefs),
+    });
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/api/cookies' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
+    const body = await readJsonBody(req);
+    const istatistik = body.istatistik === true;
+
+    const setCookies = [cookieConsent.buildPreferencesCookie({ istatistik }, { domain: COOKIE_DOMAIN })];
+    if (istatistik) {
+      // Zaten varsa yenisini yazmıyoruz: her onayda yeni tanıtıcı üretmek,
+      // ölçümü bozar ve kullanıcıya yeni bir tanıtıcı vermiş olurdu.
+      if (!cookieConsent.parseCookieHeader(req.headers.cookie)[cookieConsent.STATS_COOKIE]) {
+        setCookies.push(cookieConsent.buildStatisticsCookie({ domain: COOKIE_DOMAIN }));
+      }
+    } else {
+      // Rıza geri alındığında çerez SİLİNİR. "Bir daha yazmayız" demek yetmez:
+      // yazılmış olan hâlâ tarayıcıda durur ve her istekte gönderilir.
+      setCookies.push(cookieConsent.expireStatisticsCookie({ domain: COOKIE_DOMAIN }));
+    }
+    res.setHeader('set-cookie', setCookies);
+    sendJson(res, 200, { saved: true, istatistik });
+  }), IDP_IP);
+
   // Verilmiş izinler: listeleme ve geri alma. /profile sayfasındaki "bağlı
   // uygulamalar" bölümü bunları kullanır.
   server.addHttpHandler({ method: 'GET', path: '/account/grants' }, wrapHandler(async (req, res) => {
@@ -1358,6 +1398,10 @@ async function main() {
     '/profile': 'profile.html',
     '/profil': 'profile.html', // Türkçe takma ad
     '/consent': 'consent.html',
+    // Yazdığımız her çerezin listesi ve tercih ekranı. Oturum İSTEMEZ: rıza,
+    // giriş yapmamış ziyaretçi için de geçerli bir karardır.
+    '/cookies': 'cookies.html',
+    '/cerezler': 'cookies.html', // Türkçe takma ad
     // Tasarım paketinin canlı referansı. Diğer servisler fitfak-ui.css'i
     // kopyalayıp bu sayfaya bakarak aynı görünümü kurabilir.
     '/design': 'design-pack.html',

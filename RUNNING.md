@@ -115,7 +115,7 @@ seviyesinde yapılır — Host, istemcinin yazdığı bir dizedir.
 
 | Adres | Host | Ne sunar |
 |---|---|---|
-| 127.0.0.1:80 | session.fitfak.net | `/login` `/portal` `/profile` OAuth, oturum |
+| 127.0.0.1:80 | session.fitfak.net | `/login` `/portal` `/profile` `/consent` `/cookies` OAuth, oturum |
 | 127.0.0.2:80 | trust.fitfak.net | ACME, `/device/certificate`, `/policy`, `/ct/v1/*` |
 | 127.0.0.3:80 | one.fitfak.net | `/admin*` — yalnızca burada |
 | 31.58.245.241:80 | status.trust.fitfak.net | `/ocsp` `/crl` `/crl/root` CA yayını |
@@ -142,6 +142,9 @@ npm run test:routing      # temiz URL'ler, kimlik kapıları
 npm run test:admin        # yüzey ayrımı
 npm run test:image        # görsel yükleme saldırıları
 npm run test:profile      # profil, hesap silme
+npm run test:consent      # OAuth onay ekranı, kapsam sınırları, prompt=none
+npm run test:cookies      # çerez kategorileri (zorunlu / istatistik)
+npm run test:hardening    # köken kapısı (CSRF), kullanıcı kotası
 npm run test:db           # IdP <-> veritabanı, canlı gRPC sunucusuna karşı
 ```
 
