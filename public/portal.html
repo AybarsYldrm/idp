@@ -91,6 +91,7 @@
         <div id="hdr-name" style="font-weight:600">—</div>
         <div id="hdr-email" style="color:#a1a1aa;font-size:11.5px">—</div>
       </div>
+      <a class="btn-ghost" href="/profile" style="text-decoration:none">Profilim</a>
       <button class="btn-ghost" id="btn-switch">Hesap değiştir</button>
       <button class="btn-ghost" id="btn-logout">Çıkış</button>
     </div>
@@ -282,7 +283,7 @@
   $('btn-reload-devices').addEventListener('click', function () { busy(this, loadDevices); });
   $('btn-logout-all').addEventListener('click', function () {
     var b = this;
-    busy(b, function () { return post('/auth/logout-all').then(function () { location.href = '/static/demo-login.html'; }); });
+    busy(b, function () { return post('/auth/logout-all').then(function () { location.href = '/login'; }); });
   });
 
   async function getNoCorsHeaders(url) {
@@ -369,17 +370,19 @@
         email: me.email, code: $('reset-code').value.trim(), newPassword: $('reset-newpass').value,
       }).then(function () {
         alert('Parolan değiştirildi. Güvenlik için tüm cihazlardan çıkış yapıldı — lütfen tekrar giriş yap.');
-        location.href = '/static/demo-login.html';
+        location.href = '/login';
       });
     });
   });
 
   $('btn-logout').addEventListener('click', function () {
     var b = this;
-    busy(b, function () { return post('/auth/logout').then(function () { location.href = '/static/demo-login.html'; }); });
+    busy(b, function () { return post('/auth/logout').then(function () { location.href = '/login'; }); });
   });
   $('btn-switch').addEventListener('click', function () {
-    location.href = '/static/demo-login.html?choose_account=1';
+    // return_to olmadan seçim yapan kullanıcı, seçtikten sonra portala DÖNMÜYOR
+    // ve giriş sayfasında kalıyordu.
+    location.href = '/login?choose_account=1&return_to=' + encodeURIComponent('/portal');
   });
 
   loadMe()

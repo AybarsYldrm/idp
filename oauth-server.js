@@ -14,6 +14,8 @@ const { WebAuthnService } = require('./core/webauthn');
 const { ProofOfWorkService } = require('./core/proof-of-work');
 const { DbEphemeralStore, PrefixedEphemeralStore } = require('./core/ephemeral-store');
 const { LoginProtection } = require('./core/rate-limiter');
+const { createSameOriginGuard } = require('./core/same-origin');
+const { UserQuota } = require('./core/user-quota');
 const {
   Server, Service, GRPC_STATUS, GrpcError, requireBearerAuth,
 } = require('./core/http-transport');
@@ -36,6 +38,7 @@ const webauthnServiceModule = require('./services/webauthn-service');
 const { OAuthService, createDbClientStore } = require('./services/oauth-service');
 const srpAuthService = require('./services/srp-auth-service');
 const profileService = require('./services/profile-service');
+const consentService = require('./services/consent-service');
 
 // ----------------------------------------------------------------------------
 // 🏗️ YAPILANDIRMA
@@ -68,6 +71,23 @@ const IDP_IP = config.bind.idp;       // session.fitfak.net
 const PKI_IP = config.bind.trust;     // trust.fitfak.net
 const ADMIN_IP = config.bind.admin;   // one.fitfak.net
 const STATUS_IP = config.bind.status; // status.trust.fitfak.net / time.trust.fitfak.net
+
+// Durum değiştiren, COOKIE ile kimliklenen uç noktalar için köken kapısı.
+// Gerekçesi core/same-origin.js'in başında. Geliştirmede sayfa doğrudan
+// http://127.0.0.1:PORT üzerinden açılıyor; o kökeni yalnızca üretim DIŞINDA
+// listeye alıyoruz -- üretimde tek geçerli köken ISSUER'dır.
+const DEV_ORIGINS = config.isProduction ? [] : [
+  `http://${IDP_IP}:${PORT}`, `http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`,
+];
+const requireSameOrigin = createSameOriginGuard({
+  allowedOrigins: [ISSUER, ...DEV_ORIGINS],
+});
+// trust.fitfak.net'teki uç noktaları çağıran sayfa session.fitfak.net'te
+// duruyor: istek köken-ötesi ama site-içi. Gerekçe core/same-origin.js'te.
+const requireTrustOrigin = createSameOriginGuard({
+  allowedOrigins: [ISSUER, TRUST_ISSUER, ...DEV_ORIGINS],
+  allowSameSite: true,
+});
 
 // ----------------------------------------------------------------------------
 // 🏗️ VERİTABANI KURULUMU
@@ -173,6 +193,9 @@ function wrapHandler(fn) {
     } catch (e) {
       const status = e.httpStatus || 500;
       if (status >= 500) console.error('[fitfak-idp] beklenmeyen hata:', e);
+      // "Çok sık denediniz" deyip ne zaman denenebileceğini söylememek,
+      // istemciyi daha sık denemeye iter.
+      if (e.retryAfterSeconds) res.setHeader('retry-after', String(e.retryAfterSeconds));
       sendJson(res, status, { error: e.code || 'internal_error', error_description: e.message || 'İç sunucu hatası' });
     }
   };
@@ -232,6 +255,11 @@ async function main() {
         name: 'DNS Paneli',
         redirectUris: [process.env.FITFAK_IDP_DNS_REDIRECT_URI || 'https://fitfak.net/oauth/callback'],
         allowedScopes: ['openid', 'profile', 'dns:read', 'dns:write'],
+        clientUri: 'https://fitfak.net',
+        // Kendi panelimiz: onay ekranı atlanır. "FITFAK, FITFAK hesabınıza
+        // erişmek istiyor" diye sormak kullanıcıya bilgi vermez, yalnızca onu
+        // onay ekranlarını okumadan geçmeye alıştırır.
+        firstParty: true,
       });
       console.warn(`[fitfak-idp] DNS Paneli OAuth client'ı tohumlandı.`);
     }
@@ -244,6 +272,15 @@ async function main() {
     userCodeStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'usercode:'),
     deviceCodePollIntervalS: Number(process.env.FITFAK_IDP_DEVICE_POLL_INTERVAL_S || 5),
   });
+  // Onay ekranına giderken yetkilendirme isteğinin saklandığı yer.
+  const consentStore = new PrefixedEphemeralStore(sharedEphemeralStore, 'consent:');
+
+  // Giriş YAPMIŞ kullanıcının pahalı işlemleri için kota. Giriş öncesini
+  // koruyan LoginProtection'dan ayrı bir eksen -- gerekçesi core/user-quota.js'te.
+  const userQuota = new UserQuota();
+  async function requireUserQuota(userId, action) {
+    return userQuota.enforce(userId, action);
+  }
 
   // --------------------------------------------------------------------------
   // ✉️ SABİT SMTP / E-POSTA YAPILANDIRMASI
@@ -589,6 +626,7 @@ async function main() {
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/auth/switch-account' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
     const body = await readJsonBody(req);
     const accounts = await resolveValidAccounts(req);
     const target = accounts.find((a) => a.sessionId === body.sessionId);
@@ -615,6 +653,7 @@ async function main() {
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/auth/logout' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
     const session = await resolveCurrentSession(req);
     if (session) await authService.logout({ sessionManager, sessionId: session.sessionId });
     const remainingAccounts = (await resolveValidAccounts(req)).filter((a) => !session || a.sessionId !== session.sessionId);
@@ -626,6 +665,7 @@ async function main() {
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/auth/logout-all' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
     // Yetki, erişim token'ından DEĞİL bu tarayıcıdaki hesap listesinden geliyor.
     //
     // Önceki hâli resolveCurrentSession() istiyordu, yani geçerli bir erişim
@@ -688,6 +728,7 @@ async function main() {
   }), IDP_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/auth/sessions/revoke' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
     const current = await resolveCurrentSession(req);
     if (!current) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
     const body = await readJsonBody(req);
@@ -697,29 +738,173 @@ async function main() {
     sendJson(res, 200, { revoked: true });
   }), IDP_IP);
 
+  // Yetkilendirme isteğinin parametreleri, onay ekranından sonra da lazım. URL'de
+  // taşımak yerine bir yardımcıda toplanıp sunucuda saklanıyor (bkz.
+  // services/consent-service.js -- "Bekleyen yetkilendirme isteği").
+  function authorizationParams(q) {
+    return {
+      clientId: q.get('client_id'), redirectUri: q.get('redirect_uri'),
+      responseType: q.get('response_type'), scope: q.get('scope'), state: q.get('state'),
+      codeChallenge: q.get('code_challenge'), codeChallengeMethod: q.get('code_challenge_method'),
+      prompt: q.get('prompt'),
+    };
+  }
+
+  async function finishAuthorization(req, res, params, { consentGranted = false } = {}) {
+    const accounts = await resolveValidAccounts(req);
+    const silent = String(params.prompt || '').split(/\s+/).includes('none');
+
+    // Birden fazla açık hesap varsa hangisi adına izin verildiği kullanıcıya
+    // sorulmalı. prompt=none bunu göstermeyi yasakladığı için hata döner --
+    // aksi halde IdP, kullanıcının kastetmediği hesabı seçerdi.
+    if (accounts.length >= 2) {
+      if (silent) {
+        res.statusCode = 302;
+        res.setHeader('location', oauthService._errorRedirect({
+          redirectUri: params.redirectUri, state: params.state,
+          error: 'account_selection_required', description: 'Birden fazla açık hesap var',
+        }));
+        return res.end();
+      }
+      const back = `/oauth/authorize?${new URLSearchParams(Object.entries(params).filter(([, v]) => v != null)).toString()}`;
+      res.statusCode = 302;
+      res.setHeader('location', `/login?return_to=${encodeURIComponent(safeRedirect(back, { fallback: '/portal', selfOrigin: ISSUER }))}&choose_account=1`);
+      return res.end();
+    }
+    const currentSession = accounts.length === 1
+      ? { userId: accounts[0].userId, sessionId: accounts[0].sessionId, revoked: false } : null;
+
+    const result = await oauthService.authorize({ ...params, currentSession, consentGranted });
+
+    if (result.requiresConsent) {
+      const pending = await consentService.createPendingAuthorization({
+        store: consentStore,
+        request: { params, userId: String(currentSession.userId), sessionId: currentSession.sessionId },
+      });
+      res.statusCode = 302;
+      res.setHeader('location', `/consent?request=${encodeURIComponent(pending)}`);
+      return res.end();
+    }
+
+    if (result.requiresLogin) {
+      const back = `/oauth/authorize?${new URLSearchParams(Object.entries(params).filter(([, v]) => v != null)).toString()}`;
+      res.statusCode = 302;
+      res.setHeader('location', `/login?return_to=${encodeURIComponent(safeRedirect(back, { fallback: '/portal', selfOrigin: ISSUER }))}`);
+      return res.end();
+    }
+
+    res.statusCode = 302;
+    res.setHeader('location', result.errorRedirect || result.redirectTo);
+    return res.end();
+  }
+
   server.addHttpHandler({ method: 'GET', path: '/oauth/authorize' }, wrapHandler(async (req, res) => {
     const url = new URL(req.url, ISSUER);
     const q = url.searchParams;
     const client = await clientStore.getClient(q.get('client_id'));
     if (!client || !client.redirectUris.includes(q.get('redirect_uri'))) throw new AppError('invalid_request', 'Geçersiz client_id ya da redirect_uri', { httpStatus: 400 });
+    return finishAuthorization(req, res, authorizationParams(q));
+  }), IDP_IP);
 
-    const accounts = await resolveValidAccounts(req);
-    if (accounts.length >= 2) {
-      res.statusCode = 302;
-      res.setHeader('location', `/login?return_to=${encodeURIComponent(safeRedirect(req.url, { fallback: '/portal', selfOrigin: ISSUER }))}&choose_account=1`);
-      return res.end();
+  // ---- onay ekranı ----------------------------------------------------------
+  // Sayfanın kendisi statik; ne istendiğini buradan öğrenir. `request`
+  // tanıtıcısı olmadan gösterilecek bir şey yok, o yüzden doğrudan /consent'e
+  // giren kullanıcı portala gider.
+  server.addHttpHandler({ method: 'GET', path: '/consent/info' }, wrapHandler(async (req, res) => {
+    const url = new URL(req.url, ISSUER);
+    const session = await resolveCurrentSession(req);
+    if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+
+    const pending = await consentService.readPendingAuthorization({ store: consentStore, id: url.searchParams.get('request') });
+    if (!pending) throw new AppError('not_found', 'Bu onay isteği bulunamadı ya da süresi doldu', { httpStatus: 404 });
+    // Bekleyen istek, onu BAŞLATAN oturuma bağlı. Aksi halde bir sekmede
+    // hesap değiştiren kullanıcı, diğer sekmedeki onayı yanlış hesap adına
+    // verebilirdi.
+    if (String(pending.userId) !== String(session.userId)) {
+      throw new AppError('not_found', 'Bu onay isteği bu hesaba ait değil', { httpStatus: 404 });
     }
-    const currentSession = accounts.length === 1 ? { userId: accounts[0].userId, sessionId: accounts[0].sessionId, revoked: false } : null;
+
+    const client = await clientStore.getClient(pending.params.clientId);
+    if (!client) throw new AppError('not_found', 'Uygulama bulunamadı', { httpStatus: 404 });
+
+    const scopes = consentService.resolveRequestedScopes({ requested: pending.params.scope, client });
+    const existing = await consentService.getGrant({ db, userId: session.userId, clientId: client.clientId });
+    const held = new Set(existing ? existing.scopes : []);
+    const profile = await profileService.getProfile({ db, userId: session.userId });
+
+    sendJson(res, 200, {
+      client: {
+        clientId: client.clientId, name: client.name, clientUri: client.clientUri || null,
+        // Kullanıcı nereye gönderileceğini görmeli: onay ekranındaki asıl
+        // soru "kime" değil, "nereye".
+        redirectHost: new URL(pending.params.redirectUri).host,
+      },
+      account: {
+        username: profile.username, email: profile.email,
+        displayName: profile.displayName, avatarUrl: profile.avatarUrl,
+      },
+      // Daha önce verilmiş izinler ayrı işaretleniyor: kullanıcı NEYİN yeni
+      // olduğunu görmeli, yoksa her seferinde aynı listeyi okumaya çalışır.
+      scopes: scopes.map((s) => ({ ...consentService.describeScope(s), isNew: !held.has(s) })),
+      previouslyGranted: existing ? existing.scopes : [],
+    });
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/consent/decide' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
+    const session = await resolveCurrentSession(req);
+    if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+    const body = await readJsonBody(req);
+
+    // Tek kullanımlık: tüketildikten sonra aynı tanıtıcı ikinci bir izin
+    // veremez.
+    const pending = await consentService.consumePendingAuthorization({ store: consentStore, id: body.request });
+    if (!pending) throw new AppError('not_found', 'Bu onay isteği bulunamadı ya da süresi doldu', { httpStatus: 404 });
+    if (String(pending.userId) !== String(session.userId)) {
+      throw new AppError('not_found', 'Bu onay isteği bu hesaba ait değil', { httpStatus: 404 });
+    }
+
+    const client = await clientStore.getClient(pending.params.clientId);
+    if (!client) throw new AppError('not_found', 'Uygulama bulunamadı', { httpStatus: 404 });
+
+    if (!body.approve) {
+      // Reddetme de bir cevaptır ve client'a İLETİLİR: kullanıcı reddettiğinde
+      // uygulamanın sonsuza kadar beklemesi değil, "hayır" demesi gerekir.
+      return sendJson(res, 200, {
+        redirectTo: oauthService._errorRedirect({
+          redirectUri: pending.params.redirectUri, state: pending.params.state,
+          error: 'access_denied', description: 'Kullanıcı izni reddetti',
+        }),
+      });
+    }
+
+    const scopes = consentService.resolveRequestedScopes({ requested: pending.params.scope, client });
+    await consentService.saveGrant({ db, userId: session.userId, clientId: client.clientId, scopes });
 
     const result = await oauthService.authorize({
-      clientId: q.get('client_id'), redirectUri: q.get('redirect_uri'), responseType: q.get('response_type'),
-      scope: q.get('scope'), state: q.get('state'), codeChallenge: q.get('code_challenge'), codeChallengeMethod: q.get('code_challenge_method'), currentSession,
+      ...pending.params,
+      currentSession: { userId: session.userId, sessionId: session.sessionId, revoked: false },
+      consentGranted: true,
     });
-    res.statusCode = 302;
-    res.setHeader('location', result.requiresLogin
-      ? `/login?return_to=${encodeURIComponent(safeRedirect(req.url, { fallback: '/portal', selfOrigin: ISSUER }))}`
-      : result.redirectTo);
-    res.end();
+    sendJson(res, 200, { redirectTo: result.errorRedirect || result.redirectTo });
+  }), IDP_IP);
+
+  // Verilmiş izinler: listeleme ve geri alma. /profile sayfasındaki "bağlı
+  // uygulamalar" bölümü bunları kullanır.
+  server.addHttpHandler({ method: 'GET', path: '/account/grants' }, wrapHandler(async (req, res) => {
+    const session = await resolveCurrentSession(req);
+    if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+    sendJson(res, 200, { grants: await consentService.listGrants({ db, userId: session.userId, clientStore }) });
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/account/grants/revoke' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
+    const session = await resolveCurrentSession(req);
+    if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+    const body = await readJsonBody(req);
+    sendJson(res, 200, await consentService.revokeGrant({
+      db, userId: session.userId, clientId: body.clientId, sessionManager,
+    }));
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/oauth/token' }, wrapHandler(async (req, res) => {
@@ -793,12 +978,16 @@ async function main() {
     return session;
   }
 
-  server.addHttpHandler({ method: 'GET', path: '/profile' }, wrapHandler(async (req, res) => {
+  // Profil API'si /api/ altında; /profile SAYFANIN kendisidir. İkisi aynı yolda
+  // olamaz -- aynı method+path için ilk kayıtlı işleyici kazanır ve sayfa hiç
+  // sunulmazdı.
+  server.addHttpHandler({ method: 'GET', path: '/api/profile' }, wrapHandler(async (req, res) => {
     const session = await requireSession(req);
     sendJson(res, 200, await profileService.getProfile({ db, userId: session.userId }));
   }), IDP_IP);
 
-  server.addHttpHandler({ method: 'POST', path: '/profile' }, wrapHandler(async (req, res) => {
+  server.addHttpHandler({ method: 'POST', path: '/api/profile' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
     const session = await requireSession(req);
     const body = await readJsonBody(req);
     sendJson(res, 200, await profileService.updateProfile({
@@ -807,7 +996,8 @@ async function main() {
     }));
   }), IDP_IP);
 
-  server.addHttpHandler({ method: 'POST', path: '/profile/notifications' }, wrapHandler(async (req, res) => {
+  server.addHttpHandler({ method: 'POST', path: '/api/profile/notifications' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
     const session = await requireSession(req);
     const body = await readJsonBody(req);
     sendJson(res, 200, await profileService.updateNotificationPreferences({
@@ -816,15 +1006,18 @@ async function main() {
     }));
   }), IDP_IP);
 
-  server.addHttpHandler({ method: 'POST', path: '/profile/avatar' }, wrapHandler(async (req, res) => {
+  server.addHttpHandler({ method: 'POST', path: '/api/profile/avatar' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
     const session = await requireSession(req);
+    await requireUserQuota(session.userId, 'avatar');
     // Gövde ham baytlar. content-type'a BAKILMIYOR: biçim kararı yalnızca
     // baytlardan veriliyor (bkz. core/image-guard.js).
     const raw = await readRawBody(req);
     sendJson(res, 200, await profileService.setAvatar({ db, userId: session.userId, bytes: raw }));
   }), IDP_IP);
 
-  server.addHttpHandler({ method: 'POST', path: '/profile/avatar/delete' }, wrapHandler(async (req, res) => {
+  server.addHttpHandler({ method: 'POST', path: '/api/profile/avatar/delete' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
     const session = await requireSession(req);
     sendJson(res, 200, await profileService.deleteAvatar({ db, userId: session.userId }));
   }), IDP_IP);
@@ -853,15 +1046,19 @@ async function main() {
       res.end(avatar.bytes);
     }), IDP_IP);
 
-  server.addHttpHandler({ method: 'POST', path: '/profile/delete-account' }, wrapHandler(async (req, res) => {
+  server.addHttpHandler({ method: 'POST', path: '/api/account/delete' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
     const session = await requireSession(req);
+    await requireUserQuota(session.userId, 'account-delete');
     sendJson(res, 200, await profileService.requestAccountDeletion({
       db, userId: session.userId, mailer, ephemeralStore: profileStore,
     }));
   }), IDP_IP);
 
-  server.addHttpHandler({ method: 'POST', path: '/profile/delete-account/confirm' }, wrapHandler(async (req, res) => {
+  server.addHttpHandler({ method: 'POST', path: '/api/account/delete/confirm' }, wrapHandler(async (req, res) => {
+    requireSameOrigin(req);
     const session = await requireSession(req);
+    await requireUserQuota(session.userId, 'account-delete-confirm');
     const body = await readJsonBody(req);
     const result = await profileService.confirmAccountDeletion({
       db, userId: session.userId, code: body.code,
@@ -966,8 +1163,10 @@ async function main() {
 
   // PKI ROTALARI (127.0.0.2)
   server.addHttpHandler({ method: 'POST', path: '/device/certificate' }, wrapHandler(async (req, res) => {
+    requireTrustOrigin(req);
     const session = await resolveCurrentSession(req);
     if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+    await requireUserQuota(session.userId, 'certificate');
     const body = await readJsonBody(req);
     const result = await certificateService.requestCertificate({ db, pkiIssuer, userId: session.userId, csrPem: body.csrPem, profile: body.profile || 'client-auth' });
     sendJson(res, 200, result);
@@ -980,6 +1179,7 @@ async function main() {
   }), PKI_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/device/certificate/revoke' }, wrapHandler(async (req, res) => {
+    requireTrustOrigin(req);
     const session = await resolveCurrentSession(req);
     if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
     const body = await readJsonBody(req);
@@ -1155,6 +1355,9 @@ async function main() {
     '/portal': 'portal.html',
     '/device': 'demo-login.html',
     '/hesap': 'portal.html',   // Türkçe takma ad
+    '/profile': 'profile.html',
+    '/profil': 'profile.html', // Türkçe takma ad
+    '/consent': 'consent.html',
     // Tasarım paketinin canlı referansı. Diğer servisler fitfak-ui.css'i
     // kopyalayıp bu sayfaya bakarak aynı görünümü kurabilir.
     '/design': 'design-pack.html',
@@ -1174,21 +1377,28 @@ async function main() {
     res.end(fs.readFileSync(filePath));
   }
 
-  // /portal: oturum yoksa girişe gönder, girişten SONRA buraya geri dön.
-  // Eksik olan buydu -- portala giren oturumsuz kullanıcı boş bir sayfa
-  // görüyordu ve girişten sonra da portala dönmenin bir yolu yoktu.
-  server.addHttpHandler({ method: 'GET', path: '/portal' }, wrapHandler(async (req, res) => {
-    const session = await resolveCurrentSession(req);
-    if (!session) {
-      res.statusCode = 302;
-      res.setHeader('location', `/login?return_to=${encodeURIComponent('/portal')}`);
-      return res.end();
-    }
-    servePage(res, 'portal.html');
-  }), IDP_IP);
+  // Oturum isteyen sayfalar: oturumsuz açıldığında BOŞ bir sayfa göstermek
+  // yerine girişe gider ve girişten SONRA buraya geri döner. Eksik olan buydu --
+  // portala giren oturumsuz kullanıcı boş bir sayfa görüyordu ve girişten sonra
+  // da portala dönmenin bir yolu yoktu.
+  const AUTHENTICATED_PAGES = ['/portal', '/hesap', '/profile', '/profil', '/consent'];
+  for (const route of AUTHENTICATED_PAGES) {
+    const file = PAGES[route];
+    server.addHttpHandler({ method: 'GET', path: route }, wrapHandler(async (req, res) => {
+      const session = await resolveCurrentSession(req);
+      if (!session) {
+        res.statusCode = 302;
+        // Sorgu dizesi korunuyor: /consent?request=... girişten sonra o isteğe
+        // geri dönmeli, yoksa kullanıcı onay ekranını hiç göremez.
+        res.setHeader('location', `/login?return_to=${encodeURIComponent(safeRedirect(req.url, { fallback: '/portal', selfOrigin: ISSUER }))}`);
+        return res.end();
+      }
+      servePage(res, file);
+    }), IDP_IP);
+  }
 
   for (const [route, file] of Object.entries(PAGES)) {
-    if (route === '/portal') continue; // yukarıda, kimlik kontrolüyle
+    if (AUTHENTICATED_PAGES.includes(route)) continue; // yukarıda, kimlik kontrolüyle
     server.addHttpHandler({ method: 'GET', path: route }, (req, res) => servePage(res, file), IDP_IP);
   }
 
@@ -1251,6 +1461,12 @@ async function main() {
     + `  ${STATUS_IP}:${PORT}  status.trust.fitfak.net (OCSP, CRL, CA yayini)\n`
     + `  issuer=${ISSUER} rpId=${RP_ID}`,
   );
+  // Testler için: canlı sunucuya karşı koşan testlerin veritabanına ve oturum
+  // yöneticisine de erişmesi gerekiyor (kayıt tohumlamak, PoW + e-posta
+  // doğrulaması + TOTP kaydı zincirini her testte tekrarlamamak için oturum
+  // üretmek).
+  server._db = db;
+  server._sessionManager = sessionManager;
   return server;
 }
 

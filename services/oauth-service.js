@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { AppError } = require('../core/errors');
 const base64url = require('../core/base64url');
 const { InMemoryEphemeralStore } = require('../core/ephemeral-store');
+const consent = require('./consent-service');
 
 const AUTH_CODE_TTL_MS = 60 * 1000; // yetkilendirme kodu kısacık ömürlü ve tek kullanımlık olmalı
 const DEVICE_CODE_TTL_MS = 10 * 60 * 1000; // RFC 8628 önerisi: birkaç dakika
@@ -47,30 +48,74 @@ class OAuthService {
   /**
    * GET /oauth/authorize mantığı. `currentSession` -- Domain=.fitfak.net SSO cookie'sinden
    * çözülmüş, HÂLİHAZIRDA doğrulanmış oturum (varsa) -- transport katmanı (oauth-server.js)
-   * tarafından buraya geçirilir. Eğer geçerli bir oturum varsa kullanıcıya HİÇBİR login
-   * formu göstermeden doğrudan yetkilendirme kodu üretilir -- SSO'nun "sihirli" kısmı
-   * tam olarak burasıdır.
+   * tarafından buraya geçirilir. Geçerli bir oturum VE verilmiş bir izin varsa
+   * kullanıcıya hiçbir form gösterilmeden yetkilendirme kodu üretilir -- SSO'nun
+   * "sihirli" kısmı tam olarak burasıdır. Ama izin YOKSA bu sihir, kullanıcıya
+   * sorulmadan hesabının paylaşılması anlamına gelirdi; o yüzden onay ekranı
+   * (services/consent-service.js) araya girer.
+   *
+   * Dönüş: { requiresLogin } | { requiresConsent, client, scopes } |
+   *        { redirectTo } | { errorRedirect }
    */
-  async authorize({ clientId, redirectUri, responseType, scope, state, codeChallenge, codeChallengeMethod, currentSession }) {
+  async authorize({
+    clientId, redirectUri, responseType, scope, state,
+    codeChallenge, codeChallengeMethod, currentSession, prompt, consentGranted,
+  }) {
     const client = await this.clientStore.getClient(clientId);
     if (!client) throw new AppError('invalid_client', 'Bilinmeyen client_id', { httpStatus: 400 });
     if (!client.redirectUris.includes(redirectUri)) {
       throw new AppError('invalid_request', 'redirect_uri bu client için kayıtlı değil', { httpStatus: 400 });
     }
-    if (responseType !== 'code') {
-      throw new AppError('unsupported_response_type', "sadece response_type=code destekleniyor", { httpStatus: 400 });
-    }
+
+    // BURADAN İTİBAREN redirect_uri doğrulanmıştır ve hatalar client'a GERİ
+    // YÖNLENDİRİLİR (RFC 6749 §4.1.2.1). Doğrulanmamış bir redirect_uri'ye hata
+    // yollamak, IdP'yi açık yönlendirme aracına çevirirdi -- o yüzden yukarıdaki
+    // iki kontrol hâlâ 400 döner, aşağıdakiler dönmez.
+    const fail = (error, description) => ({
+      errorRedirect: this._errorRedirect({ redirectUri, state, error, description }),
+    });
+
+    if (responseType !== 'code') return fail('unsupported_response_type', 'sadece response_type=code destekleniyor');
     if (codeChallengeMethod !== 'S256' || !codeChallenge) {
-      throw new AppError('invalid_request', 'PKCE (code_challenge_method=S256) zorunludur', { httpStatus: 400 });
+      return fail('invalid_request', 'PKCE (code_challenge_method=S256) zorunludur');
     }
 
-    if (!currentSession || currentSession.revoked) {
+    let scopes;
+    try {
+      scopes = consent.resolveRequestedScopes({ requested: scope, client });
+    } catch (err) {
+      return fail('invalid_scope', err.message);
+    }
+
+    const prompts = new Set(String(prompt || '').split(/\s+/).filter(Boolean));
+    // prompt=none: "kullanıcıya HİÇBİR şey gösterme". Sessiz yenileme için var
+    // (gizli iframe). Gösterilecek bir şey varsa hata döner ki client, kullanıcıyı
+    // görünür bir sekmede yeniden denemeye yönlendirebilsin (OIDC Core §3.1.2.6).
+    const silent = prompts.has('none');
+    if (silent && (prompts.has('login') || prompts.has('consent') || prompts.has('select_account'))) {
+      return fail('invalid_request', "prompt=none başka bir prompt değeriyle birlikte kullanılamaz");
+    }
+
+    if (!currentSession || currentSession.revoked || prompts.has('login')) {
+      if (silent) return fail('login_required', 'Oturum yok');
       return { requiresLogin: true };
     }
 
+    const mustAsk = prompts.has('consent') || await consent.needsConsent({
+      db: this.db, userId: currentSession.userId, client, scopes,
+    });
+    if (mustAsk && !consentGranted) {
+      if (silent) return fail('consent_required', 'Kullanıcı onayı gerekli');
+      return { requiresConsent: true, client, scopes };
+    }
+
+    // İzin taze de olsa eski de olsa, kullanımı kaydediyoruz: "bu uygulama en
+    // son ne zaman hesabıma eriştil" sorusunun cevabı buradan geliyor.
+    await consent.touchGrant({ db: this.db, userId: currentSession.userId, clientId });
+
     const code = base64url.encode(crypto.randomBytes(32));
     await this.authCodes.set(code, {
-      clientId, redirectUri, codeChallenge, scope,
+      clientId, redirectUri, codeChallenge, scope: consent.formatScope(scopes),
       userId: currentSession.userId, sessionId: currentSession.sessionId, used: false,
     }, AUTH_CODE_TTL_MS);
 
@@ -78,6 +123,14 @@ class OAuthService {
     redirectUrl.searchParams.set('code', code);
     if (state) redirectUrl.searchParams.set('state', state);
     return { redirectTo: redirectUrl.toString() };
+  }
+
+  _errorRedirect({ redirectUri, state, error, description }) {
+    const url = new URL(redirectUri);
+    url.searchParams.set('error', error);
+    if (description) url.searchParams.set('error_description', description);
+    if (state) url.searchParams.set('state', state);
+    return url.toString();
   }
 
   /** POST /oauth/token -- authorization_code (PKCE), refresh_token ve device_code grant'lerini yönetir. */
@@ -148,9 +201,15 @@ class OAuthService {
     // dolumu kontrolü BU alana bakar -- aksi halde slow_down takibi için entry'yi her
     // poll'da yeniden yazmak (aşağıya bkz.) TTL'i sürekli SIFIRLAYIP cihaz kodunu
     // sınırsız uzatabilirdi.
+    // Kapsam BURADA doğrulanıyor, onay ekranında değil: cihaz akışında
+    // kullanıcı ile cihaz farklı yerlerde: cihaz yetkisi olmayan bir kapsam
+    // istediyse, kullanıcının ekranında ona onaylatılacak bir şey çıkmadan
+    // önce reddedilmeli.
+    const scopes = consent.resolveRequestedScopes({ requested: scope, client });
+
     const expiresAt = Date.now() + DEVICE_CODE_TTL_MS;
     await this.deviceCodes.set(deviceCode, {
-      clientId, scope: scope || 'openid profile', status: 'pending', userCode, expiresAt, lastPolledAt: 0,
+      clientId, scope: consent.formatScope(scopes), status: 'pending', userCode, expiresAt, lastPolledAt: 0,
     }, DEVICE_CODE_TTL_MS + 60_000);
     await this.userCodes.set(userCode, { deviceCode }, DEVICE_CODE_TTL_MS);
 
@@ -174,9 +233,17 @@ class OAuthService {
     const client = await this.clientStore.getClient(entry.clientId);
     return {
       clientName: client?.name || entry.clientId, scope: entry.scope, status: entry.status,
+      // Onay ekranı ham kapsam adlarını değil ne anlama geldiklerini gösterebilsin.
+      scopes: consent.parseScope(entry.scope).map(consent.describeScope),
     };
   }
 
+  /**
+   * Cihaz kodunun kullanıcı tarafından onaylanması. Bu ekranın KENDİSİ onay
+   * anıdır -- kullanıcı burada hangi uygulamaya ne verdiğini görür -- o yüzden
+   * ayrı bir /consent turu yok, ama izin aynı yere kaydedilir: /profile'daki
+   * "bağlı uygulamalar" listesi cihaz akışıyla verilen izinleri de göstermeli.
+   */
   async approveDeviceCode({ userCode, currentSession }) {
     if (!currentSession || currentSession.revoked) {
       throw new AppError('unauthenticated', 'Onaylamak için giriş yapmalısınız', { httpStatus: 401 });
@@ -186,6 +253,11 @@ class OAuthService {
     if (!pointer) throw new AppError('invalid_user_code', 'Geçersiz ya da süresi dolmuş kod', { httpStatus: 400 });
     const entry = await this.deviceCodes.get(pointer.deviceCode);
     if (!entry) throw new AppError('invalid_user_code', 'Geçersiz ya da süresi dolmuş kod', { httpStatus: 400 });
+
+    await consent.saveGrant({
+      db: this.db, userId: currentSession.userId, clientId: entry.clientId,
+      scopes: consent.parseScope(entry.scope),
+    });
 
     await this.deviceCodes.set(pointer.deviceCode, {
       ...entry, status: 'approved', userId: currentSession.userId, sessionId: currentSession.sessionId,
@@ -297,6 +369,10 @@ function createDbClientStore(db) {
       clientId: row.clientId, clientSecret: row.clientSecret, name: row.name,
       redirectUris: JSON.parse(row.redirectUris || '[]'),
       allowedScopes: JSON.parse(row.allowedScopes || '[]'),
+      // Onay ekranını atlama hakkı. Kayıt sırasında client'ın KENDİSİ
+      // tarafından belirlenemez -- yalnızca admin verir.
+      firstParty: !!row.firstParty,
+      clientUri: row.clientUri || '',
       createdAt: Number(row.createdAt),
     };
   }
@@ -313,22 +389,23 @@ function createDbClientStore(db) {
       return result;
     },
     async createClient({
-      clientId, clientSecret, name, redirectUris, allowedScopes,
+      clientId, clientSecret, name, redirectUris, allowedScopes, firstParty, clientUri,
     }) {
       if (await clients.findOne('clientId', clientId)) {
         throw new AppError('client_exists', 'Bu clientId zaten kayıtlı', { httpStatus: 409 });
       }
-      await clients.insert({
+      const row = {
         clientId,
         clientSecret,
         name: name || clientId,
         redirectUris: JSON.stringify(redirectUris || []),
         allowedScopes: JSON.stringify(allowedScopes || []),
+        firstParty: !!firstParty,
+        clientUri: clientUri || '',
         createdAt: BigInt(Date.now()),
-      });
-      return toView({
-        clientId, clientSecret, name, redirectUris: JSON.stringify(redirectUris || []), allowedScopes: JSON.stringify(allowedScopes || []), createdAt: BigInt(Date.now()),
-      });
+      };
+      await clients.insert(row);
+      return toView(row);
     },
     async updateClient(clientId, patch) {
       const row = await clients.findOne('clientId', clientId);
@@ -338,6 +415,8 @@ function createDbClientStore(db) {
       if (patch.redirectUris !== undefined) next.redirectUris = JSON.stringify(patch.redirectUris);
       if (patch.allowedScopes !== undefined) next.allowedScopes = JSON.stringify(patch.allowedScopes);
       if (patch.clientSecret !== undefined) next.clientSecret = patch.clientSecret;
+      if (patch.firstParty !== undefined) next.firstParty = !!patch.firstParty;
+      if (patch.clientUri !== undefined) next.clientUri = String(patch.clientUri || '');
       await clients.update(row._id, next);
       return { updated: true };
     },

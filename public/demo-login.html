@@ -357,16 +357,35 @@
     data.accounts.forEach(function (a) {
       var btn = document.createElement('button');
       btn.className = 'account-row';
-      btn.innerHTML =
-        '<div class="account-avatar">' + initials(a.username) + '</div>' +
-        '<div><div class="account-name">' + a.username + '</div><div class="account-email">' + a.email + '</div></div>';
-      
+
+      // innerHTML DEĞİL: kullanıcı adı ve e-posta kullanıcıdan gelen metinler.
+      // Buraya HTML olarak yazmak, bir hesabın adının BAŞKA bir hesabın seçim
+      // satırını değiştirebilmesi demekti.
+      var avatar = document.createElement('div');
+      avatar.className = 'account-avatar';
+      avatar.textContent = initials(a.username);
+
+      var text = document.createElement('div');
+      var name = document.createElement('div');
+      name.className = 'account-name';
+      name.textContent = a.username;
+      var email = document.createElement('div');
+      email.className = 'account-email';
+      email.textContent = a.email;
+      text.appendChild(name);
+      text.appendChild(email);
+
+      btn.appendChild(avatar);
+      btn.appendChild(text);
+
       btn.addEventListener('click', function () {
         withBusyButton(btn, async function () {
-          await FitfakOAuth.switchAccount(a.sessionId);
-          // HATA BURADA ÇÖZÜLDÜ: Önceden sadece returnTo varsa yönleniyordu. 
-          // Artık her halükarda başarılı giriş metodunu tetikliyor.
-          onAuthSuccess(); 
+          // returnTo SUNUCUYA da gidiyor: dönüş adresini sunucu doğrular ve
+          // yanıtta verir. Yalnızca sayfadaki değişkene güvenmek, doğrulamayı
+          // istemciye bırakmak olurdu.
+          var result = await FitfakOAuth.switchAccount(a.sessionId, returnTo);
+          if (result && result.redirectTo) { location.href = result.redirectTo; return; }
+          onAuthSuccess();
         });
       });
       list.appendChild(btn);

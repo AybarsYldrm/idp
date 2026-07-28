@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Profilim — FITFAK</title>
+<link rel="stylesheet" href="/static/fitfak-ui.css">
+</head>
+<body>
+
+<!--
+  Profil ve hesap ayarları. Tasarım paketi dışında stil YOK -- bileşenlerin
+  canlı referansı /design sayfasında.
+
+  Sayfa oturum ister; oturumsuz açıldığında sunucu girişe yönlendirir (bkz.
+  oauth-server.js, AUTHENTICATED_PAGES). Bu yüzden burada "giriş yapmalısınız"
+  diye bir ekran yok: buraya ulaşan istek zaten kimliklenmiştir.
+-->
+
+<header class="fk-header">
+  <div class="fk-container fk-header__inner">
+    <a class="fk-brand" href="/portal">
+      <span class="fk-brand__mark">F</span>
+      FITFAK Kimlik
+    </a>
+    <span class="fk-grow"></span>
+    <a class="fk-btn fk-btn--ghost fk-btn--sm" href="/portal">Hesabım</a>
+  </div>
+</header>
+
+<main class="fk-container" style="padding-top:2rem;padding-bottom:4rem">
+  <div class="fk-stack-lg">
+
+    <section>
+      <h1 style="margin:0 0 .35rem">Profilim</h1>
+      <p class="fk-muted" style="margin:0" id="identity-line"></p>
+    </section>
+
+    <div id="banner" class="fk-alert fk-alert--success fk-hidden"></div>
+    <div id="error" class="fk-alert fk-alert--error fk-hidden"></div>
+
+    <!-- ── Avatar ─────────────────────────────────────────────────────── -->
+    <section class="fk-card">
+      <div class="fk-card__header">
+        <h2 class="fk-card__title">Profil fotoğrafı</h2>
+        <p class="fk-card__subtitle">
+          PNG ya da JPEG, en fazla 256×256 ve 256 KB. Yüklenen dosya olduğu gibi
+          saklanmaz: sunucu yalnızca görüntü verisini alıp dosyayı yeniden kurar,
+          konum bilgisi ve gömülü her şey atılır.
+        </p>
+      </div>
+      <div class="fk-row">
+        <span class="fk-avatar fk-avatar--lg fk-avatar--fallback" id="avatar-fallback"></span>
+        <img class="fk-avatar fk-avatar--lg fk-hidden" id="avatar-img" alt="Profil fotoğrafınız">
+        <div class="fk-grow">
+          <div class="fk-row">
+            <label class="fk-btn fk-btn--secondary fk-btn--sm" for="avatar-file">Dosya seç</label>
+            <input class="fk-sr-only" type="file" id="avatar-file" accept="image/png,image/jpeg">
+            <button class="fk-btn fk-btn--ghost fk-btn--sm" id="avatar-remove">Kaldır</button>
+          </div>
+          <p class="fk-small fk-muted" id="avatar-note" style="margin:.5rem 0 0"></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Temel bilgiler ─────────────────────────────────────────────── -->
+    <form class="fk-card" id="profile-form" novalidate>
+      <div class="fk-card__header">
+        <h2 class="fk-card__title">Bilgiler</h2>
+        <p class="fk-card__subtitle">Bu bilgiler, izin verdiğiniz uygulamalara `profile` kapsamıyla gösterilir.</p>
+      </div>
+      <label class="fk-field">
+        <span class="fk-label">Görünen ad</span>
+        <input class="fk-input" id="displayName" maxlength="64" autocomplete="name">
+        <span class="fk-hint">En fazla 64 karakter.</span>
+      </label>
+      <label class="fk-field">
+        <span class="fk-label">Hakkında</span>
+        <textarea class="fk-textarea" id="bio" maxlength="280"></textarea>
+        <span class="fk-hint">En fazla 280 karakter.</span>
+      </label>
+      <label class="fk-field">
+        <span class="fk-label">Dil</span>
+        <select class="fk-select" id="locale">
+          <option value="tr-TR">Türkçe</option>
+          <option value="en-US">English (US)</option>
+          <option value="en-GB">English (UK)</option>
+          <option value="de-DE">Deutsch</option>
+          <option value="fr-FR">Français</option>
+        </select>
+      </label>
+      <label class="fk-field">
+        <span class="fk-label">Zaman dilimi</span>
+        <input class="fk-input" id="timezone" placeholder="Europe/Istanbul">
+        <span class="fk-hint">IANA bölge adı, örn. Europe/Istanbul.</span>
+      </label>
+      <button class="fk-btn fk-btn--primary" type="submit" id="profile-save">Kaydet</button>
+    </form>
+
+    <!-- ── E-posta tercihleri ─────────────────────────────────────────── -->
+    <section class="fk-card">
+      <div class="fk-card__header">
+        <h2 class="fk-card__title">E-posta tercihleri</h2>
+        <p class="fk-card__subtitle">
+          Güvenlik uyarıları kapatılamaz: hesabınıza erişen birinin yapacağı ilk
+          şey bildirimleri susturmak olurdu.
+        </p>
+      </div>
+      <div class="fk-stack-sm">
+        <label class="fk-switch">
+          <input type="checkbox" id="notify-newDevice">
+          <span class="fk-switch__track"></span>
+          <span class="fk-grow">Yeni cihazdan giriş uyarısı</span>
+        </label>
+        <label class="fk-switch">
+          <input type="checkbox" id="notify-product">
+          <span class="fk-switch__track"></span>
+          <span class="fk-grow">Ürün duyuruları</span>
+        </label>
+        <label class="fk-switch">
+          <input type="checkbox" id="notify-newsletter">
+          <span class="fk-switch__track"></span>
+          <span class="fk-grow">Bülten</span>
+        </label>
+        <label class="fk-switch">
+          <input type="checkbox" checked disabled>
+          <span class="fk-switch__track"></span>
+          <span class="fk-grow">Güvenlik uyarıları <span class="fk-badge">zorunlu</span></span>
+        </label>
+      </div>
+    </section>
+
+    <!-- ── Bağlı uygulamalar ──────────────────────────────────────────── -->
+    <section class="fk-card" id="apps">
+      <div class="fk-card__header">
+        <h2 class="fk-card__title">Bağlı uygulamalar</h2>
+        <p class="fk-card__subtitle">
+          Hesabınıza erişmesine izin verdiğiniz uygulamalar. İzni geri almak
+          uygulamanın elindeki yenileme belirteçlerini de geçersiz kılar.
+        </p>
+      </div>
+      <div id="grants"><p class="fk-muted fk-small" style="margin:0">Yükleniyor…</p></div>
+    </section>
+
+    <!-- ── Hesabı sil ─────────────────────────────────────────────────── -->
+    <section class="fk-card">
+      <div class="fk-card__header">
+        <h2 class="fk-card__title">Hesabı sil</h2>
+        <p class="fk-card__subtitle">
+          Silme gerçekten siler: oturumlarınız, cihaz kayıtlarınız, profiliniz ve
+          kimlik bilgileriniz kaldırılır. Verilen sertifikalar silinmez,
+          <strong>iptal edilir</strong> — iptal kaydının kalması gerekir ki
+          doğrulayan taraflar onları reddedebilsin.
+        </p>
+      </div>
+      <div id="delete-step-1">
+        <button class="fk-btn fk-btn--danger" id="delete-request">Silme kodu gönder</button>
+      </div>
+      <form id="delete-step-2" class="fk-hidden" novalidate>
+        <div class="fk-alert fk-alert--warning">
+          E-postanıza 6 haneli bir onay kodu gönderildi. Kod 15 dakika geçerli.
+        </div>
+        <label class="fk-field">
+          <span class="fk-label">Onay kodu</span>
+          <input class="fk-input fk-input--code" id="delete-code" inputmode="numeric" maxlength="6" placeholder="000000">
+        </label>
+        <div class="fk-row">
+          <button type="button" class="fk-btn fk-btn--secondary" id="delete-cancel">Vazgeç</button>
+          <button type="submit" class="fk-btn fk-btn--danger">Hesabımı kalıcı olarak sil</button>
+        </div>
+      </form>
+    </section>
+
+  </div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  function show(el) { el.classList.remove('fk-hidden'); }
+  function hide(el) { el.classList.add('fk-hidden'); }
+
+  var bannerTimer = null;
+  function say(message, isError) {
+    var el = isError ? $('error') : $('banner');
+    var other = isError ? $('banner') : $('error');
+    hide(other);
+    el.textContent = message;
+    show(el);
+    clearTimeout(bannerTimer);
+    if (!isError) bannerTimer = setTimeout(function () { hide(el); }, 4000);
+  }
+
+  async function api(path, options) {
+    var res = await fetch(path, Object.assign({ credentials: 'same-origin' }, options || {}));
+    var data = null;
+    try { data = await res.json(); } catch (_) { /* gövdesiz yanıt */ }
+    if (!res.ok) {
+      // Oturum bittiyse sayfada kalıp hata göstermek yerine girişe dönmek
+      // doğrusu: kullanıcı zaten hiçbir şey kaydedemeyecek.
+      if (res.status === 401) { location.href = '/login?return_to=' + encodeURIComponent('/profile'); return null; }
+      throw new Error((data && (data.error_description || data.message)) || 'İşlem tamamlanamadı');
+    }
+    return data;
+  }
+
+  function initials(text) {
+    return String(text || '?').trim().split(/\s+/).slice(0, 2)
+      .map(function (w) { return w[0]; }).join('').toUpperCase();
+  }
+
+  function renderProfile(p) {
+    $('identity-line').textContent = p.email + (p.emailVerified ? '' : ' — doğrulanmamış');
+    $('displayName').value = p.displayName || '';
+    $('bio').value = p.bio || '';
+    $('locale').value = p.locale || 'tr-TR';
+    $('timezone').value = p.timezone || '';
+
+    if (p.avatarUrl) {
+      $('avatar-img').src = p.avatarUrl;
+      show($('avatar-img')); hide($('avatar-fallback'));
+    } else {
+      $('avatar-fallback').textContent = initials(p.displayName || p.username);
+      show($('avatar-fallback')); hide($('avatar-img'));
+    }
+
+    $('notify-newDevice').checked = !!p.notifications.newDevice;
+    $('notify-product').checked = !!p.notifications.product;
+    $('notify-newsletter').checked = !!p.notifications.newsletter;
+  }
+
+  function grantRow(grant) {
+    var wrap = document.createElement('div');
+    wrap.style.padding = '.875rem 0';
+    wrap.style.borderTop = '1px solid var(--fk-border)';
+
+    var head = document.createElement('div');
+    head.className = 'fk-row fk-row--between';
+
+    var left = document.createElement('div');
+    left.className = 'fk-grow';
+    var name = document.createElement('div');
+    name.className = 'fk-option__title';
+    name.textContent = grant.name;
+    left.appendChild(name);
+
+    if (!grant.exists) {
+      var gone = document.createElement('span');
+      gone.className = 'fk-badge fk-badge--warning';
+      gone.textContent = 'uygulama kayıtlı değil';
+      left.appendChild(gone);
+    }
+
+    var when = document.createElement('div');
+    when.className = 'fk-option__meta';
+    when.textContent = grant.lastUsedAt
+      ? 'Son erişim: ' + new Date(grant.lastUsedAt).toLocaleString('tr-TR')
+      : 'Henüz kullanılmadı';
+    left.appendChild(when);
+
+    var revoke = document.createElement('button');
+    revoke.className = 'fk-btn fk-btn--ghost fk-btn--sm';
+    revoke.textContent = 'İzni geri al';
+    revoke.addEventListener('click', function () {
+      revoke.disabled = true;
+      api('/account/grants/revoke', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ clientId: grant.clientId }),
+      }).then(function (r) {
+        if (!r) return;
+        say('İzin geri alındı' + (r.revokedTokens ? ' (' + r.revokedTokens + ' belirteç iptal edildi)' : '') + '.');
+        loadGrants();
+      }).catch(function (e) { revoke.disabled = false; say(e.message, true); });
+    });
+
+    head.appendChild(left);
+    head.appendChild(revoke);
+    wrap.appendChild(head);
+
+    var scopes = document.createElement('div');
+    scopes.className = 'fk-small fk-muted';
+    scopes.style.marginTop = '.35rem';
+    scopes.textContent = grant.scopes.map(function (s) { return s.title; }).join(' · ');
+    wrap.appendChild(scopes);
+
+    return wrap;
+  }
+
+  function loadGrants() {
+    return api('/account/grants').then(function (data) {
+      if (!data) return;
+      var host = $('grants');
+      host.textContent = '';
+      if (data.grants.length === 0) {
+        var empty = document.createElement('p');
+        empty.className = 'fk-muted fk-small';
+        empty.style.margin = '0';
+        empty.textContent = 'Hiçbir uygulamaya izin vermediniz.';
+        host.appendChild(empty);
+        return;
+      }
+      data.grants.forEach(function (g) { host.appendChild(grantRow(g)); });
+    }).catch(function (e) { say(e.message, true); });
+  }
+
+  // ── Olaylar ──────────────────────────────────────────────────────────
+  $('profile-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    $('profile-save').disabled = true;
+    api('/api/profile', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        displayName: $('displayName').value,
+        bio: $('bio').value,
+        locale: $('locale').value,
+        timezone: $('timezone').value,
+      }),
+    }).then(function (p) {
+      if (!p) return;
+      renderProfile(p);
+      say('Bilgileriniz kaydedildi.');
+    }).catch(function (err) { say(err.message, true); })
+      .then(function () { $('profile-save').disabled = false; });
+  });
+
+  ['newDevice', 'product', 'newsletter'].forEach(function (key) {
+    $('notify-' + key).addEventListener('change', function () {
+      var body = {};
+      body[key] = $('notify-' + key).checked;
+      api('/api/profile/notifications', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(function (p) { if (p) { renderProfile(p); say('Tercihiniz kaydedildi.'); } })
+        .catch(function (err) { say(err.message, true); });
+    });
+  });
+
+  $('avatar-file').addEventListener('change', function () {
+    var file = this.files && this.files[0];
+    if (!file) return;
+    $('avatar-note').textContent = 'Yükleniyor…';
+    // Ham baytlar gönderiliyor; sunucu content-type'a bakmıyor, biçim kararını
+    // yalnızca baytlardan veriyor.
+    api('/api/profile/avatar', { method: 'POST', body: file })
+      .then(function (r) {
+        if (!r) return;
+        $('avatar-note').textContent = r.format.toUpperCase() + ' · ' + r.width + '×' + r.height
+          + ' · ' + Math.round(r.bytes / 1024) + ' KB';
+        return api('/api/profile').then(function (p) { if (p) renderProfile(p); });
+      })
+      .then(function () { say('Profil fotoğrafınız güncellendi.'); })
+      .catch(function (err) { $('avatar-note').textContent = ''; say(err.message, true); });
+  });
+
+  $('avatar-remove').addEventListener('click', function () {
+    api('/api/profile/avatar/delete', { method: 'POST' })
+      .then(function (r) {
+        if (!r) return;
+        $('avatar-note').textContent = '';
+        return api('/api/profile').then(function (p) { if (p) renderProfile(p); });
+      })
+      .then(function () { say('Profil fotoğrafınız kaldırıldı.'); })
+      .catch(function (err) { say(err.message, true); });
+  });
+
+  $('delete-request').addEventListener('click', function () {
+    $('delete-request').disabled = true;
+    api('/api/account/delete', { method: 'POST' })
+      .then(function (r) {
+        if (!r) return;
+        hide($('delete-step-1'));
+        show($('delete-step-2'));
+      })
+      .catch(function (err) { say(err.message, true); })
+      .then(function () { $('delete-request').disabled = false; });
+  });
+
+  $('delete-cancel').addEventListener('click', function () {
+    hide($('delete-step-2'));
+    show($('delete-step-1'));
+    $('delete-code').value = '';
+  });
+
+  $('delete-step-2').addEventListener('submit', function (e) {
+    e.preventDefault();
+    api('/api/account/delete/confirm', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: $('delete-code').value }),
+    }).then(function (r) {
+      if (!r) return;
+      document.body.textContent = '';
+      var msg = document.createElement('main');
+      msg.className = 'fk-center';
+      msg.innerHTML = '<div class="fk-container fk-container--narrow"><div class="fk-card fk-center-text">'
+        + '<h1 class="fk-card__title">Hesabınız silindi</h1>'
+        + '<p class="fk-muted">Oturumlarınız kapatıldı. İlginiz için teşekkürler.</p>'
+        + '<a class="fk-btn fk-btn--secondary fk-btn--block" href="/login">Giriş sayfası</a>'
+        + '</div></div>';
+      document.body.appendChild(msg);
+    }).catch(function (err) { say(err.message, true); });
+  });
+
+  // ── Açılış ───────────────────────────────────────────────────────────
+  api('/api/profile')
+    .then(function (p) { if (p) renderProfile(p); })
+    .catch(function (err) { say(err.message, true); });
+  loadGrants();
+})();
+</script>
+
+</body>
+</html>

@@ -131,6 +131,33 @@ module.exports = {
       { no: 5, name: 'redirectUris', type: 'string' },
       { no: 6, name: 'allowedScopes', type: 'string' },
       { no: 7, name: 'createdAt', type: 'uint64' },
+      // Bizim kendi uygulamalarımız. Onay ekranı ATLANIR: kullanıcıya
+      // "FITFAK, FITFAK hesabınıza erişmek istiyor" diye sormanın bir anlamı
+      // yok, ve anlamsız onay ekranları kullanıcıyı gerçek olanları da
+      // okumadan onaylamaya alıştırır. Yalnızca admin verebilir.
+      { no: 8, name: 'firstParty', type: 'bool' },
+      { no: 9, name: 'clientUri', type: 'string' },
+    ],
+  },
+
+  // Kullanıcının bir uygulamaya verdiği KALICI izin. Onay ekranı her seferinde
+  // gösterilmesin diye var, ama asıl işlevi kaydı tutmak: kullanıcı "hangi
+  // uygulamalar hesabıma erişebiliyor" sorusunu ancak bu tabloya bakarak
+  // cevaplayabilir ve ancak buradan geri alabilir.
+  //
+  // İzin KAPSAM BAZINDA saklanıyor. Uygulama sonradan daha fazlasını isterse
+  // (yeni bir scope), eski izin onu kapsamaz ve onay ekranı yeniden çıkar --
+  // aksi halde bir kez onay almış uygulama, sessizce yetkisini genişletirdi.
+  oauth_grants: {
+    fields: [
+      // userId:clientId -- tek anahtarla arama.
+      { no: 2, name: 'userClientKey', type: 'string', blindIndex: true, required: true },
+      { no: 3, name: 'userId', type: 'string', index: true, required: true },
+      { no: 4, name: 'clientId', type: 'string', index: true, required: true },
+      { no: 5, name: 'scope', type: 'string' },
+      { no: 6, name: 'grantedAt', type: 'uint64' },
+      { no: 7, name: 'updatedAt', type: 'uint64' },
+      { no: 8, name: 'lastUsedAt', type: 'uint64' },
     ],
   },
   ephemeral_state: {

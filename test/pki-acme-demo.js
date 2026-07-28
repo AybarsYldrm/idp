@@ -27,7 +27,8 @@ function request(method, url, { body, headers = {}, rawBody } = {}) {
     const payload = rawBody || (body ? Buffer.from(JSON.stringify(body)) : null);
     const req = http.request(url, {
       method,
-      headers: { ...(payload ? { 'content-length': payload.length } : {}), ...headers },
+      // Tarayıcı taklidi: köken kapısı bu başlığa bakıyor (core/same-origin.js).
+      headers: { 'sec-fetch-site': 'same-origin', ...(payload ? { 'content-length': payload.length } : {}), ...headers },
     }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
