@@ -130,7 +130,20 @@ class SessionManager {
       used: false,
     });
 
-    return { accessToken, refreshToken: refreshTokenRaw, expiresIn: ACCESS_TOKEN_TTL_S };
+    // `scope` DÖNÜŞ DEĞERİNDE de taşınır.
+    //
+    // RFC 6749 §5.1 onu yalnızca "verilen kapsam istenenden farklıysa" zorunlu
+    // kılıyor, bu yüzden eksikliği uzun süre fark edilmedi. Ama relying
+    // party'nin elinde yerel bir oturum kaydı varsa, o kaydın kapsam alanını
+    // güncelleyebilmesi için yanıtta bir kapsam GÖRMESİ gerekir: yoksa
+    // "kapsam boş" ile "kapsam bildirilmedi" ayırt edilemez.
+    //
+    // fitfak-smtp tam olarak buna takılmıştı: kullanıcı `cert:issue` onayını
+    // veriyor, IdP kapsamı access token'ın İÇİNE yazıyor, ama yanıtta
+    // göndermediği için posta sunucusu yerel kaydına boş yazıyor ve sertifika
+    // isteği "Oturumunuz cert:issue kapsamını taşımıyor" ile reddediliyordu --
+    // sonsuza kadar, çünkü her yeni onay turu aynı yere varıyordu.
+    return { accessToken, refreshToken: refreshTokenRaw, expiresIn: ACCESS_TOKEN_TTL_S, scope };
   }
 
   /** Access token'ı ES256 public key ile doğrular (stateless -- veritabanına gitmez).

@@ -969,7 +969,16 @@ async function main() {
     const contentType = req.headers['content-type'] || '';
     const body = contentType.includes('application/x-www-form-urlencoded') ? Object.fromEntries(new URLSearchParams(raw.toString('utf8'))) : JSON.parse(raw.toString('utf8') || '{}');
     const result = await oauthService.token({ grantType: body.grant_type, code: body.code, redirectUri: body.redirect_uri, codeVerifier: body.code_verifier, clientId: body.client_id, refreshToken: body.refresh_token, deviceCode: body.device_code, ip: getIp(req), userAgent: req.headers['user-agent'] });
-    sendJson(res, 200, { access_token: result.accessToken, refresh_token: result.refreshToken, token_type: result.tokenType, expires_in: result.expiresIn });
+    // `scope` yanıtta AÇIKÇA bildirilir: relying party'nin yerel oturum
+    // kaydını güncelleyebilmesi için tek kaynak bu (bkz. core/session-manager.js
+    // `_issueTokenPair` içindeki not).
+    sendJson(res, 200, {
+      access_token: result.accessToken,
+      refresh_token: result.refreshToken,
+      token_type: result.tokenType,
+      expires_in: result.expiresIn,
+      ...(result.scope ? { scope: result.scope } : {}),
+    });
   }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/oauth/device/code' }, wrapHandler(async (req, res) => {
