@@ -63,20 +63,43 @@ function main() {
   // yapması beklenmez. Betikten gelen istek de cookie taşımaz.
   check('başlıksız istek reddediliyor', !allowed({}));
 
-  console.log('\n[7] Kullanıcı kotası: pencere içinde sayıyor');
+  console.log('\n[7] Bearer ile gelen istek KAPSAM DIŞI');
+  // CSRF, tarayıcının kimlik bilgisini OTOMATİK eklemesinden doğar. Cookie'yi
+  // tarayıcı kendiliğinden takar; `Authorization` başlığını takmaz -- onu ancak
+  // isteği kuran kodun kendisi yazabilir ve o kod token'a zaten sahipse
+  // sahteciliğe ihtiyacı yoktur. (Üçüncü taraf bir sayfa bu başlığı çapraz
+  // köken ekleyemez: preflight gerekir ve CORS listemizde yalnızca kendi
+  // kökenlerimiz var.)
+  //
+  // Bu istisna olmadan tarayıcı OLMAYAN meşru istemciler -- device-code ile
+  // giriş yapmış bir CLI, tünel istemcisi, bir betik -- hiçbir zaman
+  // geçemezdi ve onları `sec-fetch-site: none` uydurmaya zorlardık; o başlığın
+  // değerli olmasının tek sebebi sayfa kodunun onu DEĞİŞTİREMEMESİ.
+  check('Bearer taşıyan istek, başka hiçbir başlık olmadan geçiyor',
+    allowed({ authorization: 'Bearer eyJhbGciOiJFUzI1NiJ9.x.y' }));
+  check('Bearer, cross-site işaretini de aşıyor (cookie ile kimliklenmiyor)',
+    allowed({ authorization: 'Bearer abc', 'sec-fetch-site': 'cross-site' }));
+  // Şema gerçekten Bearer olmalı: "Basic" ile gelen bir istek tarayıcı
+  // tarafından OTOMATİK eklenebilir (HTTP kimlik doğrulama önbelleği) ve
+  // tam da CSRF'e açık olan durumdur.
+  check('Basic kimlik doğrulaması muaf DEĞİL', !allowed({ authorization: 'Basic dXNlcjpwYXNz' }));
+  check('boş Bearer muaf değil', !allowed({ authorization: 'Bearer ' }));
+  check('Bearer benzeri çöp muaf değil', !allowed({ authorization: 'Bearerfoo' }));
+
+  console.log('\n[8] Kullanıcı kotası: pencere içinde sayıyor');
   const quota = new UserQuota({ limits: { test: { windowMs: 60_000, max: 3 } } });
   check('1. istek geçiyor', quota.check('kullanici-1', 'test').limited === false);
   check('2. istek geçiyor', quota.check('kullanici-1', 'test').limited === false);
   check('3. istek geçiyor', quota.check('kullanici-1', 'test').limited === false);
   check('4. istek engelleniyor', quota.check('kullanici-1', 'test').limited === true);
 
-  console.log('\n[8] Kota KULLANICI başına -- bir kullanıcı diğerini kilitleyemez');
+  console.log('\n[9] Kota KULLANICI başına -- bir kullanıcı diğerini kilitleyemez');
   check('başka kullanıcı etkilenmiyor', quota.check('kullanici-2', 'test').limited === false);
 
-  console.log('\n[9] Kota İŞLEM başına -- bir işlemin kotası diğerini tüketmiyor');
+  console.log('\n[10] Kota İŞLEM başına -- bir işlemin kotası diğerini tüketmiyor');
   check('farklı işlem ayrı sayılıyor', quota.check('kullanici-1', 'avatar').limited === false);
 
-  console.log('\n[10] Aşımda AppError, Retry-After ile');
+  console.log('\n[11] Aşımda AppError, Retry-After ile');
   let err = null;
   try { quota.enforce('kullanici-1', 'test'); } catch (e) { err = e; }
   check('hata fırlatıldı', !!err);
@@ -86,7 +109,7 @@ function main() {
   // daha sık denemeye iter.
   check('ne zaman denenebileceği söyleniyor', err.retryAfterSeconds === 60);
 
-  console.log('\n[11] Tanımsız işlem varsayılan kotaya düşüyor');
+  console.log('\n[12] Tanımsız işlem varsayılan kotaya düşüyor');
   const fresh = new UserQuota();
   check('bilinmeyen işlem çalışıyor', fresh.check('u', 'bilinmeyen-islem').max === 60);
   check('hesap silme kotası dar', fresh.check('u', 'account-delete').max === 3);
