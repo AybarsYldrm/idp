@@ -52,6 +52,24 @@ function normalizeOrigin(value) {
 function assertSameOrigin(req, { allowedOrigins, allowSameSite = false }) {
   const allowed = new Set(allowedOrigins.map(normalizeOrigin).filter(Boolean));
 
+  // `Authorization: Bearer` ile gelen istek CSRF'e yapısal olarak kapalıdır ve
+  // bu kontrolün KAPSAMI DIŞINDADIR (bkz. dosya başlığındaki KAPSAM notu).
+  //
+  // Gerekçe: CSRF, tarayıcının kimlik bilgisini OTOMATİK eklemesinden doğar.
+  // Cookie'yi tarayıcı kendiliğinden takar; `Authorization` başlığını takmaz --
+  // onu ancak isteği kuran kodun kendisi yazabilir, ve o kod token'a zaten
+  // sahipse çapraz-site sahteciliğine ihtiyacı yoktur.
+  //
+  // Bu istisna olmadan, uç noktalarımızı TARAYICI OLMAYAN meşru istemcilerin
+  // (device-code ile giriş yapmış bir CLI, bir tünel istemcisi, bir betik)
+  // çağırması imkânsızdı: hiçbiri Sec-Fetch-Site/Origin/Referer göndermez ve
+  // istek son daldaki "kökeni belirlenemedi" ile 403 alırdı. Onları
+  // `sec-fetch-site: none` uydurmaya zorlamak daha kötü bir sonuç verirdi --
+  // o başlığın değerli olmasının tek sebebi, tarayıcıda SAYFA KODUNUN onu
+  // değiştirememesidir; uydurulmasını normalleştirmek sinyali çöpe atar.
+  const authorization = req.headers.authorization;
+  if (authorization && /^Bearer\s+\S/i.test(authorization)) return;
+
   // Fetch Metadata: modern tarayıcılar bunu gönderir ve SAYFA KODU
   // DEĞİŞTİREMEZ (yasaklı başlık). Varsa en güvenilir sinyal budur.
   const site = req.headers['sec-fetch-site'];
