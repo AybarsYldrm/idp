@@ -4,13 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hesabım — fitfak</title>
-<!-- Yazı tipi tasarım paketinden gelir (--fk-font / --fk-mono): sistem yığını.
-     Harici bir font CDN'i yükleniyordu; bir kimlik sağlayıcısında bu, HER
-     ziyaretçinin IP'sini üçüncü bir tarafa göndermek ve o taraf erişilemez
-     olduğunda giriş sayfasının görünümünü ona bağlamak demekti. -->
 <link rel="stylesheet" href="/static/fitfak-ui.css">
 <style>
-  /* Renkler tasarım paketinden türetiliyor -- bkz. demo-login.html'deki not. */
   :root {
     --ink-contrast: var(--fk-bg);
     --bg: var(--fk-surface); --bg-subtle: var(--fk-bg); --bg-hover: var(--fk-surface-2);
@@ -18,6 +13,8 @@
     --line: var(--fk-border); --line-strong: var(--fk-border-strong);
     --ok: var(--fk-success); --ok-bg: var(--fk-success-bg);
     --bad: var(--fk-danger); --bad-bg: var(--fk-danger-bg);
+    --warn-bg: var(--fk-warning-bg); --warn: var(--fk-warning);
+    --fk-accent: #4f46e5; --fk-accent-hover: #4338ca; --fk-accent-contrast: #ffffff;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg-subtle); color: var(--ink); font-family: var(--fk-font); font-size: 14px; line-height: 1.5; }
@@ -25,32 +22,34 @@
   button, input, select { font: inherit; }
   button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
-  /* Üst çubuk ve sekmeler KASITLI olarak her iki temada da koyu: sabit bir
-     çapa olmaları, sayfanın geri kalanı tema değiştirirken yönü koruyor.
-     Aynı sebeple .code-out da koyu (ham çıktı, içerikten ayırt edilmeli). */
   header { background: #0a0a0a; color: #fff; padding: 0; position: sticky; top: 0; z-index: 10; }
   .header-inner { max-width: 960px; margin: 0 auto; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; }
   .brand { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
   .brand span { color: var(--ink-3); font-weight: 400; }
   .header-user { display: flex; align-items: center; gap: 12px; font-size: 13px; }
-  .avatar { width: 30px; height: 30px; border-radius: 50%; background: #fff; color: #0a0a0a; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 12px; }
-  .btn-ghost { background: none; border: 1px solid #3f3f46; color: #e4e4e7; padding: 5px 11px; border-radius: 5px; cursor: pointer; font-size: 12.5px; }
-  .btn-ghost:hover { background: #1c1c1f; color: #fff; }
+  
+  .avatar { width: 32px; height: 32px; border-radius: 50%; background: #fff; color: #0a0a0a; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 12px; overflow: hidden; }
+  
+  .btn-ghost-hdr { background: none; border: 1px solid #3f3f46; color: #e4e4e7; padding: 5px 11px; border-radius: 5px; cursor: pointer; font-size: 12.5px; transition: 0.15s; }
+  .btn-ghost-hdr:hover { background: #1c1c1f; color: #fff; border-color: #52525b; }
 
-  .tabs { max-width: 960px; margin: 0 auto; padding: 0 24px; display: flex; gap: 2px; border-bottom: 1px solid #1c1c1f; }
-  .tab { background: none; border: none; color: var(--ink-3); padding: 10px 14px; cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent; }
+  .tabs { max-width: 960px; margin: 0 auto; padding: 0 24px; display: flex; gap: 2px; border-bottom: 1px solid #1c1c1f; overflow-x: auto; }
+  .tab { background: none; border: none; color: var(--ink-3); padding: 10px 14px; cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent; white-space: nowrap; transition: 0.15s; }
   .tab:hover { color: #fff; }
   .tab.active { color: #fff; border-bottom-color: #fff; font-weight: 600; }
 
   main { max-width: 960px; margin: 0 auto; padding: 28px 24px 64px; }
-  .view { display: none; }
+  .view { display: none; animation: fadeIn 0.25s ease; }
   .view.active { display: block; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  
   h1 { font-size: 20px; font-weight: 600; margin: 0 0 5px; letter-spacing: -0.02em; }
   .sub { color: var(--ink-2); font-size: 13px; margin: 0 0 22px; }
 
-  .card { background: var(--fk-surface); border: 1px solid var(--line); border-radius: 7px; margin-bottom: 16px; overflow: hidden; }
+  .card { background: var(--fk-surface); border: 1px solid var(--line); border-radius: 7px; margin-bottom: 16px; overflow: hidden; transition: 0.2s; }
+  .card:hover { border-color: var(--line-strong); box-shadow: 0 4px 12px rgba(0,0,0,0.02); }
   .card-head { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
-  .card-head h2 { font-size: 13.5px; font-weight: 600; margin: 0; }
+  .card-head h2 { font-size: 14px; font-weight: 600; margin: 0; }
   .card-body { padding: 18px; }
   .row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 13px 18px; border-bottom: 1px solid var(--line); }
   .row:last-child { border-bottom: none; }
@@ -65,26 +64,69 @@
   .badge-neutral { background: var(--bg-hover); color: var(--ink-2); border-color: var(--line-strong); }
   .chip { display: inline-block; background: var(--bg-hover); border: 1px solid var(--line-strong); padding: 2px 7px; border-radius: 3px; font-size: 11px; margin: 1px 3px 1px 0; }
 
-  .btn { border: 1px solid var(--line-strong); background: var(--fk-surface); color: var(--ink); padding: 6px 12px; border-radius: 5px; cursor: pointer; font-size: 12.5px; font-weight: 500; }
+  .btn { border: 1px solid var(--line-strong); background: var(--fk-surface); color: var(--ink); padding: 6px 12px; border-radius: 5px; cursor: pointer; font-size: 12.5px; font-weight: 500; transition: 0.15s; }
   .btn:hover { background: var(--bg-hover); border-color: var(--ink-3); }
   .btn-primary { background: var(--ink); color: var(--ink-contrast); border-color: var(--ink); }
-  .btn-primary:hover { background: color-mix(in srgb, var(--ink) 88%, var(--fk-bg)); }
+  .btn-primary:hover { background: color-mix(in srgb, var(--ink) 85%, var(--fk-bg)); border-color: transparent; }
   .btn-danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
   .btn-danger:hover { background: var(--bad-bg); border-color: var(--bad); }
+  .btn-ghost { background: transparent; border: 1px solid transparent; color: var(--ink-2); }
+  .btn-ghost:hover { background: var(--bg-hover); color: var(--ink); border-color: var(--line); }
   .btn:disabled { opacity: 0.5; cursor: wait; }
 
   label { display: block; font-size: 11.5px; font-weight: 600; color: var(--ink-2); margin: 14px 0 5px; text-transform: uppercase; letter-spacing: 0.04em; }
   label:first-child { margin-top: 0; }
-  input[type=text], input[type=password], select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 5px; font-size: 13px; }
-  textarea { min-height: 110px; font-family: var(--fk-mono); font-size: 11.5px; resize: vertical; }
+  input[type=text], input[type=password], input[type=email], select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 5px; font-size: 13px; background: var(--fk-surface); color: var(--ink); transition: 0.15s; }
+  input:focus, select:focus, textarea:focus { border-color: var(--ink); }
+  textarea { min-height: 90px; resize: vertical; }
   .hint { font-size: 12px; color: var(--ink-3); margin-top: 6px; }
 
-  .banner { padding: 11px 14px; border-radius: 5px; font-size: 13px; margin-bottom: 16px; display: none; }
+  .banner { padding: 11px 14px; border-radius: 5px; font-size: 13px; margin-bottom: 16px; display: none; font-weight: 500; }
   .banner.show { display: block; }
   .banner-err { background: var(--bad-bg); color: var(--bad); border: 1px solid transparent; }
   .banner-ok { background: var(--ok-bg); color: var(--ok); border: 1px solid transparent; }
+  .banner-warn { background: var(--warn-bg); color: var(--warn); }
   .empty { padding: 26px 18px; text-align: center; color: var(--ink-3); font-size: 13px; }
   .code-out { background: #0a0a0a; color: #e4e4e7; padding: 13px; border-radius: 5px; font-family: var(--fk-mono); font-size: 11px; white-space: pre-wrap; word-break: break-all; margin-top: 12px; max-height: 220px; overflow-y: auto; }
+
+  /* Profil Switch Ayarları */
+  .switch-row { display: flex; align-items: center; gap: 12px; font-size: 13px; font-weight: 500; color: var(--ink); margin: 14px 0; text-transform: none; letter-spacing: normal; cursor: pointer; }
+  .switch-row input { position: absolute; opacity: 0; }
+  .switch-ui { width: 38px; height: 22px; background: var(--line-strong); border-radius: 12px; position: relative; transition: 0.2s; flex-shrink: 0; }
+  .switch-ui::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; background: #fff; border-radius: 50%; transition: 0.2s; }
+  .switch-row input:checked + .switch-ui { background: var(--ok); }
+  .switch-row input:checked + .switch-ui::after { transform: translateX(16px); }
+  .switch-row input:disabled + .switch-ui { opacity: 0.5; cursor: not-allowed; }
+
+  /* Gelişmiş Avatar UI */
+  .avatar-lg-wrapper { position: relative; width: 84px; height: 84px; border-radius: 50%; cursor: pointer; overflow: hidden; border: 2px solid var(--line-strong); transition: 0.2s; box-shadow: 0 2px 8px rgba(0,0,0,0.05); flex-shrink: 0; }
+  .avatar-lg-wrapper:hover { border-color: var(--ink); }
+  .avatar-lg-wrapper .overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.5); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; opacity: 0; transition: 0.2s; text-transform: uppercase; letter-spacing: 0.05em; backdrop-filter: blur(1px); }
+  .avatar-lg-wrapper:hover .overlay { opacity: 1; }
+  
+  /* Modal & Canvas */
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: flex; align-items: center; justify-content: center; opacity: 0; pointer-events: none; transition: 0.2s; backdrop-filter: blur(2px); }
+  .modal-backdrop.show { opacity: 1; pointer-events: auto; }
+  .modal { background: var(--fk-surface); width: 100%; max-width: 400px; border-radius: 12px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); transform: scale(0.95); transition: 0.2s; }
+  .modal-backdrop.show .modal { transform: scale(1); }
+  .modal h3 { margin: 0 0 16px; font-size: 16px; text-align: center; }
+  .crop-area { width: 256px; height: 256px; margin: 0 auto 20px; border-radius: 50%; overflow: hidden; background: var(--bg-hover); position: relative; border: 2px dashed var(--line-strong); cursor: grab; }
+  .crop-area:active { cursor: grabbing; }
+  .crop-area canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+  .crop-hint { text-align: center; color: var(--ink-3); font-size: 12px; margin-top: -10px; margin-bottom: 20px; }
+  
+  /* Sertifika Çıktıları & Aksiyon Butonları */
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  .textarea-wrapper { position: relative; }
+  .textarea-wrapper textarea { height: 160px; font-family: var(--fk-mono); font-size: 11.5px; color: var(--ok); background: #0a0a0a; border-color: var(--line-strong); }
+  
+  .textarea-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; }
+  .btn-action { font-size: 11px; padding: 4px 8px; background: var(--fk-surface); border: 1px solid var(--line-strong); border-radius: 4px; color: var(--ink); cursor: pointer; transition: 0.2s; font-weight: 600; }
+  .btn-action:hover { background: var(--ink); color: #fff; border-color: var(--ink); }
+  
+  .inner-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--line); margin-bottom: 16px; padding-bottom: 8px; }
+  .inner-tab { background: none; border: 1px solid transparent; color: var(--ink-3); padding: 6px 12px; cursor: pointer; font-size: 13px; font-weight: 500; border-radius: 5px; transition: 0.15s; }
+  .inner-tab.active { background: var(--bg-hover); color: var(--ink); border: 1px solid var(--line-strong); }
 </style>
 </head>
 <body>
@@ -94,19 +136,19 @@
     <div class="brand">fitfak <span>hesabım</span></div>
     <div class="header-user">
       <div class="avatar" id="avatar">–</div>
-      <div>
+      <div style="margin-right: 8px;">
         <div id="hdr-name" style="font-weight:600">—</div>
         <div id="hdr-email" style="color:#a1a1aa;font-size:11.5px">—</div>
       </div>
-      <a class="btn-ghost" href="/profile" style="text-decoration:none">Profilim</a>
-      <button class="btn-ghost" id="btn-switch">Hesap değiştir</button>
-      <button class="btn-ghost" id="btn-logout">Çıkış</button>
+      <button class="btn-ghost-hdr" id="btn-switch">Hesap değiştir</button>
+      <button class="btn-ghost-hdr" id="btn-logout">Çıkış</button>
     </div>
   </div>
   <div class="tabs">
     <button class="tab active" data-view="overview">Genel bakış</button>
+    <button class="tab" data-view="profile">Profil Ayarları</button>
     <button class="tab" data-view="devices">Cihazlar</button>
-    <button class="tab" data-view="certs">Sertifikalarım</button>
+    <button class="tab" data-view="certs" id="tab-certs" style="display:none;">Sertifikalarım</button>
     <button class="tab" data-view="security">Güvenlik</button>
   </div>
 </header>
@@ -115,6 +157,7 @@
   <div class="banner banner-err" id="err"></div>
   <div class="banner banner-ok" id="ok"></div>
 
+  <!-- ================= GENEL BAKIŞ ================= -->
   <section class="view active" id="view-overview">
     <h1>Genel bakış</h1>
     <p class="sub">fitfak hesabınızın özeti.</p>
@@ -125,15 +168,94 @@
       <div class="row"><div class="row-main"><div class="row-title">Rol</div></div><div id="ov-role">—</div></div>
       <div class="row"><div class="row-main"><div class="row-title">Kullanıcı kimliği</div><div class="row-sub">Destek taleplerinde bu kimliği paylaşın</div></div><div id="ov-id" class="mono row-sub">—</div></div>
     </div>
+    <div class="card" id="apps-card">
+      <div class="card-head"><h2>Bağlı Uygulamalar ve Servisler</h2></div>
+      <div id="ov-grants"><div class="empty">Yükleniyor…</div></div>
+    </div>
+  </section>
+
+  <!-- ================= PROFİL AYARLARI ================= -->
+  <section class="view" id="view-profile">
+    <h1>Profil Ayarları</h1>
+    <p class="sub">Kişisel bilgilerinizi, profil fotoğrafınızı ve bildirim tercihlerinizi yönetin.</p>
+    
     <div class="card">
-      <div class="card-head"><h2>Bağlı servisler</h2></div>
+      <div class="card-head"><h2>Profil Fotoğrafı</h2></div>
+      <div class="card-body" style="display:flex; gap:24px; align-items:center;">
+        <div class="avatar-lg-wrapper" id="btn-open-avatar-modal" title="Profil Görselini Düzenle">
+           <div class="avatar" id="avatar-lg" style="width:100%; height:100%; font-size:28px; border-radius:0;">–</div>
+           <div class="overlay">Değiştir</div>
+        </div>
+        <div>
+          <h3 style="margin:0 0 6px; font-size:14px;">Avatarınızı Kişiselleştirin</h3>
+          <p class="hint" style="margin:0;">Fotoğrafı düzenlemek veya kaldırmak için yandaki görsele tıklayın. Yüklenen PNG veya JPEG dosyalar otomatik olarak 256x256 boyutuna optimize edilir.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bilgiler Formu -->
+    <form class="card" id="profile-form">
+      <div class="card-head"><h2>Kişisel Bilgiler</h2></div>
       <div class="card-body">
-        <p class="hint" style="margin-top:0">Bu oturumun erişim verdiği fitfak servisleri:</p>
-        <div id="ov-audiences"></div>
+         <div style="display:flex; gap:16px; flex-wrap:wrap;">
+           <div style="flex:1; min-width:200px;">
+             <label>Görünen Ad</label>
+             <input type="text" id="prof-displayName" maxlength="64">
+             <div class="hint">Arayüzlerde görünecek isminiz.</div>
+           </div>
+           <div style="flex:1; min-width:200px;">
+             <label>Zaman Dilimi</label>
+             <input type="text" id="prof-timezone" placeholder="Europe/Istanbul">
+             <div class="hint">IANA bölge adı.</div>
+           </div>
+         </div>
+         <label>Hakkında</label>
+         <textarea id="prof-bio" maxlength="280"></textarea>
+         <label>Dil</label>
+         <select id="prof-locale" style="max-width: 300px;">
+           <option value="tr-TR">Türkçe</option>
+           <option value="en-US">English (US)</option>
+           <option value="de-DE">Deutsch</option>
+         </select>
+         <div style="margin-top: 20px;">
+           <button type="submit" class="btn btn-primary" id="btn-profile-save">Değişiklikleri Kaydet</button>
+         </div>
+      </div>
+    </form>
+
+    <!-- Bildirim Tercihleri -->
+    <div class="card">
+      <div class="card-head"><h2>Bildirim Tercihleri</h2></div>
+      <div class="card-body">
+         <label class="switch-row"><input type="checkbox" id="notify-newDevice"> <span class="switch-ui"></span> Yeni cihazdan giriş uyarısı</label>
+         <label class="switch-row"><input type="checkbox" id="notify-product"> <span class="switch-ui"></span> Ürün duyuruları</label>
+         <label class="switch-row"><input type="checkbox" id="notify-newsletter"> <span class="switch-ui"></span> Bülten</label>
+         <label class="switch-row"><input type="checkbox" checked disabled> <span class="switch-ui"></span> Güvenlik uyarıları <span class="badge badge-neutral" style="margin-left:6px">zorunlu</span></label>
+      </div>
+    </div>
+
+    <!-- Hesap Silme -->
+    <div class="card" style="border-color: color-mix(in srgb, var(--bad) 30%, var(--line));">
+      <div class="card-head"><h2 style="color: var(--bad);">Hesabı Sil</h2></div>
+      <div class="card-body">
+         <p class="hint" style="margin-top:0; margin-bottom: 16px;">Oturumlarınız, cihaz kayıtlarınız, profiliniz ve kimlik bilgileriniz kalıcı olarak kaldırılır. Bu işlem geri alınamaz.</p>
+         <div id="del-step-1">
+           <button class="btn btn-danger" id="btn-del-request">Silme işlemini başlat</button>
+         </div>
+         <div id="del-step-2" style="display:none;">
+           <div class="banner banner-warn show" style="margin-bottom:12px;">E-postanıza 6 haneli bir onay kodu gönderildi. (15 dk geçerli)</div>
+           <label>Onay Kodu</label>
+           <input type="text" id="del-code" class="mono" maxlength="6" placeholder="000000" style="font-size:18px; text-align:center; letter-spacing:4px; max-width:200px;">
+           <div style="margin-top:16px; display:flex; gap:10px;">
+             <button class="btn btn-danger" id="btn-del-confirm">Kalıcı Olarak Sil</button>
+             <button class="btn btn-ghost" id="btn-del-cancel">Vazgeç</button>
+           </div>
+         </div>
       </div>
     </div>
   </section>
 
+  <!-- ================= CİHAZLAR ================= -->
   <section class="view" id="view-devices">
     <h1>Cihazlar</h1>
     <p class="sub">Hesabınıza giriş yapılmış aktif cihazlar. Tanımadığınız bir cihazı hemen sonlandırın.</p>
@@ -144,35 +266,114 @@
     <button class="btn btn-danger" id="btn-logout-all">Tüm cihazlardan çıkış yap</button>
   </section>
 
+  <!-- ================= SERTİFİKALARIM ================= -->
   <section class="view" id="view-certs">
     <h1>Sertifikalarım</h1>
     <p class="sub">fitfak servislerinde mTLS ve imzalama için kullanabileceğiniz sertifikalar.</p>
+    
     <div class="card">
       <div class="card-head"><h2>Verilen sertifikalar</h2><button class="btn" id="btn-reload-certs">Yenile</button></div>
       <div id="certs-list"><div class="empty">yükleniyor…</div></div>
     </div>
+
     <div class="card">
       <div class="card-head"><h2>Yeni sertifika talep et</h2></div>
       <div class="card-body">
+        
+        <!-- Sekmeler (Oto / Manuel) -->
+        <div class="inner-tabs">
+          <button class="inner-tab active" id="tab-cert-auto">Otomatik (Tarayıcıda Üret)</button>
+          <button class="inner-tab" id="tab-cert-manual">Manuel CSR Gir</button>
+        </div>
+
         <label>Sertifika profili</label>
         <select id="csr-profile">
           <option value="client-auth">client-auth — mTLS istemci kimliği</option>
           <option value="server-auth">server-auth — sunucu sertifikası</option>
           <option value="timestamping">timestamping — zaman damgası</option>
-          <option value="document-signing">document-signing - dökünman imzalama</option>
+          <option value="document-signing">document-signing - döküman imzalama</option>
           <option value="code-signing">code-signing - kod imzalama</option>
           <option value="smime">smime - eposta imzalama</option>
         </select>
-        <div class="hint">client-auth tüm kullanıcılara açıktır. Diğer profiller için yöneticinizin hesabınıza yetki vermesi gerekir.</div>
-        <label>CSR (PEM)</label>
-        <textarea id="csr-pem" placeholder="-----BEGIN CERTIFICATE REQUEST-----&#10;…&#10;-----END CERTIFICATE REQUEST-----"></textarea>
-        <div class="hint">Oluşturmak için: <span class="mono">openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout key.pem -out csr.pem</span></div>
-        <button class="btn btn-primary" id="btn-request-cert" style="margin-top:14px">Sertifika talep et</button>
-        <div id="cert-output"></div>
+        <div class="hint" style="margin-bottom:16px;">client-auth tüm kullanıcılara açıktır. Diğer profiller için yönetici yetkisi gereklidir.</div>
+
+        <!-- Otomatik Üretim -->
+        <div id="cert-view-auto">
+          <div style="background: var(--bg-hover); border: 1px solid var(--line); border-radius: 5px; padding: 12px; margin-bottom: 16px;">
+            <div style="font-weight:600; font-size:12.5px; margin-bottom: 6px;">Kriptografik Kimlik (Sizin İçin Atandı)</div>
+            <div class="mono" style="font-size:12px; color:var(--ink-2);" id="auto-subject-preview">Yükleniyor...</div>
+          </div>
+          
+          <label>Kriptografik Algoritma (Key Type)</label>
+          <select id="auto-key-alg">
+            <option value="ec-P-256" selected>ECDSA P-256 (Önerilen, Hızlı)</option>
+            <option value="ec-P-384">ECDSA P-384 (Yüksek Güvenlik)</option>
+            <option value="ec-P-521">ECDSA P-521</option>
+            <option value="rsa-2048">RSA 2048-bit (Geleneksel)</option>
+            <option value="rsa-3072">RSA 3072-bit</option>
+            <option value="rsa-4096">RSA 4096-bit</option>
+          </select>
+          <div class="hint">Anahtar çifti tamamen tarayıcınızın belleğinde üretilecek. "Private Key" asla sunucuya gönderilmeyecektir.</div>
+          
+          <!-- YENİ: DİNAMİK SAN (DNS, IP, Email) ALANLARI -->
+          <div id="san-tls-group" class="field-row" style="display:grid; margin-top:16px;">
+            <div>
+              <label>Alternatif DNS (SAN)</label>
+              <input type="text" id="auto-san-dns" placeholder="örn: *.fitfak.com">
+            </div>
+            <div>
+              <label>Alternatif IP (SAN IPv4)</label>
+              <input type="text" id="auto-san-ip" placeholder="örn: 10.0.0.1">
+            </div>
+          </div>
+          <div id="san-email-group" style="display:none; margin-top:16px;">
+            <label>Güvenli E-Posta (SAN Email)</label>
+            <input type="email" id="auto-san-email" placeholder="örn: admin@fitfak.com">
+          </div>
+        </div>
+
+        <!-- Manuel Üretim -->
+        <div id="cert-view-manual" style="display: none;">
+          <label>Sertifika İstek Metni (CSR - PEM)</label>
+          <textarea id="csr-pem" placeholder="-----BEGIN CERTIFICATE REQUEST-----&#10;…&#10;-----END CERTIFICATE REQUEST-----"></textarea>
+          <div class="hint">Terminalden oluşturmak için: <span class="mono">openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout key.pem -out csr.pem</span></div>
+        </div>
+
+        <button class="btn btn-primary" id="btn-request-cert" style="margin-top:20px; width:100%; padding: 10px;">Sertifika Talep Et</button>
+
+        <!-- Çıktı Ekranı -->
+        <div id="cert-output-wrapper" style="display:none; margin-top:24px; padding-top:16px; border-top: 1px solid var(--line);">
+          <div class="banner banner-warn show" style="margin-bottom:16px; text-align:center; font-weight:600; color:var(--bad);">
+             DİKKAT: Gizli anahtarınız (Private Key) tarayıcınızda üretildi. Sayfayı yenilerseniz anahtarı bir daha KURTARAMAZSINIZ! Lütfen kopyalayıp güvenli bir yere kaydedin.
+          </div>
+          <div class="field-row">
+            <div>
+              <label>Gizli Anahtar (Private Key)</label>
+              <div class="textarea-wrapper">
+                <div class="textarea-actions">
+                    <button class="btn-action" onclick="window.copyToClipboard('out-priv', this)">Kopyala</button>
+                    <button class="btn-action" onclick="window.downloadOutput('out-priv', 'key')">İndir (.key)</button>
+                </div>
+                <textarea id="out-priv" readonly></textarea>
+              </div>
+            </div>
+            <div>
+              <label>İmzalı Sertifika (Certificate)</label>
+              <div class="textarea-wrapper">
+                <div class="textarea-actions">
+                    <button class="btn-action" onclick="window.copyToClipboard('out-cert', this)">Kopyala</button>
+                    <button class="btn-action" onclick="window.downloadOutput('out-cert', 'crt')">İndir (.crt)</button>
+                </div>
+                <textarea id="out-cert" readonly></textarea>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
 
+  <!-- ================= GÜVENLİK ================= -->
   <section class="view" id="view-security">
     <h1>Güvenlik</h1>
     <p class="sub">Parola ve çok faktörlü kimlik doğrulama ayarları.</p>
@@ -201,20 +402,44 @@
   </section>
 </main>
 
+<!-- AVATAR MODALI VE NATIVE CANVAS KESİCİ -->
+<div id="avatar-modal" class="modal-backdrop">
+  <div class="modal">
+    <h3>Profil Görseli Düzenle</h3>
+    <div class="crop-hint">Fotoğrafı hizalamak için alanı sürükleyin</div>
+    
+    <div class="crop-area" id="crop-area">
+      <canvas id="crop-canvas" width="256" height="256"></canvas>
+    </div>
+    
+    <input type="file" id="modal-file-input" accept="image/png,image/jpeg" style="display:none">
+    
+    <div style="display:flex; flex-wrap:wrap; gap:8px; justify-content:center;">
+      <button class="btn btn-secondary" style="border: 1px solid var(--line-strong); background: var(--bg-hover);" id="btn-modal-choose">Görsel Seç</button>
+      <button class="btn btn-primary" id="btn-modal-save" disabled>Kaydet</button>
+      <button class="btn btn-danger" id="btn-modal-remove" style="display:none;">Kaldır</button>
+      <button class="btn btn-ghost" id="btn-modal-close">İptal</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
   var me = null;
+  var hasAvatar = false;
+  var cryptoSubject = { CN: "", O: "FITFAK", C: "TR", Email: "" };
+  var currentCertMode = 'auto'; // 'auto' | 'manual'
 
-  function showErr(m) { $('ok').classList.remove('show'); var e = $('err'); e.textContent = m; e.classList.add('show'); }
-  function showOk(m) { $('err').classList.remove('show'); var e = $('ok'); e.textContent = m; e.classList.add('show'); setTimeout(function(){e.classList.remove('show');}, 4500); }
+  function showErr(m) { $('ok').classList.remove('show'); var e = $('err'); e.textContent = m; e.classList.add('show'); window.scrollTo(0,0); }
+  function showOk(m) { $('err').classList.remove('show'); var e = $('ok'); e.textContent = m; e.classList.add('show'); setTimeout(function(){e.classList.remove('show');}, 4500); window.scrollTo(0,0); }
 
   async function api(path, opts) {
     var res = await fetch(path, Object.assign({ credentials: 'include', headers: { 'content-type': 'application/json' } }, opts || {}));
     var data = null;
     try { data = await res.json(); } catch (e) {}
-    if (!res.ok) throw new Error((data && (data.error_description || data.error)) || ('HTTP ' + res.status));
+    if (!res.ok) throw new Error((data && (data.error_description || data.error || data.message)) || ('HTTP ' + res.status));
     return data;
   }
   var get = function (p) { return api(p); };
@@ -227,198 +452,453 @@
     try { await fn(); } catch (e) { showErr(e.message); } finally { btn.disabled = false; btn.textContent = t; }
   }
 
+  // --- SEKMELER (TABS) ---
   document.querySelectorAll('.tab').forEach(function (t) {
     t.addEventListener('click', function () {
       document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
       t.classList.add('active');
       document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('active'); });
       $('view-' + t.dataset.view).classList.add('active');
+      $('ok').classList.remove('show'); $('err').classList.remove('show');
     });
   });
 
-  // ---- profil ----
+  // --- SERTİFİKA İÇ SEKMELER (Oto/Manuel) ---
+  $('tab-cert-auto').addEventListener('click', function() {
+    currentCertMode = 'auto';
+    this.classList.add('active'); $('tab-cert-manual').classList.remove('active');
+    $('cert-view-auto').style.display = 'block'; $('cert-view-manual').style.display = 'none';
+    $('cert-output-wrapper').style.display = 'none';
+  });
+  $('tab-cert-manual').addEventListener('click', function() {
+    currentCertMode = 'manual';
+    this.classList.add('active'); $('tab-cert-auto').classList.remove('active');
+    $('cert-view-manual').style.display = 'block'; $('cert-view-auto').style.display = 'none';
+    $('cert-output-wrapper').style.display = 'none';
+  });
+
+  // --- SAN ALANLARINI DİNAMİK GÖSTER/GİZLE ---
+  function updateSanVisibility() {
+    var val = $('csr-profile').value;
+    if (val === 'server-auth' || val === 'client-auth') {
+      $('san-tls-group').style.display = 'grid';
+      $('san-email-group').style.display = 'none';
+    } else if (val === 'smime') {
+      $('san-tls-group').style.display = 'none';
+      $('san-email-group').style.display = 'block';
+    } else {
+      $('san-tls-group').style.display = 'none';
+      $('san-email-group').style.display = 'none';
+    }
+  }
+  $('csr-profile').addEventListener('change', updateSanVisibility);
+
+  // Pano ve İndirme Araçları
+  window.copyToClipboard = function(elementId, btnElement) {
+    var el = $(elementId);
+    navigator.clipboard.writeText(el.value).then(function() {
+        var originalText = btnElement.innerText;
+        btnElement.innerText = "Kopyalandı!";
+        setTimeout(function() { btnElement.innerText = originalText; }, 2000);
+    });
+  };
+
+  window.downloadOutput = function(elementId, ext) {
+    var text = $(elementId).value;
+    if(!text) return;
+    var cnStr = cryptoSubject.CN ? cryptoSubject.CN.replace(/[^a-z0-9]/gi, '_').toLowerCase() : 'certificate';
+    var filename = cnStr + '.' + ext;
+    
+    var blob = new Blob([text], { type: 'text/plain' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // --- 1. USERINFO (Genel Bakış) ---
   async function loadMe() {
     me = await get('/oauth/userinfo');
     var name = me.preferred_username || me.sub;
-    $('avatar').textContent = (name || '?').slice(0, 2).toUpperCase();
-    $('hdr-name').textContent = name;
+    
     $('hdr-email').textContent = me.email || '';
     $('ov-username').textContent = name;
     $('ov-email').textContent = me.email || '—';
     $('ov-id').textContent = me.sub;
-    $('ov-role').innerHTML = me.role === 'admin'
-      ? '<span class="badge badge-dark">yönetici</span> <a href="/static/admin-panel.html" style="margin-left:8px;font-size:12px">Yönetim paneline git →</a>'
-      : '<span class="badge badge-neutral">kullanıcı</span>';
+    
+    // WebCrypto Kripto Öznesi (Subject) ataması
+    cryptoSubject.CN = name;
+    cryptoSubject.Email = me.email || "";
+    $('auto-subject-preview').textContent = "C=" + cryptoSubject.C + ", O=" + cryptoSubject.O + ", CN=" + cryptoSubject.CN;
+
+    if (me.role === 'admin') {
+      $('ov-role').innerHTML = '<span class="badge badge-dark">yönetici</span> <a href="https://one.fitfak.net/" style="margin-left:8px;font-size:12px;color:var(--ink);">Yönetim paneline git →</a>';
+      $('tab-certs').style.display = '';
+    } else {
+      $('ov-role').innerHTML = '<span class="badge badge-neutral">kullanıcı</span>';
+      $('tab-certs').style.display = 'none';
+    }
+
     $('sec-mfa').innerHTML = (me.mfa_methods || []).length
       ? me.mfa_methods.map(function (m) { return '<span class="chip">' + esc(m) + '</span>'; }).join('')
       : '<span class="badge badge-bad">kurulu değil</span>';
   }
 
-  // ---- cihazlar ----
+  // --- 2. PROFİL & NATIVE CANVAS CROPPER ---
+  function updateAvatars(p) {
+    var name = p.displayName || p.username || '?';
+    var initials = name.slice(0, 2).toUpperCase();
+    var url = p.avatarUrl ? p.avatarUrl + "?t=" + Date.now() : null;
+    
+    hasAvatar = !!url;
+    $('btn-modal-remove').style.display = hasAvatar ? 'inline-block' : 'none';
+    
+    var els = [$('avatar'), $('avatar-lg')];
+    els.forEach(function(el) {
+      if (!el) return;
+      if (url) {
+        el.innerHTML = '<img src="' + url + '" style="width:100%;height:100%;object-fit:cover;">';
+        el.style.background = 'transparent';
+      } else {
+        el.innerHTML = ''; el.textContent = initials;
+        el.style.background = (el.id === 'avatar-lg') ? 'var(--bg-hover)' : '#fff';
+      }
+    });
+    $('hdr-name').textContent = name;
+  }
+
+  async function loadProfile() {
+    var p = await get('/api/profile');
+    $('prof-displayName').value = p.displayName || '';
+    $('prof-bio').value = p.bio || '';
+    $('prof-locale').value = p.locale || 'tr-TR';
+    $('prof-timezone').value = p.timezone || '';
+
+    $('notify-newDevice').checked = !!(p.notifications && p.notifications.newDevice);
+    $('notify-product').checked = !!(p.notifications && p.notifications.product);
+    $('notify-newsletter').checked = !!(p.notifications && p.notifications.newsletter);
+
+    updateAvatars(p);
+  }
+
+  var canvas = $('crop-canvas'), ctx = canvas.getContext('2d');
+  var cropArea = $('crop-area'), sourceImg = new Image();
+  var imgScale = 1, offsetX = 0, offsetY = 0, isDragging = false, startX, startY;
+  var currentImageType = 'image/jpeg';
+
+  function drawCrop() {
+    ctx.clearRect(0, 0, 256, 256);
+    if (!sourceImg.src) return;
+    var scaledW = sourceImg.width * imgScale, scaledH = sourceImg.height * imgScale;
+    if (offsetX > 0) offsetX = 0;
+    if (offsetY > 0) offsetY = 0;
+    if (offsetX < 256 - scaledW) offsetX = 256 - scaledW;
+    if (offsetY < 256 - scaledH) offsetY = 256 - scaledH;
+    ctx.drawImage(sourceImg, offsetX, offsetY, scaledW, scaledH);
+  }
+  function handleDragStart(e) { if (!sourceImg.src) return; isDragging = true; var pt = e.touches ? e.touches[0] : e; startX = pt.clientX - offsetX; startY = pt.clientY - offsetY; }
+  function handleDragMove(e) { if (!isDragging) return; e.preventDefault(); var pt = e.touches ? e.touches[0] : e; offsetX = pt.clientX - startX; offsetY = pt.clientY - startY; drawCrop(); }
+  function handleDragEnd() { isDragging = false; }
+
+  cropArea.addEventListener('mousedown', handleDragStart); cropArea.addEventListener('mousemove', handleDragMove); window.addEventListener('mouseup', handleDragEnd);
+  cropArea.addEventListener('touchstart', handleDragStart, {passive: false}); cropArea.addEventListener('touchmove', handleDragMove, {passive: false}); window.addEventListener('touchend', handleDragEnd);
+
+  $('btn-open-avatar-modal').addEventListener('click', function(e) { e.preventDefault(); ctx.clearRect(0,0,256,256); sourceImg.src = ''; $('btn-modal-save').disabled = true; $('avatar-modal').classList.add('show'); });
+  $('btn-modal-close').addEventListener('click', function() { $('avatar-modal').classList.remove('show'); $('modal-file-input').value = ''; });
+  $('btn-modal-choose').addEventListener('click', function() { $('modal-file-input').click(); });
+  
+  $('modal-file-input').addEventListener('change', function(e) {
+    var file = e.target.files[0]; if (!file) return;
+    currentImageType = (file.type === 'image/png') ? 'image/png' : 'image/jpeg';
+    var reader = new FileReader();
+    reader.onload = function(event) {
+      sourceImg.onload = function() {
+        imgScale = Math.max(256 / sourceImg.width, 256 / sourceImg.height);
+        offsetX = (256 - (sourceImg.width * imgScale)) / 2; offsetY = (256 - (sourceImg.height * imgScale)) / 2;
+        drawCrop(); $('btn-modal-save').disabled = false;
+      };
+      sourceImg.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  $('btn-modal-save').addEventListener('click', function() {
+    busy(this, function() {
+      return new Promise(function(resolve, reject) {
+        canvas.toBlob(function(blob) {
+          if (!blob) return reject(new Error('Görsel işlenemedi.'));
+          fetch('/api/profile/avatar', { method: 'POST', credentials: 'include', headers: { 'Content-Type': currentImageType }, body: blob })
+          .then(async r => { if (!r.ok) { let e = await r.json(); throw new Error(e.error_description || e.message || 'Yükleme başarısız'); } return r.json(); })
+          .then(() => loadProfile()).then(() => { $('avatar-modal').classList.remove('show'); showOk('Profil fotoğrafınız başarıyla güncellendi.'); resolve(); }).catch(e => reject(e));
+        }, currentImageType, 0.9);
+      });
+    });
+  });
+
+  $('btn-modal-remove').addEventListener('click', function() { busy(this, async function() { await post('/api/profile/avatar/delete'); await loadProfile(); $('avatar-modal').classList.remove('show'); showOk('Profil fotoğrafınız kaldırıldı.'); }); });
+
+  $('profile-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    busy($('btn-profile-save'), async function() {
+      await post('/api/profile', { displayName: $('prof-displayName').value, bio: $('prof-bio').value, locale: $('prof-locale').value, timezone: $('prof-timezone').value });
+      await loadProfile(); showOk('Profil bilgileriniz güncellendi.');
+    });
+  });
+
+  ['newDevice', 'product', 'newsletter'].forEach(function(k) {
+    $('notify-' + k).addEventListener('change', function() {
+      var body = {}; body[k] = this.checked;
+      post('/api/profile/notifications', body).then(() => showOk('Tercih kaydedildi.')).catch(e => showErr(e.message));
+    });
+  });
+
+  $('btn-del-request').addEventListener('click', function() { busy(this, async function() { await post('/api/account/delete'); $('del-step-1').style.display = 'none'; $('del-step-2').style.display = 'block'; }); });
+  $('btn-del-cancel').addEventListener('click', function() { $('del-step-2').style.display = 'none'; $('del-step-1').style.display = 'block'; $('del-code').value = ''; });
+  $('btn-del-confirm').addEventListener('click', function() { busy(this, async function() { await post('/api/account/delete/confirm', { code: $('del-code').value }); alert('Hesabınız başarıyla silindi. Oturum kapatılıyor.'); location.href = '/login'; }); });
+
+  // --- 3. BAĞLI UYGULAMALAR (GRANTS) ---
+  async function loadGrants() {
+    var data = await get('/account/grants');
+    var host = $('ov-grants');
+    if (!data || !data.grants || data.grants.length === 0) { host.innerHTML = '<div class="empty">Hiçbir uygulamaya izin vermediniz.</div>'; return; }
+    host.innerHTML = '';
+    data.grants.forEach(function (g) {
+      var div = document.createElement('div'); div.className = 'row';
+      var scopes = g.scopes.map(function(s) { return s.title; }).join(' · ');
+      div.innerHTML = '<div class="row-main"><div class="row-title">' + esc(g.name) + (!g.exists ? ' <span class="badge badge-bad" style="margin-left:6px">Kayıtlı Değil</span>' : '') + '</div><div class="row-sub">Kapsam: ' + esc(scopes) + '</div><div class="row-sub">Son Erişim: ' + (g.lastUsedAt ? fmtDate(g.lastUsedAt) : 'Kullanılmadı') + '</div></div>';
+      var btn = document.createElement('button'); btn.className = 'btn btn-ghost'; btn.textContent = 'İzni Geri Al';
+      btn.addEventListener('click', function () { busy(btn, async function () { await post('/account/grants/revoke', { clientId: g.clientId }); showOk('İzin başarıyla geri alındı.'); await loadGrants(); }); });
+      var right = document.createElement('div'); right.appendChild(btn); div.appendChild(right); host.appendChild(div);
+    });
+  }
+
+  // --- 4. CİHAZLAR ---
   async function loadDevices() {
     var data = await get('/auth/sessions');
     var el = $('devices-list');
     if (!data.sessions.length) { el.innerHTML = '<div class="empty">Aktif oturum yok.</div>'; return; }
     el.innerHTML = '';
     data.sessions.forEach(function (s) {
-      var div = document.createElement('div');
-      div.className = 'row';
-      div.innerHTML =
-        '<div class="row-main"><div class="row-title">' + esc(s.ip || 'bilinmeyen IP')
-          + (s.isCurrent ? ' <span class="badge badge-ok">bu cihaz</span>' : '') + '</div>'
-        + '<div class="row-sub">' + esc(s.userAgent || 'bilinmeyen tarayıcı') + '</div>'
-        + '<div class="row-sub">Giriş: ' + fmtDate(s.createdAt) + '</div></div><div></div>';
+      var div = document.createElement('div'); div.className = 'row';
+      div.innerHTML = '<div class="row-main"><div class="row-title">' + esc(s.ip || 'bilinmeyen IP') + (s.isCurrent ? ' <span class="badge badge-ok" style="margin-left:6px">bu cihaz</span>' : '') + '</div><div class="row-sub">' + esc(s.userAgent || 'bilinmeyen tarayıcı') + '</div><div class="row-sub">Giriş: ' + fmtDate(s.createdAt) + '</div></div><div></div>';
       if (!s.isCurrent) {
-        var btn = document.createElement('button');
-        btn.className = 'btn btn-sm btn-danger';
-        btn.textContent = 'Sonlandır';
-        btn.addEventListener('click', function () {
-          busy(btn, function () {
-            return post('/auth/sessions/revoke', { sessionId: s.sessionId })
-              .then(function () { showOk('Cihaz oturumu sonlandırıldı.'); return loadDevices(); });
-          });
-        });
+        var btn = document.createElement('button'); btn.className = 'btn btn-danger'; btn.style.padding = '4px 10px'; btn.textContent = 'Sonlandır';
+        btn.addEventListener('click', function () { busy(btn, function () { return post('/auth/sessions/revoke', { sessionId: s.sessionId }).then(function () { showOk('Cihaz oturumu sonlandırıldı.'); return loadDevices(); }); }); });
         div.lastChild.appendChild(btn);
       }
       el.appendChild(div);
     });
-    $('ov-audiences').innerHTML = (data.sessions.find(function (s) { return s.isCurrent; }) || {}).audiences
-      ? data.sessions.find(function (s) { return s.isCurrent; }).audiences.map(function (a) {
-        return '<span class="chip">' + esc(a === 'self' ? 'fitfak kimlik' : a) + '</span>';
-      }).join('') : '<span class="hint">Henüz bağlı servis yok.</span>';
   }
   $('btn-reload-devices').addEventListener('click', function () { busy(this, loadDevices); });
-  $('btn-logout-all').addEventListener('click', function () {
-    var b = this;
-    busy(b, function () { return post('/auth/logout-all').then(function () { location.href = '/login'; }); });
-  });
+  $('btn-logout-all').addEventListener('click', function () { busy(this, function () { return post('/auth/logout-all').then(function () { location.href = '/login'; }); }); });
 
-  async function getNoCorsHeaders(url) {
-    const res = await fetch(url, {
-        credentials: 'include'
-    });
+  // --- 5. SERTİFİKALAR (WEBCRYPTO CSR & TABLO) ---
+  
+  // Minimal ASN.1 DER Kodlayıcı
+  function concatBytes() { var t=0,i,o=0; for(i=0;i<arguments.length;i++) t+=arguments[i].length; var r=new Uint8Array(t); for(i=0;i<arguments.length;i++){r.set(arguments[i],o);o+=arguments[i].length;} return r; }
+  function asn1(tag, data) {
+    var len=data.length, lB=[];
+    if(len<128) lB.push(len); else { var h=len.toString(16); if(h.length%2!==0) h='0'+h; var o=h.match(/.{2}/g).map(function(x){return parseInt(x,16);}); lB.push(0x80|o.length); lB.push.apply(lB,o); }
+    var res=new Uint8Array(1+lB.length+len); res[0]=tag; res.set(lB,1); res.set(data,1+lB.length); return res;
+  }
+  function seq() { return asn1(0x30, concatBytes.apply(null, arguments)); }
+  function set() { return asn1(0x31, concatBytes.apply(null, arguments)); }
+  function int(val) { return asn1(0x02, new Uint8Array([val])); }
+  function bitstr(bytes) { return asn1(0x03, concatBytes(new Uint8Array([0x00]), bytes)); }
+  function octetstr(bytes) { return asn1(0x04, bytes); }
+  function utf8(str) { return asn1(0x0C, new TextEncoder().encode(str)); }
+  function printstr(str) { return asn1(0x13, new TextEncoder().encode(str)); }
+  function rawOid(hex) { return new Uint8Array(hex.match(/.{2}/g).map(function(x){ return parseInt(x, 16); })); }
 
-    let data = null;
+  function derEncodeECDSASignature(rawSig) {
+    var formatAsn1Int = function(bytes) { var arr = Array.from(bytes); while(arr.length>1 && arr[0]===0 && (arr[1]&0x80)===0) arr.shift(); if((arr[0]&0x80)!==0) arr.unshift(0x00); return asn1(0x02, new Uint8Array(arr)); };
+    var partLen = rawSig.length / 2; return seq(formatAsn1Int(rawSig.slice(0, partLen)), formatAsn1Int(rawSig.slice(partLen)));
+  }
 
-    try {
-        data = await res.json();
-    } catch (e) {}
+  function getSignatureAlgOid(alg, curve) {
+    if (alg === "rsa") return rawOid("06092A864886F70D01010B");
+    if (curve === "P-384") return rawOid("06082A8648CE3D040303");
+    if (curve === "P-521") return rawOid("06082A8648CE3D040304");
+    return rawOid("06082A8648CE3D040302"); // default P-256
+  }
 
-    if (!res.ok) {
-        throw new Error(
-            (data && (data.error_description || data.error)) ||
-            ('HTTP ' + res.status)
-        );
-    }
+  function arrayBufferToBase64(buffer) { var bin='', bytes=new Uint8Array(buffer); for(var i=0;i<bytes.byteLength;i++) bin+=String.fromCharCode(bytes[i]); return window.btoa(bin); }
+  function formatPEM(b64, type) { var w = b64.replace(/(.{64})/g, '$1\n').trim(); return "-----BEGIN " + type + "-----\n" + w + "\n-----END " + type + "-----"; }
 
-    return data;
-}
-
-  // ---- sertifikalar ----
+  // Liste Yükleme
   async function loadCerts() {
     var data = await get('https://trust.fitfak.net/device/certificates');
     var el = $('certs-list');
     if (!data.certificates.length) { el.innerHTML = '<div class="empty">Henüz sertifikanız yok.</div>'; return; }
     el.innerHTML = '';
     data.certificates.forEach(function (c) {
-      var div = document.createElement('div');
-      div.className = 'row';
+      var div = document.createElement('div'); div.className = 'row';
       var badge = c.status === 'valid' ? '<span class="badge badge-ok">geçerli</span>' : '<span class="badge badge-bad">iptal</span>';
-      div.innerHTML =
-        '<div class="row-main"><div class="row-title">' + esc(c.subjectCn) + ' <span class="chip">' + esc(c.profile) + '</span></div>'
-        + '<div class="row-sub mono">' + esc(c.serialNumberHex) + '</div>'
-        + '<div class="row-sub">Geçerlilik: ' + fmtDate(c.notBefore) + ' → ' + fmtDate(c.notAfter) + '</div></div>'
-        + '<div>' + badge + '</div>';
+      div.innerHTML = '<div class="row-main"><div class="row-title">' + esc(c.subjectCn) + ' <span class="chip" style="margin-left:6px">' + esc(c.profile) + '</span></div><div class="row-sub mono">' + esc(c.serialNumberHex) + '</div><div class="row-sub">Geçerlilik: ' + fmtDate(c.notBefore) + ' → ' + fmtDate(c.notAfter) + '</div></div><div>' + badge + '</div>';
       if (c.status === 'valid') {
-        var btn = document.createElement('button');
-        btn.className = 'btn btn-sm btn-danger';
-        btn.style.marginLeft = '8px';
-        btn.textContent = 'İptal et';
-        btn.addEventListener('click', function () {
-          busy(btn, function () {
-            return post('https://trust.fitfak.net/device/certificate/revoke', { serialNumberHex: c.serialNumberHex, reason: 'user_requested' })
-              .then(function () { showOk('Sertifika iptal edildi.'); return loadCerts(); });
-          });
-        });
+        var btn = document.createElement('button'); btn.className = 'btn btn-danger'; btn.style.padding = '4px 10px'; btn.style.marginLeft = '8px'; btn.textContent = 'İptal et';
+        btn.addEventListener('click', function () { busy(btn, function () { return post('https://trust.fitfak.net/device/certificate/revoke', { serialNumberHex: c.serialNumberHex, reason: 'user_requested' }).then(function () { showOk('Sertifika iptal edildi.'); return loadCerts(); }); }); });
         div.lastChild.appendChild(btn);
       }
       el.appendChild(div);
     });
   }
   $('btn-reload-certs').addEventListener('click', function () { busy(this, loadCerts); });
+
+  // Sertifika Talep Etme
   $('btn-request-cert').addEventListener('click', function () {
-    var b = this;
-    busy(b, function () {
-      var csr = $('csr-pem').value.trim();
-      if (!csr) { showErr('CSR gerekli.'); return Promise.resolve(); }
-      return post('https://trust.fitfak.net/device/certificate', { csrPem: csr, profile: $('csr-profile').value })
-        .then(function (r) {
-          $('cert-output').innerHTML = '<div class="code-out">' + esc(r.certPem) + '</div>';
-          showOk('Sertifika verildi. Seri: ' + r.serialNumberHex);
-          return loadCerts();
-        });
+    var btn = this;
+    busy(btn, async function () {
+      var profile = $('csr-profile').value;
+      var csrPem = "";
+      var privKeyPem = "";
+
+      if (currentCertMode === 'auto') {
+        var algSelection = $('auto-key-alg').value;
+        var isRsa = algSelection.startsWith('rsa');
+        var keyPair, signParams;
+        
+        if (isRsa) {
+            var rsaSize = parseInt(algSelection.split('-')[1]);
+            keyPair = await window.crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: rsaSize, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+            signParams = "RSASSA-PKCS1-v1_5";
+        } else {
+            var ecCurve = algSelection.split('-')[1] + "-" + algSelection.split('-')[2];
+            var ecHash = "SHA-256"; if(ecCurve === "P-384") ecHash = "SHA-384"; else if(ecCurve === "P-521") ecHash = "SHA-512";
+            keyPair = await window.crypto.subtle.generateKey({ name: "ECDSA", namedCurve: ecCurve }, true, ["sign", "verify"]);
+            signParams = { name: "ECDSA", hash: { name: ecHash } };
+        }
+
+        var expPriv = await window.crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
+        privKeyPem = formatPEM(arrayBufferToBase64(expPriv), "PRIVATE KEY");
+
+        var expPub = await window.crypto.subtle.exportKey("spki", keyPair.publicKey);
+        var spkiBytes = new Uint8Array(expPub);
+
+        var subjectItems = [
+            set(seq(rawOid("0603550406"), printstr(cryptoSubject.C))),
+            set(seq(rawOid("060355040A"), utf8(cryptoSubject.O))),
+            set(seq(rawOid("0603550403"), utf8(cryptoSubject.CN)))
+        ];
+
+        var ekuOids = []; var sanItems = [];
+        if (profile === 'client-auth') ekuOids.push(rawOid("06082B06010505070302"));
+        else if (profile === 'server-auth') ekuOids.push(rawOid("06082B06010505070301"));
+        else if (profile === 'timestamping') ekuOids.push(rawOid("06082B06010505070308"));
+        else if (profile === 'document-signing' || profile === 'code-signing') ekuOids.push(rawOid("06082B06010505070303"));
+        else if (profile === 'smime') {
+            ekuOids.push(rawOid("06082B06010505070304"));
+        }
+
+        // YENİ: SAN Değerlerinin Alınması ve ASN.1 İçine Gömülmesi
+        if (profile === 'server-auth' || profile === 'client-auth') {
+            var dnsVal = $('auto-san-dns').value.trim();
+            var ipVal = $('auto-san-ip').value.trim();
+            if (dnsVal) sanItems.push(asn1(0x82, new TextEncoder().encode(dnsVal))); // DNS Eklentisi
+            if (ipVal) {
+                var parts = ipVal.split('.').map(Number);
+                if(parts.length === 4 && parts.every(p => p >= 0 && p <= 255)) {
+                    sanItems.push(asn1(0x87, new Uint8Array(parts))); // IP Eklentisi
+                }
+            }
+        } else if (profile === 'smime') {
+            var emailVal = $('auto-san-email').value.trim() || cryptoSubject.Email;
+            if (emailVal) sanItems.push(asn1(0x81, new TextEncoder().encode(emailVal))); // Email Eklentisi
+        }
+
+        var extensions = [];
+        if (ekuOids.length > 0) extensions.push(seq(rawOid("0603551D25"), octetstr(seq.apply(null, ekuOids))));
+        if (sanItems.length > 0) extensions.push(seq(rawOid("0603551D11"), octetstr(seq.apply(null, sanItems))));
+
+        var attributes = asn1(0xA0, new Uint8Array(0)); 
+        if (extensions.length > 0) {
+            var extReq = seq(rawOid("06092A864886F70D01090E"), set(seq.apply(null, extensions)));
+            attributes = asn1(0xA0, extReq);
+        }
+
+        var cri = seq(int(0), seq.apply(null, subjectItems), spkiBytes, attributes);
+        var rawSignature = await window.crypto.subtle.sign(signParams, keyPair.privateKey, cri);
+        
+        var formattedSignature = isRsa ? new Uint8Array(rawSignature) : derEncodeECDSASignature(new Uint8Array(rawSignature));
+        var algType = isRsa ? "rsa" : "ec";
+        var curveType = isRsa ? null : algSelection.split('-')[1] + "-" + algSelection.split('-')[2];
+        var algId = seq(getSignatureAlgOid(algType, curveType));
+        
+        var csr = seq(cri, algId, bitstr(formattedSignature));
+        csrPem = formatPEM(arrayBufferToBase64(csr), "CERTIFICATE REQUEST");
+      } else {
+        csrPem = $('csr-pem').value.trim();
+        if (!csrPem) throw new Error('CSR gerekli.');
+      }
+
+      var r = await post('https://trust.fitfak.net/device/certificate', { csrPem: csrPem, profile: profile });
+
+      if (currentCertMode === 'auto') {
+         $('out-priv').value = privKeyPem;
+         $('out-cert').value = r.certPem;
+         $('cert-output-wrapper').style.display = 'block';
+         showOk('Sertifika başarıyla oluşturuldu! Lütfen Gizli Anahtarınızı (Private Key) kaydedin.');
+      } else {
+         $('out-priv').value = "Manuel CSR kullanıldı.\n(Private key'iniz zaten sizde.)";
+         $('out-cert').value = r.certPem;
+         $('cert-output-wrapper').style.display = 'block';
+         showOk('Sertifika verildi. Seri: ' + r.serialNumberHex);
+      }
+      
+      return loadCerts();
     });
   });
 
-  // ---- güvenlik ----
+  // --- 6. GÜVENLİK ---
   $('btn-start-reset').addEventListener('click', function () {
-    var b = this;
-    busy(b, function () {
+    busy(this, function () {
       return post('/auth/password-reset/request', { email: me.email }).then(function () {
-        $('reset-flow').style.display = 'block';
-        showOk('Kod e-postana gönderildi (kayıtlıysa).');
+        $('reset-flow').style.display = 'block'; showOk('Kod e-postana gönderildi (kayıtlıysa).');
       });
     });
   });
   $('btn-confirm-reset').addEventListener('click', function () {
-    var b = this;
-    busy(b, function () {
-      return post('/auth/password-reset/confirm', {
-        email: me.email, code: $('reset-code').value.trim(), newPassword: $('reset-newpass').value,
-      }).then(function () {
-        alert('Parolan değiştirildi. Güvenlik için tüm cihazlardan çıkış yapıldı — lütfen tekrar giriş yap.');
-        location.href = '/login';
-      });
+    busy(this, function () {
+      return post('/auth/password-reset/confirm', { email: me.email, code: $('reset-code').value.trim(), newPassword: $('reset-newpass').value,
+      }).then(function () { alert('Parolan değiştirildi. Güvenlik için tüm cihazlardan çıkış yapıldı — lütfen tekrar giriş yap.'); location.href = '/login'; });
     });
   });
 
-  $('btn-logout').addEventListener('click', function () {
-    var b = this;
-    busy(b, function () { return post('/auth/logout').then(function () { location.href = '/login'; }); });
+  // --- ÜST MENÜ ---
+  $('btn-logout').addEventListener('click', function () { busy(this, function () { return post('/auth/logout').then(function () { location.href = '/login'; }); }); });
+  $('btn-switch').addEventListener('click', function () { location.href = '/login?choose_account=1&return_to=' + encodeURIComponent('/portal'); });
+
+  function onLoadError(e) { if (String(e.message).indexOf('401') >= 0 || /unauth/i.test(e.message)) { location.href = '/login?return_to=' + encodeURIComponent('/portal'); return true; } return false; }
+
+  // --- İLK YÜKLEME ZİNCİRİ (TAMAMI BURADA) ---
+  loadMe().then(function() {
+      // Başlangıçta görünürlük ayarlarını yap
+      updateSanVisibility();
+  }).catch(function (e) { if (!onLoadError(e)) showErr(e.message); });
+  
+  loadProfile().catch(function (e) { 
+    if (!onLoadError(e)) showErr('Profil bilgileri yüklenemedi: ' + e.message); 
   });
-  $('btn-switch').addEventListener('click', function () {
-    // return_to olmadan seçim yapan kullanıcı, seçtikten sonra portala DÖNMÜYOR
-    // ve giriş sayfasında kalıyordu.
-    location.href = '/login?choose_account=1&return_to=' + encodeURIComponent('/portal');
-  });
-
-  function onLoadError(e) {
-    if (String(e.message).indexOf('401') >= 0 || /unauth/i.test(e.message)) {
-      location.href = '/login?return_to=' + encodeURIComponent('/portal');
-      return true;
-    }
-    return false;
-  }
-
-  // Bölümler AYRI AYRI yükleniyor. Önceden hepsi tek bir Promise.all'daydı:
-  // trust.fitfak.net'e ulaşılamadığında -- ki o ayrı bir adrestir ve ayrı
-  // çökebilir -- sayfanın TAMAMI hata gösteriyordu, oysa hesap bilgileri ve
-  // cihaz listesi gayet yüklenmişti.
-  loadMe().catch(function (e) { if (!onLoadError(e)) showErr(e.message); });
-
-  loadDevices().catch(function (e) {
-    if (onLoadError(e)) return;
-    $('devices-list').innerHTML = '<div class="empty">Cihaz listesi yüklenemedi.</div>';
+  
+  loadGrants().catch(function (e) { 
+    if (!onLoadError(e)) $('ov-grants').innerHTML = '<div class="empty">Bağlı uygulamalar yüklenemedi.</div>'; 
   });
 
-  loadCerts().catch(function (e) {
-    if (onLoadError(e)) return;
-    $('certs-list').innerHTML = '<div class="empty">Sertifika servisine (trust.fitfak.net) ulaşılamadı.</div>';
+  loadDevices().catch(function (e) { 
+    if (onLoadError(e)) return; $('devices-list').innerHTML = '<div class="empty">Cihaz listesi yüklenemedi.</div>'; 
   });
+
+  loadCerts().catch(function (e) { 
+    if (onLoadError(e)) return; $('certs-list').innerHTML = '<div class="empty">Sertifika servisine (trust.fitfak.net) ulaşılamadı.</div>'; 
+  });
+
 }());
 </script>
 
-<!-- Çerez bandı: yalnızca karar verilmemişse görünür (bkz. core/cookie-consent.js). -->
 <script src="/static/cookie-banner.js"></script>
 </body>
 </html>
