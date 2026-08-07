@@ -60,10 +60,12 @@ function post(port, pathname, obj) {
 
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fitfak-ct-'));
-  const db = createMockDb(['ct_log_entries']);
+  const db = createMockDb(['ct_log_entries', 'secrets']);
 
   const ctLog = createCtLog({ db, keyDir: dir });
-  const issuer = new ProductionPkiIssuer(dir, { ctLog });
+  // CA malzemesi artık dosyada değil kasada; `caDir` yalnızca eski dosyaları
+  // içeri almak için veriliyor ve burada boş bir dizin.
+  const issuer = await ProductionPkiIssuer.open({ db, caDir: dir, ctLog, logger: null });
 
   console.log('\n[1] Log anahtarı kalıcı');
   check('özel anahtar yazıldı', fs.existsSync(path.join(dir, 'ct-log.key')));
@@ -171,7 +173,12 @@ async function main() {
   const extKey = ssl.generateEcKeyPair('P-256');
   const extCsr = ssl.generateCSR({ keyType: 'ec', curveName: extKey.curve, ...extKey },
     [[ssl.oid.OIDs.commonName, 'ext']], []);
-  const extCert = ssl.issueCertificateFromCSR(extCsr, issuer.subCA, { validityDays: 90 });
+  // İmzalamak için TAM bir imzalayıcı gerekiyor. `issuer.subCA` artık yalnızca
+  // özel anahtar İÇERMEYEN bir görünüm -- kasadan istemek zorunda olmak, bir CA
+  // anahtarının nerede kullanıldığının her zaman tek bir çağrıda görünmesi
+  // demek.
+  const subCaSigner = await issuer.vault.loadSigner(issuer.subCA.name);
+  const extCert = ssl.issueCertificateFromCSR(extCsr, subCaSigner, { validityDays: 90 });
   const addResp = await post(port, '/ct/v1/add-chain', {
     chain: [extCert.der.toString('base64')],
   });

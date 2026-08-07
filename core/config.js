@@ -90,6 +90,12 @@ function load() {
     // adres: yetkinin nereden geldiği tek satırda okunabilir olmalı.
     adminEmail: optional('FITFAK_IDP_ADMIN_EMAIL', 'aybarsyildirim.mail@gmail.com').toLowerCase(),
 
+    // SPIFFE güven alanı. Bu dağıtımda üretilen her iş yükü kimliğinin
+    // `spiffe://<buradaki değer>/...` biçiminde olması ve BAŞKA bir alan için
+    // sertifika üretilmemesi bu değere bağlı -- başka bir güven alanı için
+    // imzalamak, o alanın PKI'sını taklit etmektir.
+    trustDomain: optional('FITFAK_TRUST_DOMAIN', 'fitfak.net'),
+
     // ---- dinleme yüzeyleri ----------------------------------------------------------------
     // Her mantıksal host kendi IP'sine bağlanır. Ayrım Host header'ıyla değil
     // soket seviyesinde yapılır: Host header'ı istemcinin yazdığı bir dizedir,
@@ -109,7 +115,16 @@ function load() {
     },
 
     keyDir: optional('FITFAK_IDP_KEY_DIR', path.join(root, '.keys')),
+    // ESKİ CA dizini. Artık yalnızca oradaki root_ca.key/sub_ca.key dosyalarını
+    // bir kereliğine şifreli kasaya almak için okunuyor; yeni malzeme buraya
+    // yazılmıyor. İçe aktarma doğrulandıktan sonra dosyalar elle silinebilir.
     caDir: optional('FITFAK_IDP_CA_DIR', path.join(root, '.certs')),
+    // Kök ve ara CA'ların durduğu YEREL gömülü fitdb örneği.
+    //
+    // Uzak veritabanında olamaz: veritabanı mühürlü açılır ve sunucu
+    // sertifikasını IdP'den bekler, IdP de onu üretmek için CA'sına ihtiyaç
+    // duyar. Ayrıntı core/db-bootstrap.js'in başında.
+    caStoreDir: optional('FITFAK_IDP_CA_STORE_DIR', path.join(root, '.ca-store')),
     dataDir: optional('FITFAK_IDP_DB_DIR', path.join(root, '.data')),
 
     // ---- veritabanı -----------------------------------------------------------------------
@@ -128,6 +143,23 @@ function load() {
       caFingerprint: optional('FITFAK_IDP_DB_CA_FINGERPRINT'),
       caPath: optional('FITFAK_IDP_DB_CA_PATH'),
       identityDir: optional('FITFAK_IDP_DB_IDENTITY_DIR', path.join(root, '.identity')),
+
+      // Veritabanı için üretilecek sunucu sertifikasının adları. Bu adlar
+      // sertifikanın SAN'ına yazılır ve IdP bağlanırken doğruladığı şeydir --
+      // yanlış olursa bağlantı, anlaşılması zor bir TLS hatasıyla düşer.
+      serverNames: (optional('FITFAK_IDP_DB_SERVER_NAMES', 'localhost,db.fitfak.net,127.0.0.1'))
+        .split(',').map((s) => s.trim()).filter(Boolean),
+      // Mühürlü veritabanının geçici bootstrap sertifikasının parmak izi.
+      // İSTEĞE BAĞLI: denetim düzlemi zaten iki yönlü kimlik doğrular, bu
+      // yalnızca ek bir katman. Her açılışta değiştiği için otomasyonda
+      // genellikle boş bırakılır.
+      bootstrapFingerprints: (optional('FITFAK_IDP_DB_BOOTSTRAP_FINGERPRINTS', ''))
+        .split(',').map((s) => s.trim()).filter(Boolean),
+      // IdP'nin veritabanına bağlanırken kullandığı kendi sertifikasının ömrü.
+      // Saatlerle ölçülür, dakikalarla değil: yenileme başarısız olursa geri
+      // dönmek için zaman gerekir ve beş dakika, tek bir yavaş adımı bir
+      // kesintiye çevirir.
+      identityValiditySeconds: int('FITFAK_IDP_DB_IDENTITY_TTL_S', 3600),
     },
 
     // ---- SMTP -----------------------------------------------------------------------------
@@ -153,6 +185,36 @@ function load() {
     : secret('FITFAK_IDP_DB_SECRET', {
       hint: 'Veritabanı kök sırrı. Bunu kaybetmek verinin tamamını kaybetmektir; '
           + 'sızdırmak ise disk kopyasının tek başına yeterli olması demektir.',
+    });
+
+  // Veritabanının SUNUCU KİMLİĞİNİ kurmak için kullanılan denetim düzlemi sırrı.
+  //
+  // Veritabanı mühürlü açılır: kendi CA'sı yoktur, kendi sertifikasını üretmez ve
+  // IdP ona bir sunucu sertifikası + anahtar + güven çıpası verene kadar hiç
+  // kimseye hizmet etmez. Bu sır, o devrin İKİ YÖNLÜ kimlik doğrulamasını sağlar
+  // -- IdP veritabanına, veritabanı da IdP'ye kendini kanıtlar. İkinci yön
+  // hayatidir: o olmadan araya giren biri, IdP'nin veritabanı için ürettiği
+  // ÖZEL ANAHTARI teslim alır.
+  //
+  // Yalnızca uzak veritabanı modunda gerekli: gömülü motorda ağ yok, devir yok.
+  cfg.db.controlSecret = cfg.db.remoteTarget && !cfg.devMockDb
+    ? secret('FITFAK_IDP_DB_CONTROL_SECRET', {
+      hint: 'Veritabanının denetim düzlemi sırrı. db-server.js açılışta yazdırır. '
+          + 'Enrolment sırrından AYRI olmalı: bu sır, veritabanının sunucu anahtarını '
+          + 'değiştirme yetkisidir; enrolment sırrı yalnızca bir istemci sertifikası alma yetkisi.',
+    })
+    : null;
+
+  // Yönlendirme tutamaklarının türetildiği sır.
+  //
+  // Bir sır olmasının sebebi gizlilik değil KARARLILIK: aynı istemci + aynı adres
+  // her zaman aynı tutamağı almalı, ki bir uygulamanın dağıtılmış yapılandırması
+  // IdP yeniden başladığında kırılmasın. Değiştirmek TÜM tutamakları değiştirir.
+  cfg.redirectHandleSecret = cfg.devMockDb
+    ? Buffer.alloc(32, 1)
+    : secret('FITFAK_IDP_REDIRECT_HANDLE_SECRET', {
+      hint: 'Yönlendirme tutamaklarının türetildiği sır. Değiştirmek, kayıtlı her '
+          + 'uygulamanın tutamağını değiştirir -- imzalama anahtarı gibi muamele edin.',
     });
 
   if (cfg.isProduction && !cfg.devMockDb) {

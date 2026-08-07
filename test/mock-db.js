@@ -52,6 +52,28 @@ function createMockCollection() {
       for (const row of rows.values()) if (row[field] === value) return row;
       return null;
     },
+    // GERÇEK API'de var ve bu projede yoğun kullanılıyor (SecretStore, PkiVault,
+    // workload-identity-service). Mock'ta olmaması, o yolları koşturan her testin
+    // "find is not a function" ile düşmesi demekti -- yani gerçek adaptörün
+    // gerisinde kalan bir test ikilisi, ki dosyanın başındaki not tam olarak
+    // bunun iki gerçek hatayı gizlediğini anlatıyor.
+    async find(field, value, { limit = 0 } = {}) {
+      const out = [];
+      for (const row of rows.values()) {
+        if (row[field] === value) out.push(row);
+        if (limit && out.length >= limit) break;
+      }
+      return out;
+    },
+    async findRange(field, min, max, { limit = 0 } = {}) {
+      const out = [];
+      for (const row of rows.values()) {
+        const value = Number(row[field]);
+        if (Number.isFinite(value) && value >= Number(min) && value <= Number(max)) out.push(row);
+        if (limit && out.length >= limit) break;
+      }
+      return out;
+    },
     async* scan() {
       for (const row of rows.values()) yield row;
     },
@@ -75,6 +97,20 @@ function createMockDb(collectionNames) {
     collection(name) {
       if (!collections.has(name)) throw new Error(`mock-db: tanımsız koleksiyon '${name}'`);
       return collections.get(name);
+    },
+    // Şema tanımı burada bir no-op -- mock'ta alan tipleri, indeksler ve
+    // kısıtlar zaten yok. Ama METODUN VAR OLMASI gerekiyor: SecretStore ve
+    // PkiVault kendi koleksiyonlarını açılışta tanımlıyor ve olmayan bir metot,
+    // o yolları test edilemez kılardı.
+    async defineCollectionAsync(name) {
+      if (!collections.has(name)) collections.set(name, createMockCollection());
+      return { created: true, name };
+    },
+    async applySchemaRegistry(registry) {
+      for (const name of Object.keys(registry)) {
+        if (!collections.has(name)) collections.set(name, createMockCollection());
+      }
+      return { applied: Object.keys(registry).length };
     },
   };
 }

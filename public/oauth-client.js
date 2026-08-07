@@ -210,6 +210,20 @@
     completeLoginWithTotp: (mfaChallengeToken, code) => postJson('/auth/login/totp', { mfaChallengeToken, code }),
     logout: () => postJson('/auth/logout'),
 
+    // ---- kurtarma: güvenlik anahtarına ulaşılamadığında ----
+    //
+    // Kod, kullanıcı AÇIKÇA istediğinde gönderiliyor -- ikinci faktör ekranına
+    // her gelindiğinde değil. Her girişte bir e-posta, kullanıcının çoğu zaman
+    // hiç kullanmayacağı bir kod için posta kutusunu doldurur ve gerçekten
+    // önemli olan güvenlik bildirimlerini gürültünün içinde kaybeder.
+    beginEmailOtp: (mfaChallengeToken) => postJson('/auth/login/email-otp/begin', { mfaChallengeToken }),
+    completeLoginWithEmailOtp: (mfaChallengeToken, code) =>
+      postJson('/auth/login/email-otp/finish', { mfaChallengeToken, code }),
+
+    // ---- şifremi unuttum ----
+    requestPasswordReset: (email) => postJson('/auth/password-reset/request', { email }),
+    confirmPasswordReset: (fields) => postJson('/auth/password-reset/confirm', fields),
+
     // ---- MFA kurulumu ----
     beginTotpEnrollment: (fields) => postJson('/auth/mfa/totp/begin', fields),
     finishTotpEnrollment: (fields) => postJson('/auth/mfa/totp/finish', fields),

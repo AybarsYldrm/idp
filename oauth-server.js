@@ -23,7 +23,9 @@ const {
 const { mountBidiBridge } = require('./core/bidi-bridge');
 const qrcode = require('@fitfak/qr');
 const { ProductionPkiIssuer } = require('./core/pki-issuer');
+const spiffe = require('./core/spiffe');
 const certificateService = require('./services/certificate-service');
+const workloadIdentityService = require('./services/workload-identity-service');
 const { AcmeService } = require('./services/acme-service');
 const ocspService = require('./services/ocsp-service');
 const crlService = require('./services/crl-service');
@@ -96,14 +98,14 @@ const requireTrustOrigin = createSameOriginGuard({
 // Yumurta-tavuk sorununun çözümü core/db-bootstrap.js'te: ilk çalıştırmada
 // bootstrap TLS -> enrolment -> mTLS, sonraki her açılışta diskteki
 // sertifikadan devam. Ayrıntılı gerekçe o dosyanın başındadır.
-async function bootstrapDatabase() {
+async function bootstrapDatabase({ pkiIssuer = null } = {}) {
   if (config.devMockDb) {
     console.warn('[fitfak-idp] UYARI: FITFAK_IDP_DEV_DB=1 -- bellek-içi MOCK veritabanı (kalıcılık ve şifreleme YOK).');
     const { createMockDb } = require('./test/mock-db');
-    return { db: createMockDb(Object.keys(schema)), mode: 'mock' };
+    return { db: createMockDb([...Object.keys(schema), 'secrets']), mode: 'mock' };
   }
 
-  const result = await connectToDatabase({ config, logger: console });
+  const result = await connectToDatabase({ config, pkiIssuer, logger: console });
 
   // Şemayı her açılışta uygula. Bu bir no-op değildir: alan eklemek bir
   // migrasyondur ve motor bunu tespit edip indeksleri yeniden kurar; kırıcı bir
@@ -203,7 +205,32 @@ function wrapHandler(fn) {
 }
 
 async function main() {
-  const { db, mode: dbMode } = await bootstrapDatabase();
+  // ---- SIRA ÖNEMLİ -----------------------------------------------------------
+  //
+  // Sertifika otoritesi UYGULAMA VERİTABANINDAN ÖNCE açılır ve bu bir tercih
+  // değil bir zorunluluk: uzak veritabanı MÜHÜRLÜ açılır ve IdP ona bir sunucu
+  // sertifikası verene kadar kimseye -- IdP'ye de -- hizmet etmez. O sertifikayı
+  // üretecek olan da buradaki CA'dır.
+  //
+  // Bu yüzden CA, IdP'nin yanındaki gömülü bir fitdb örneğinde durur: aynı
+  // şifreleme ve aynı sürümleme, ama ağ yok, dolayısıyla bağımlılık yok.
+  // Ayrıntılı gerekçe core/db-bootstrap.js'in başında.
+  let caStoreDb = null;
+  let pkiIssuerEarly = null;
+
+  if (!config.devMockDb) {
+    const { openCaStore } = require('./core/db-bootstrap');
+    ({ db: caStoreDb } = await openCaStore({ config, logger: console }));
+    pkiIssuerEarly = await ProductionPkiIssuer.open({
+      db: caStoreDb,
+      // Eski .certs/*.key dosyaları varsa bir kereliğine kasaya alınır.
+      caDir: config.caDir,
+      trustDomain: config.trustDomain,
+    });
+    console.log('[fitfak-idp] Sertifika otoritesi açıldı (şifreli yerel kasa).');
+  }
+
+  const { db, mode: dbMode } = await bootstrapDatabase({ pkiIssuer: pkiIssuerEarly });
   console.log(`[fitfak-idp] Veritabanı bağlantısı hazır (mod: ${dbMode}).`);
 
   // --------------------------------------------------------------------------
@@ -239,13 +266,26 @@ async function main() {
   const ctPublicKeyPem = require('node:fs').readFileSync(
     path.join(config.keyDir, 'ct-log.pub'), 'utf8',
   );
-  const pkiIssuer = new ProductionPkiIssuer(config.caDir, { ctLog });
+  // CA malzemesi DOSYADA DEĞİL, şifreli sır deposunda (core/ca-vault.js).
+  //
+  // Uzak veritabanı modunda otorite yukarıda, veritabanına bağlanmadan ÖNCE
+  // açıldı; burada yalnızca CT log'u bağlanıyor. Mock modda böyle bir sıra
+  // kısıtı yok, çünkü mühürleme de yok.
+  const pkiIssuer = pkiIssuerEarly
+    ? Object.assign(pkiIssuerEarly, { ctLog })
+    : await ProductionPkiIssuer.open({ db, caDir: config.caDir, ctLog, trustDomain: config.trustDomain });
   const acmeService = new AcmeService({
     db, pkiIssuer, nonceStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'acmenonce:'), issuer: TRUST_ISSUER,
     http01Port: Number(process.env.FITFAK_IDP_ACME_HTTP01_PORT || 80),
   });
 
-  const clientStore = createDbClientStore(db);
+  const clientStore = createDbClientStore(db, {
+    // Tutamaklar bu sırdan türetiliyor. Değişirse tüm tutamaklar değişir ve
+    // dışarıda dağıtılmış yapılandırmalar kırılır -- o yüzden imzalama
+    // anahtarıyla aynı muameleyi görüyor ve ortamdan geliyor.
+    handleSecret: config.redirectHandleSecret,
+    allowInsecureLocalhost: !config.isProduction,
+  });
 
   if (process.env.FITFAK_IDP_DNS_CLIENT_ID && process.env.FITFAK_IDP_DNS_CLIENT_SECRET) {
     const existingDnsClient = await clientStore.getClient(process.env.FITFAK_IDP_DNS_CLIENT_ID);
@@ -271,6 +311,7 @@ async function main() {
     authCodeStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'authcode:'),
     deviceCodeStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'devicecode:'),
     userCodeStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'usercode:'),
+    deviceLinkStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'devicelink:'),
     deviceCodePollIntervalS: Number(process.env.FITFAK_IDP_DEVICE_POLL_INTERVAL_S || 5),
   });
   // Onay ekranına giderken yetkilendirme isteğinin saklandığı yer.
@@ -602,6 +643,39 @@ async function main() {
     sendJson(res, 200, { sessionId: session.sessionId, expiresIn: session.expiresIn });
   }), IDP_IP);
 
+  // ---- e-posta kurtarma kodu: güvenlik anahtarına ulaşılamadığında -----------
+  //
+  // Bunun var olma sebebi somut: yalnızca WebAuthn kurmuş bir kullanıcı,
+  // anahtarının bağlı OLMADIĞI bir cihazda hesabına giremiyordu -- ve bu, en
+  // güvenli yöntemi seçtiği için başına geliyordu. Ayrıntılı gerekçe ve bu
+  // faktörün neden diğerlerinden ZAYIF sayıldığı services/auth-service.js'te.
+  server.addHttpHandler({ method: 'POST', path: '/auth/login/email-otp/begin' }, wrapHandler(async (req, res) => {
+    const body = await readJsonBody(req);
+    sendJson(res, 200, await authService.beginEmailOtpChallenge({
+      db, mfaChallengeToken: body.mfaChallengeToken, mailer,
+    }));
+  }), IDP_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/auth/login/email-otp/finish' }, wrapHandler(async (req, res) => {
+    const body = await readJsonBody(req);
+    const { deviceId, isNew } = currentDevice(req);
+    const session = await authService.completeLoginWithEmailOtp({
+      db, sessionManager, mfaChallengeToken: body.mfaChallengeToken, code: body.code,
+      ip: getIp(req), userAgent: req.headers['user-agent'], antiBot,
+      deviceId, isNewDeviceCookie: isNew, mailer,
+    });
+    await applyFullLoginCookies(req, res, session);
+    sendJson(res, 200, {
+      sessionId: session.sessionId,
+      expiresIn: session.expiresIn,
+      // İstemci bunu görüp kullanıcıyı BU cihaza bir faktör eklemeye
+      // yönlendirmeli: kurtarma yolunu alışkanlığa çevirmek, hesabın
+      // güvenliğini e-posta hesabının güvenliğine indirger.
+      viaRecovery: true,
+      suggestEnrolFactor: true,
+    });
+  }), IDP_IP);
+
   server.addHttpHandler({ method: 'POST', path: '/auth/webauthn/login/begin' }, wrapHandler(async (req, res) => {
     const body = await readJsonBody(req);
     const targetUsername = await resolveUsernameFromEmail(body);
@@ -748,7 +822,12 @@ async function main() {
   // OKUYAMADIĞI -- bir adrese döndürürdü. Yani "giriş yap, sonra kaldığın
   // yerden devam et" akışı, tam da devam etmesi gereken noktada kırılırdı.
   const AUTHORIZE_PARAM_NAMES = {
-    clientId: 'client_id', redirectUri: 'redirect_uri', responseType: 'response_type',
+    clientId: 'client_id', redirectUri: 'redirect_uri',
+    // Kayıtlı yönlendirme adresinin TUTAMAĞI. `redirect_uri` ile aynı kaydı
+    // göstermek zorunda; ikisinden biri yeterli. Gerekçesi core/oauth-redirect.js'in
+    // başında -- özeti: kayıtlı olmayan bir adres istekte GÖRÜNEMEZ olmalı.
+    redirectHandle: 'ru',
+    responseType: 'response_type',
     scope: 'scope', state: 'state',
     codeChallenge: 'code_challenge', codeChallengeMethod: 'code_challenge_method',
     prompt: 'prompt',
@@ -820,7 +899,12 @@ async function main() {
     const url = new URL(req.url, ISSUER);
     const q = url.searchParams;
     const client = await clientStore.getClient(q.get('client_id'));
-    if (!client || !client.redirectUris.includes(q.get('redirect_uri'))) throw new AppError('invalid_request', 'Geçersiz client_id ya da redirect_uri', { httpStatus: 400 });
+    if (!client) throw new AppError('invalid_request', 'Geçersiz client_id', { httpStatus: 400 });
+    // Adresin kayıtlı olup olmadığı ARTIK burada elle karşılaştırılmıyor:
+    // oauthService._resolveRedirect tutamağı ya da adresi bir KAYDA çözüyor ve
+    // çözemezse istek zaten reddediliyor. Aynı kontrolü iki yerde yapmak, iki
+    // yerin bir gün ayrışması demektir -- ve buradaki kopya, adres
+    // normalleştirmesini yapmadığı için zaten daha zayıftı.
     return finishAuthorization(req, res, authorizationParams(q));
   }), IDP_IP);
 
@@ -968,7 +1052,13 @@ async function main() {
     const raw = await readRawBody(req);
     const contentType = req.headers['content-type'] || '';
     const body = contentType.includes('application/x-www-form-urlencoded') ? Object.fromEntries(new URLSearchParams(raw.toString('utf8'))) : JSON.parse(raw.toString('utf8') || '{}');
-    const result = await oauthService.token({ grantType: body.grant_type, code: body.code, redirectUri: body.redirect_uri, codeVerifier: body.code_verifier, clientId: body.client_id, refreshToken: body.refresh_token, deviceCode: body.device_code, ip: getIp(req), userAgent: req.headers['user-agent'] });
+    const result = await oauthService.token({
+      grantType: body.grant_type, code: body.code,
+      redirectUri: body.redirect_uri, redirectHandle: body.ru,
+      codeVerifier: body.code_verifier, clientId: body.client_id,
+      refreshToken: body.refresh_token, deviceCode: body.device_code,
+      ip: getIp(req), userAgent: req.headers['user-agent'],
+    });
     // `scope` yanıtta AÇIKÇA bildirilir: relying party'nin yerel oturum
     // kaydını güncelleyebilmesi için tek kaynak bu (bkz. core/session-manager.js
     // `_issueTokenPair` içindeki not).
@@ -990,6 +1080,9 @@ async function main() {
   }), IDP_IP);
 
   const DEVICE_INFO_MIN_RESPONSE_MS = 150;
+  // __Host- öneki: yalnızca bu tam köken, Path=/, Secure zorunlu, Domain
+  // belirtilemez -- yani bir alt alan adı bu çerezi yazamaz.
+  const DEVICE_CODE_COOKIE = '__Host-fitfak_device_code';
   async function checkDeviceCodeRateLimit(req) {
     const { limited } = antiBot.rateLimiter.recordAttempt({ ip: `device-info:${getIp(req)}` });
     if (limited) throw new AppError('rate_limited', 'Çok fazla istek', { httpStatus: 429 });
@@ -1002,34 +1095,94 @@ async function main() {
     }
   }
 
+  /**
+   * Kullanıcı kodu: önce çerezden (QR ile gelindiyse), sonra istekten (elle
+   * yazıldıysa). Bu sıra önemli -- çerez sunucunun koyduğu değerdir, istek
+   * gövdesi kullanıcının yazdığı; QR ile gelen bir kullanıcının onayı, sayfadaki
+   * bir alanın üzerine yazılmasıyla başka bir cihaza kaydırılamamalı.
+   */
+  function deviceUserCode(req, supplied) {
+    const fromCookie = parseCookies(req)[DEVICE_CODE_COOKIE];
+    return fromCookie || supplied || null;
+  }
+
   server.addHttpHandler({ method: 'GET', path: '/device/info' }, wrapHandler(async (req, res) => {
     await checkDeviceCodeRateLimit(req);
     const url = new URL(req.url, ISSUER);
-    const info = await withConstantTimeFloor(DEVICE_INFO_MIN_RESPONSE_MS, () => oauthService.lookupDeviceCodeByUserCode(url.searchParams.get('user_code')));
+    const userCode = deviceUserCode(req, url.searchParams.get('user_code'));
+    const info = await withConstantTimeFloor(DEVICE_INFO_MIN_RESPONSE_MS, () => oauthService.lookupDeviceCodeByUserCode(userCode));
     if (!info) throw new AppError('invalid_user_code', 'Geçersiz', { httpStatus: 400 });
-    sendJson(res, 200, info);
+    // Kodun kendisi YANITTA DÖNMÜYOR: sayfa neyin onaylanacağını gösterir, kodu
+    // değil. Onay isteği de kodu taşımak zorunda değil (çerezden okunuyor).
+    sendJson(res, 200, { ...info, viaLink: !!parseCookies(req)[DEVICE_CODE_COOKIE] });
   }), IDP_IP);
-  
+
   server.addHttpHandler({ method: 'POST', path: '/device/approve' }, wrapHandler(async (req, res) => {
     await checkDeviceCodeRateLimit(req);
+    await requireSameOrigin(req);
     const currentSession = await resolveCurrentSession(req);
     const body = await readJsonBody(req);
-    const result = await withConstantTimeFloor(DEVICE_INFO_MIN_RESPONSE_MS, () => oauthService.approveDeviceCode({ userCode: body.userCode, currentSession }));
+    const result = await withConstantTimeFloor(DEVICE_INFO_MIN_RESPONSE_MS,
+      () => oauthService.approveDeviceCode({ userCode: deviceUserCode(req, body.userCode), currentSession }));
+    // Onaydan sonra çerez düşer: kod tüketilmiştir ve tarayıcıda kalmasının
+    // hiçbir faydası, geride bırakılmasının ise bir maliyeti var.
+    res.setHeader('set-cookie', `${DEVICE_CODE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
     sendJson(res, 200, result);
   }), IDP_IP);
-  
+
   server.addHttpHandler({ method: 'POST', path: '/device/deny' }, wrapHandler(async (req, res) => {
     await checkDeviceCodeRateLimit(req);
+    await requireSameOrigin(req);
     const body = await readJsonBody(req);
-    const result = await withConstantTimeFloor(DEVICE_INFO_MIN_RESPONSE_MS, () => oauthService.denyDeviceCode({ userCode: body.userCode }));
+    const result = await withConstantTimeFloor(DEVICE_INFO_MIN_RESPONSE_MS,
+      () => oauthService.denyDeviceCode({ userCode: deviceUserCode(req, body.userCode) }));
+    res.setHeader('set-cookie', `${DEVICE_CODE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
     sendJson(res, 200, result);
   }), IDP_IP);
   
+  // ---- cihaz akışı: kod adres çubuğundan çıkarılıyor -------------------------
+  //
+  // RFC 8628 §3.3.1'in `verification_uri_complete` alanı, kullanıcının kodu elle
+  // yazmasını gerektirmesin diye vardır -- tipik olarak bir QR kodun içine konur.
+  // Ama kodu adrese koymak onu adres çubuğuna, tarayıcı geçmişine, Referer
+  // başlığına ve omzunuzun üzerinden bakan herkese koyar; ve o kod, onaylandığı
+  // anda bir oturuma dönüşecek olan şeydir.
+  //
+  // Bu yüzden tam adres artık tek kullanımlık, opak bir tutamak taşıyor. Burada
+  // TÜKETİLİYOR: kod kısa ömürlü, HttpOnly bir çereze konuyor ve tarayıcı sorgu
+  // dizesi OLMAYAN /device'a yönlendiriliyor. QR akışı aynen çalışır; sızan bir
+  // adres ikinci kez işe yaramaz.
+  server.addHttpHandler(
+    (req) => req.method === 'GET' && req.url.split('?')[0].startsWith('/device/link/'),
+    wrapHandler(async (req, res) => {
+      await checkDeviceCodeRateLimit(req);
+      const token = decodeURIComponent(req.url.split('?')[0].slice('/device/link/'.length));
+      const userCode = await withConstantTimeFloor(DEVICE_INFO_MIN_RESPONSE_MS,
+        () => oauthService.consumeDeviceLink(token));
+
+      res.statusCode = 302;
+      if (userCode) {
+        res.setHeader('set-cookie', [
+          `${DEVICE_CODE_COOKIE}=${encodeURIComponent(userCode)}`,
+          'Path=/', 'Max-Age=600', 'HttpOnly', 'Secure', 'SameSite=Lax',
+        ].join('; '));
+      }
+      // Tutamak tükenmiş ya da geçersizse de aynı yere gidilir: kullanıcı kodu
+      // elle girebilir. Farklı bir hata sayfası göstermek, bir tutamağın
+      // kullanılmış olup olmadığını dışarıdan test etmeyi mümkün kılardı.
+      res.setHeader('location', '/device');
+      res.end();
+    }),
+    IDP_IP,
+  );
+
   server.addHttpHandler({ method: 'GET', path: '/device' }, (req, res) => {
     const url = new URL(req.url, ISSUER);
     const target = new URL('/login', ISSUER);
     target.searchParams.set('device', '1');
-    if (url.searchParams.get('user_code')) target.searchParams.set('user_code', url.searchParams.get('user_code'));
+    // `?user_code=` ARTIK İLETİLMİYOR. Doğrudan bu adrese elle kod yazarak gelen
+    // eski bağlantılar için kod çerezden okunur (aşağıdaki /device/info'ya bkz.);
+    // sorgu dizesinde taşımak, az önce adresten çıkardığımız şeyi geri koymak olurdu.
     res.statusCode = 302;
     res.setHeader('location', `${target.pathname}${target.search}`);
     res.end();
@@ -1227,6 +1380,104 @@ async function main() {
     sendJson(res, 200, await clientStore.deleteClient(body.clientId));
   }), ADMIN_IP);
 
+  // ---- yönlendirme adresleri: tek tek yönetilir ------------------------------
+  //
+  // Toplu değiştirme (bir PATCH ile tüm listeyi yazmak) kasıtlı olarak yok:
+  // yanlışlıkla boş bir dizi gönderen tek bir istek, bir uygulamanın girişini
+  // tamamen kapatırdı ve bunu yapan kişi ancak kullanıcılar şikayet ettiğinde
+  // fark ederdi.
+  server.addHttpHandler({ method: 'GET', path: '/admin/oauth-clients/redirects' }, wrapHandler(async (req, res) => {
+    await requireAdmin(req);
+    const url = new URL(req.url, ISSUER);
+    const clientId = url.searchParams.get('clientId');
+    if (!clientId) throw new AppError('invalid_argument', 'clientId gerekli', { httpStatus: 400 });
+    sendJson(res, 200, { redirects: await clientStore.listRedirectUris(clientId) });
+  }), ADMIN_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/admin/oauth-clients/redirects' }, wrapHandler(async (req, res) => {
+    await requireAdmin(req);
+    const body = await readJsonBody(req);
+    if (!(await clientStore.getClient(body.clientId))) {
+      throw new AppError('not_found', 'Client bulunamadı', { httpStatus: 404 });
+    }
+    // Doğrulama addRedirectUri'nin İÇİNDE: yer tutucu alan adları
+    // (example.com ve arkadaşları), joker karakterler, parça, kullanıcı bilgisi
+    // ve https olmayan şemalar burada reddedilir. Gerekçeleri
+    // core/oauth-redirect.js'te tek tek yazılı.
+    const redirect = await clientStore.addRedirectUri(body.clientId, body.redirectUri, body.label);
+    sendJson(res, 200, {
+      redirect,
+      // Uygulamanın yapılandırmasına yazacağı değer. `redirect_uri` göndermeye
+      // devam edebilir (RFC 6749 bunu ister), ama `ru` ile gönderdiğinde adres
+      // hiçbir yerde metin olarak görünmez.
+      hint: `Yetkilendirme isteğinde ru=${redirect.handle} kullanabilirsiniz.`,
+    });
+  }), ADMIN_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/admin/oauth-clients/redirects/remove' }, wrapHandler(async (req, res) => {
+    await requireAdmin(req);
+    const body = await readJsonBody(req);
+    sendJson(res, 200, await clientStore.removeRedirectUri(body.clientId, body.handle));
+  }), ADMIN_IP);
+
+  // ---- PKI: kök ve ara CA yönetimi -------------------------------------------
+  //
+  // Kök yalnızca ara CA imzalar; her AMAÇ için ayrı bir ara CA vardır. Gerekçe
+  // core/ca-vault.js'in başında: her şeyi imzalayan tek bir ara CA hiçbir şeye
+  // kısıtlanamaz, ve ele geçirilmesi her şeyi düşürür.
+  server.addHttpHandler({ method: 'GET', path: '/admin/pki/authorities' }, wrapHandler(async (req, res) => {
+    await requireAdmin(req);
+    const authorities = await pkiIssuer.vault.listAuthorities({ includeRetired: true });
+    sendJson(res, 200, {
+      // Sertifikalar dönüyor, özel anahtarlar DÖNMÜYOR ve dönecek bir uç da yok:
+      // bir CA özel anahtarının HTTP üzerinden okunabilir olması, onu şifreli
+      // depoya taşımanın bütün amacını ortadan kaldırırdı.
+      authorities: authorities.map((a) => ({
+        name: a.name, role: a.role, parent: a.parent, purposes: a.purposes,
+        subject: a.subject, fingerprint: a.fingerprint, state: a.state,
+        notBefore: a.notBefore, notAfter: a.notAfter, version: a.version,
+      })),
+      purposes: Object.values(require('./core/ca-vault').PKI_PURPOSES),
+    });
+  }), ADMIN_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/admin/pki/authorities' }, wrapHandler(async (req, res) => {
+    await requireAdmin(req);
+    const body = await readJsonBody(req);
+    const created = await pkiIssuer.vault.createIntermediate({
+      name: body.name,
+      parent: body.parent || 'root',
+      commonName: body.commonName,
+      purposes: body.purposes || [],
+      trustDomain: config.trustDomain,
+      ocspUrl: `${require('./core/pki-issuer').STATUS_BASE}/ocsp`,
+      caIssuersUrl: `${require('./core/pki-issuer').STATUS_BASE}/root.crt`,
+      crlUrls: [`${require('./core/pki-issuer').STATUS_BASE}/crl/root`],
+    });
+    sendJson(res, 200, {
+      authority: {
+        name: created.name, role: created.role, parent: created.parent,
+        purposes: created.purposes, subject: created.subject,
+        fingerprint: created.fingerprint, notAfter: created.notAfter,
+      },
+    });
+  }), ADMIN_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/admin/pki/authorities/compromise' }, wrapHandler(async (req, res) => {
+    await requireAdmin(req);
+    const body = await readJsonBody(req);
+    if (body.name === 'root') {
+      // Kökü "ele geçirilmiş" işaretlemek, bu dağıtımdaki HER sertifikayı
+      // doğrulanamaz hâle getirir ve geri dönüşü yeni bir kök dağıtmaktır.
+      // Bir HTTP isteğiyle yapılacak bir iş değil.
+      throw new AppError('forbidden',
+        'Kök otorite bu uçtan işaretlenemez: bunun sonucu, dağıtımdaki her sertifikanın '
+        + 'geçersiz olmasıdır ve geri dönüşü yeni bir kökün elden dağıtılmasıdır.',
+        { httpStatus: 403 });
+    }
+    sendJson(res, 200, await pkiIssuer.vault.markCompromised(body.name, { reason: body.reason || '' }));
+  }), ADMIN_IP);
+
   // PKI ROTALARI (127.0.0.2)
   server.addHttpHandler({ method: 'POST', path: '/device/certificate' }, wrapHandler(async (req, res) => {
     requireTrustOrigin(req);
@@ -1252,6 +1503,167 @@ async function main() {
     const result = await certificateService.revokeCertificate({ db, serialNumberHex: body.serialNumberHex, reason: body.reason, actingUserId: session.userId });
     await crlService.invalidateCrlCache(new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:'));
     sendJson(res, 200, result);
+  }), PKI_IP);
+
+  // --------------------------------------------------------------------------
+  // ⏱️  KISA ÖMÜRLÜ KİMLİKLER (BeyondCorp) -- trust.fitfak.net
+  // --------------------------------------------------------------------------
+  //
+  // Buradaki sertifikalar dakikalarla ölçülür ve KENDİ SÜRELERİNİN DOLMASI iptal
+  // mekanizmasıdır. Her yenilemede yetki YENİDEN doğrulanır (oturum hâlâ canlı
+  // mı, hesap hâlâ etkin mi, cihaz hâlâ kayıtlı mı) -- yenilemeyi "aynı şeyi bir
+  // kez daha imzala" olarak ele almak, kısa ömürlülüğün tek faydasını yok ederdi.
+  // Ayrıntılı gerekçe services/workload-identity-service.js'in başında.
+
+  /**
+   * Hangi kapsam hangi iş yükü adını alabilir.
+   *
+   * Bu tablo YAPILANDIRMADIR ve jetonun içeriğinden bağımsızdır. Bir erişim
+   * jetonu "bu çağıran yetkili" der; bu tablo "neye yetkili" der. İkisini
+   * birleştirip ismi jetondan okumak, keyfi bir `sub` üretebilen herkesin
+   * sistemdeki herhangi bir kimliğe bürünebilmesi demek olurdu.
+   */
+  const WORKLOAD_REGISTRY = JSON.parse(process.env.FITFAK_IDP_WORKLOADS || JSON.stringify({
+    'dns-resolver': { requiredScope: 'identity:workload', profile: 'workload' },
+    'smtp-relay': { requiredScope: 'identity:workload', profile: 'workload' },
+  }));
+
+  /** Tarayıcıda oturum açmış kullanıcı için oturum kimliği (spiffe://.../session/<id>). */
+  server.addHttpHandler({ method: 'POST', path: '/identity/session/certificate' }, wrapHandler(async (req, res) => {
+    requireTrustOrigin(req);
+    const session = await resolveCurrentSession(req);
+    if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+    // Kota, uzun ömürlü sertifikalardakinden AYRI bir eksende: kısa ömürlü kimlik
+    // ömrünün yarısında bir yenilenir, yani normal işleyişte dakikada birkaç
+    // istek olur ve uzun ömürlü sertifika kotasını tüketmesi yanlış olurdu.
+    await requireUserQuota(session.userId, 'short-lived-identity');
+    const body = await readJsonBody(req);
+    sendJson(res, 200, await workloadIdentityService.issueForSession({
+      db, pkiIssuer, sessionManager, session, csrPem: body.csrPem,
+      validitySeconds: body.validitySeconds ? Number(body.validitySeconds) : null,
+    }));
+  }), PKI_IP);
+
+  /** Kayıtlı bir cihaz için cihaz kimliği (spiffe://.../device/<id>). */
+  server.addHttpHandler({ method: 'POST', path: '/identity/device/certificate' }, wrapHandler(async (req, res) => {
+    requireTrustOrigin(req);
+    const session = await resolveCurrentSession(req);
+    if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+    await requireUserQuota(session.userId, 'short-lived-identity');
+    const body = await readJsonBody(req);
+    sendJson(res, 200, await workloadIdentityService.issueForDevice({
+      db, pkiIssuer, sessionManager, session,
+      deviceId: body.deviceId || currentDevice(req).deviceId,
+      csrPem: body.csrPem,
+      validitySeconds: body.validitySeconds ? Number(body.validitySeconds) : null,
+    }));
+  }), PKI_IP);
+
+  /**
+   * Bir arka uç servisi/otomasyon için iş yükü kimliği.
+   *
+   * Yetki Bearer jetonundan gelir, ama İSİM jetondan GELMEZ: WORKLOAD_REGISTRY
+   * hangi kapsamın hangi iş yükü adını alabileceğini söyler. Jetonun kendi adını
+   * seçmesine izin vermek, keyfi bir `sub` üretebilen herkesin sistemdeki
+   * herhangi bir kimliğe bürünebilmesi demek olurdu.
+   */
+  server.addHttpHandler({ method: 'POST', path: '/identity/workload/certificate' }, wrapHandler(async (req, res) => {
+    const authorization = req.headers.authorization || '';
+    if (!authorization.toLowerCase().startsWith('bearer ')) {
+      throw new AppError('invalid_token', 'Bearer erişim jetonu gerekli', { httpStatus: 401 });
+    }
+    const body = await readJsonBody(req);
+    const introspection = await oauthService.introspect({ token: authorization.slice(7).trim() });
+    sendJson(res, 200, await workloadIdentityService.issueForWorkload({
+      db, pkiIssuer, sessionManager, introspection,
+      workloadName: body.workloadName, instanceId: body.instanceId || null,
+      csrPem: body.csrPem, workloadRegistry: WORKLOAD_REGISTRY,
+      validitySeconds: body.validitySeconds ? Number(body.validitySeconds) : null,
+    }));
+  }), PKI_IP);
+
+  /** Bir SPIFFE kimliği için hâlâ canlı olan sertifikalar -- teşhis ve denetim. */
+  server.addHttpHandler({ method: 'GET', path: '/identity/live' }, wrapHandler(async (req, res) => {
+    const session = await resolveCurrentSession(req);
+    if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
+    sendJson(res, 200, {
+      certificates: await workloadIdentityService.listForSession({ db, sessionId: session.sessionId }),
+    });
+  }), PKI_IP);
+
+  // --------------------------------------------------------------------------
+  // 🏛️  KAYIT OTORİTESİ (RA) UCU -- veritabanı buradan sertifika ister
+  // --------------------------------------------------------------------------
+  //
+  // Veritabanı bir CA DEĞİLDİR ve olmamalıdır. Kendisine bağlanacak bir servisi
+  // doğrular, o servisin hangi kimliği alabileceğine karar verir ve İMZAYI
+  // BURAYA sorar. İmzalama anahtarının o süreçte hiç bulunmaması, ayrımı
+  // örgütsel değil zorunlu kılan şeydir.
+  //
+  // Ama "veritabanı X kimliğini onaylıyor" iddiası olduğu gibi kabul edilemez:
+  // bir RA ele geçirildiğinde CA'nın ele geçirilmesiyle aynı şey olurdu. Bu
+  // yüzden her RA'nın vouch edebileceği SPIFFE yolu burada, yapılandırmada
+  // sınırlıdır -- ve veritabanı tarafında da aynı sınır var, yani birindeki bir
+  // hata diğeri tarafından yakalanır.
+  const RA_CLIENTS = JSON.parse(process.env.FITFAK_IDP_RA_CLIENTS || JSON.stringify({
+    'fitdb-registration-authority': {
+      spiffePrefix: `spiffe://${config.trustDomain}/service`,
+      profile: 'service-identity',
+    },
+  }));
+
+  async function requireRegistrationAuthority(req) {
+    const clientId = req.headers['x-client-id'];
+    const clientSecret = req.headers['x-client-secret'];
+    const entry = RA_CLIENTS[clientId];
+    if (!entry) throw new AppError('unauthorized', 'Kayıt otoritesi tanınmıyor', { httpStatus: 401 });
+
+    const client = await clientStore.getClient(clientId);
+    if (!client || !timingSafeEqualStrings(client.clientSecret, clientSecret)) {
+      throw new AppError('unauthorized', 'Kayıt otoritesi tanınmıyor', { httpStatus: 401 });
+    }
+    return { clientId, ...entry };
+  }
+
+  server.addHttpHandler({ method: 'POST', path: '/pki/ra/issue' }, wrapHandler(async (req, res) => {
+    const ra = await requireRegistrationAuthority(req);
+    const body = await readJsonBody(req);
+
+    if (!body.spiffeId) {
+      throw new AppError('invalid_request',
+        'spiffeId gerekli: bir kayıt otoritesi adına imzalanan her sertifika, hangi iş yükü '
+        + 'kimliği için verildiğini taşımalıdır', { httpStatus: 400 });
+    }
+    const requested = spiffe.parse(body.spiffeId);
+    if (!requested.isUnder(ra.spiffePrefix)) {
+      // Bu kontrol, veritabanı tarafındaki aynı kontrolün KOPYASI değil,
+      // BAĞIMSIZ eşidir: oradaki istemci tarafı, buradaki sunucu tarafı. Birinde
+      // bir hata olduğunda diğeri hâlâ tutar.
+      throw new AppError('forbidden',
+        `'${ra.clientId}' yalnızca ${ra.spiffePrefix} altındaki kimlikler için vouch edebilir; `
+        + `'${requested}' bunlardan biri değil`, { httpStatus: 403 });
+    }
+
+    const issued = await pkiIssuer.signCertificateFromCsr({
+      csrPem: body.csrPem,
+      profile: ra.profile,
+      subjectOverride: { cn: body.subject?.CN || requested.segments.join('/') },
+      spiffeId: requested.uri,
+      validitySeconds: body.validitySeconds ? Number(body.validitySeconds) : null,
+    });
+
+    sendJson(res, 200, {
+      certPem: issued.leafPem,
+      chainPem: issued.chainPem.split(/(?<=-----END CERTIFICATE-----\n?)/).filter((p) => p.trim()),
+      notAfter: issued.notAfter.getTime(),
+      serialNumber: issued.serialNumberHex,
+      spiffeId: issued.spiffeId,
+    });
+  }), PKI_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/pki/ra/anchors' }, wrapHandler(async (req, res) => {
+    await requireRegistrationAuthority(req);
+    sendJson(res, 200, { chainPem: await pkiIssuer.getTrustAnchorsPem() });
   }), PKI_IP);
 
   // --------------------------------------------------------------------------

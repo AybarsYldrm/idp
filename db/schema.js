@@ -184,6 +184,70 @@ module.exports = {
       { no: 14, name: 'skidHex', type: 'string', index: true },
     ],
   },
+  // Kısa ömürlü (BeyondCorp) kimlikler.
+  //
+  // `certificates` tablosundan AYRI, çünkü ikisinin yaşam döngüsü taban tabana
+  // zıt: oradaki bir kayıt bir yıl yaşar ve kalıcıdır, buradaki beş dakika
+  // yaşar ve süpürülür. İkisini birleştirmek, uzun ömürlü sertifika listesini
+  // dakikada bir üretilen kayıtların altında görünmez kılardı -- ve kullanıcının
+  // "hangi sertifikalarım var" ekranı, gerçekte hiçbirini göstermeyen bir
+  // sonsuz kaydırma listesine dönerdi.
+  //
+  // `notAfter` gün kovalarıyla aralık-indeksli: süpürme ("süresi X'ten önce
+  // dolanlar") bu indeks üzerinden çalışır, tam zaman damgaları indekste
+  // görünmeden.
+  workload_certificates: {
+    fields: [
+      { no: 2, name: 'serialNumberHex', type: 'string', index: true, required: true },
+      // Anahtar tekilliği burada zorlanır: canlı bir sertifikası olan bir açık
+      // anahtar ikinci kez sertifikalandırılamaz. Kör indeks, sunucunun açık
+      // anahtar tanımlayıcılarının aranabilir bir listesini tutmadan "bu değer
+      // var mı" sorusunu cevaplamasını sağlar.
+      { no: 3, name: 'skidHex', type: 'string', blindIndex: true, required: true },
+      { no: 4, name: 'spiffeId', type: 'string', index: true, required: true },
+      { no: 5, name: 'profile', type: 'string', index: true },
+      { no: 6, name: 'userId', type: 'string', index: true },
+      { no: 7, name: 'sessionId', type: 'string', index: true },
+      { no: 8, name: 'deviceId', type: 'string' },
+      { no: 9, name: 'workloadName', type: 'string', index: true },
+      { no: 10, name: 'issuedVia', type: 'string' },
+      { no: 11, name: 'notBefore', type: 'uint64' },
+      { no: 12, name: 'notAfter', type: 'int64', rangeBucket: { width: 3600000 }, diskBacked: true },
+      { no: 13, name: 'createdAt', type: 'uint64' },
+      { no: 14, name: 'status', type: 'string' },
+      // İş yükü jetonunun öznesi. `userId` DEĞİL ve olmamalı: bir servis asıl
+      // kimliği `users` tablosunda bir satır değildir, ve onu userId diye
+      // kaydetmek sürekli doğrulamanın her yenilemede var olmayan bir
+      // kullanıcıyı aramasına ve her iş yükünün ikinci turda düşmesine yol açar.
+      { no: 15, name: 'tokenSubject', type: 'string' },
+    ],
+  },
+
+  // Bir OAuth istemcisine kayıtlı her yönlendirme adresi için KALICI bir tutamak.
+  //
+  // Neden ayrı bir tablo: `oauth_clients.redirectUris` bir JSON dizisiydi ve
+  // adresler oradan indeks numarasıyla değil, TAM METİN eşleşmesiyle
+  // seçiliyordu. Bu, her yetkilendirme isteğinin adres çubuğunda tam URL'i
+  // taşıması demekti -- ve kaydedilen adres bir örnek değeri (`https://
+  // example.com/oauth/callback`) olarak kaldığında bunu fark ettiren hiçbir şey
+  // yoktu. Tutamak, adresi bir DEĞERE indirger: istek `ru=<tutamak>` taşır,
+  // sunucu tutamağı çözer, ve kayıtlı olmayan hiçbir adres istekte
+  // görünemeyeceği için "kayıtlı mı" kontrolü yapısal hâle gelir.
+  oauth_redirect_uris: {
+    fields: [
+      // Tutamağın kendisi. clientId ile birlikte türetilir, tahmin edilemez.
+      { no: 2, name: 'handle', type: 'string', blindIndex: true, required: true },
+      { no: 3, name: 'clientId', type: 'string', index: true, required: true },
+      { no: 4, name: 'redirectUri', type: 'string', required: true },
+      // clientId + uri -- aynı adresin iki kez kaydedilmesini engeller.
+      { no: 5, name: 'clientUriKey', type: 'string', blindIndex: true },
+      { no: 6, name: 'label', type: 'string' },
+      { no: 7, name: 'createdAt', type: 'uint64' },
+      { no: 8, name: 'lastUsedAt', type: 'uint64' },
+      { no: 9, name: 'disabled', type: 'bool' },
+    ],
+  },
+
   // Certificate Transparency log girdileri (RFC 6962).
   //
   // EKLEME-YALNIZCA: bu koleksiyona güncelleme/silme yolu yok. Merkle ağacı

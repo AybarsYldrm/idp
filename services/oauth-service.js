@@ -5,9 +5,15 @@ const { AppError } = require('../core/errors');
 const base64url = require('../core/base64url');
 const { InMemoryEphemeralStore } = require('../core/ephemeral-store');
 const consent = require('./consent-service');
+const redirects = require('../core/oauth-redirect');
 
 const AUTH_CODE_TTL_MS = 60 * 1000; // yetkilendirme kodu kısacık ömürlü ve tek kullanımlık olmalı
 const DEVICE_CODE_TTL_MS = 10 * 60 * 1000; // RFC 8628 önerisi: birkaç dakika
+
+// Cihaz akışının "bağlantı" tutamağı. verification_uri_complete'in içinde
+// kullanıcı kodu yerine bu duruyor; ilk açılışta tüketilir. Kısa, çünkü tek
+// işlevi kullanıcıyı QR koddan sayfaya taşımak.
+const DEVICE_LINK_TTL_MS = 10 * 60 * 1000;
 
 // İnsan tarafından kolayca okunup elle yazılabilecek bir kod: karışıklık yaratan
 // karakterler (0/O, 1/I/L) hariç tutulur, XXXX-XXXX biçiminde.
@@ -33,7 +39,8 @@ class OAuthService {
    *   koşuyorsanız oauth-server.js DbEphemeralStore enjekte eder (bkz. o dosyanın notu).
    */
   constructor({
-    sessionManager, clientStore, db, issuer, authCodeStore, deviceCodeStore, userCodeStore, deviceCodePollIntervalS,
+    sessionManager, clientStore, db, issuer, authCodeStore, deviceCodeStore, userCodeStore,
+    deviceLinkStore, deviceCodePollIntervalS,
   }) {
     this.sessionManager = sessionManager;
     this.clientStore = clientStore;
@@ -42,7 +49,53 @@ class OAuthService {
     this.authCodes = authCodeStore || new InMemoryEphemeralStore();
     this.deviceCodes = deviceCodeStore || new InMemoryEphemeralStore();
     this.userCodes = userCodeStore || new InMemoryEphemeralStore();
+    this.deviceLinks = deviceLinkStore || new InMemoryEphemeralStore();
     this.deviceCodePollIntervalS = deviceCodePollIntervalS || 5;
+  }
+
+  /**
+   * Yetkilendirme isteğinin işaret ettiği KAYITLI yönlendirme adresini bulur.
+   *
+   * İki giriş biçimi kabul edilir ve ikisi de aynı kayda çözülmek zorundadır:
+   *
+   *   ru=<tutamak>      bu dağıtımın tercih ettiği biçim. Kayıtlı olmayan bir
+   *                     adres istekte GÖRÜNEMEZ, dolayısıyla "kayıtlı mı"
+   *                     kontrolü bir if bloğu değil, aramanın başarısız olması.
+   *   redirect_uri=<url> RFC 6749 §4.1.1'in istediği biçim. Standart istemciler
+   *                     bunu gönderir ve göndermek zorundadır, o yüzden
+   *                     desteklenmemesi seçenek değil.
+   *
+   * İkisi birden geldiğinde ve AYNI kaydı göstermediklerinde istek reddedilir.
+   * Birini kabul edip diğerini yok saymak, iki alandan hangisinin geçerli
+   * olduğunu istemcinin değil sunucunun bildiği bir belirsizlik yaratır -- ve
+   * bu tür belirsizlikler, iki bileşenin farklı alanı okuduğu her yerde bir
+   * atlatma yoludur.
+   */
+  async _resolveRedirect({ client, redirectUri, redirectHandle }) {
+    if (!redirectUri && !redirectHandle) {
+      throw new AppError('invalid_request',
+        'redirect_uri ya da ru (kayıtlı yönlendirme tutamağı) gerekli', { httpStatus: 400 });
+    }
+
+    const byHandle = redirectHandle
+      ? await this.clientStore.resolveRedirectHandle(client.clientId, redirectHandle)
+      : null;
+    if (redirectHandle && !byHandle) {
+      throw new AppError('invalid_request', 'Bilinmeyen yönlendirme tutamağı', { httpStatus: 400 });
+    }
+
+    const byUri = redirectUri
+      ? await this.clientStore.resolveRedirectUri(client.clientId, redirectUri)
+      : null;
+    if (redirectUri && !byUri) {
+      throw new AppError('invalid_request', 'redirect_uri bu client için kayıtlı değil', { httpStatus: 400 });
+    }
+
+    if (byHandle && byUri && byHandle.handle !== byUri.handle) {
+      throw new AppError('invalid_request',
+        'redirect_uri ve ru farklı kayıtları gösteriyor', { httpStatus: 400 });
+    }
+    return byHandle || byUri;
   }
 
   /**
@@ -58,21 +111,21 @@ class OAuthService {
    *        { redirectTo } | { errorRedirect }
    */
   async authorize({
-    clientId, redirectUri, responseType, scope, state,
+    clientId, redirectUri, redirectHandle, responseType, scope, state,
     codeChallenge, codeChallengeMethod, currentSession, prompt, consentGranted,
   }) {
     const client = await this.clientStore.getClient(clientId);
     if (!client) throw new AppError('invalid_client', 'Bilinmeyen client_id', { httpStatus: 400 });
-    if (!client.redirectUris.includes(redirectUri)) {
-      throw new AppError('invalid_request', 'redirect_uri bu client için kayıtlı değil', { httpStatus: 400 });
-    }
 
-    // BURADAN İTİBAREN redirect_uri doğrulanmıştır ve hatalar client'a GERİ
-    // YÖNLENDİRİLİR (RFC 6749 §4.1.2.1). Doğrulanmamış bir redirect_uri'ye hata
-    // yollamak, IdP'yi açık yönlendirme aracına çevirirdi -- o yüzden yukarıdaki
-    // iki kontrol hâlâ 400 döner, aşağıdakiler dönmez.
+    const registered = await this._resolveRedirect({ client, redirectUri, redirectHandle });
+    const resolvedRedirectUri = registered.redirectUri;
+
+    // BURADAN İTİBAREN yönlendirme adresi doğrulanmıştır ve hatalar client'a GERİ
+    // YÖNLENDİRİLİR (RFC 6749 §4.1.2.1). Doğrulanmamış bir adrese hata yollamak,
+    // IdP'yi açık yönlendirme aracına çevirirdi -- o yüzden yukarıdaki kontroller
+    // hâlâ 400 döner, aşağıdakiler dönmez.
     const fail = (error, description) => ({
-      errorRedirect: this._errorRedirect({ redirectUri, state, error, description }),
+      errorRedirect: this._errorRedirect({ redirectUri: resolvedRedirectUri, state, error, description }),
     });
 
     if (responseType !== 'code') return fail('unsupported_response_type', 'sadece response_type=code destekleniyor');
@@ -113,13 +166,27 @@ class OAuthService {
     // son ne zaman hesabıma eriştil" sorusunun cevabı buradan geliyor.
     await consent.touchGrant({ db: this.db, userId: currentSession.userId, clientId });
 
-    const code = base64url.encode(crypto.randomBytes(32));
-    await this.authCodes.set(code, {
-      clientId, redirectUri, codeChallenge, scope: consent.formatScope(scopes),
-      userId: currentSession.userId, sessionId: currentSession.sessionId, used: false,
+    const { code, lookupKey } = redirects.issueAuthorizationCode({
+      clientId, redirectHandle: registered.handle,
+    });
+    // Depoda `redirectHandle` saklanıyor, tam adres değil: jeton değişiminde
+    // karşılaştırılan şey artık iki metin değil iki kayıt referansı, ve aynı
+    // adresin iki farklı yazımı (sondaki eğik çizgi, port, harf büyüklüğü)
+    // eşleşmeyi bozamaz.
+    await this.authCodes.set(lookupKey, {
+      clientId,
+      redirectHandle: registered.handle,
+      redirectUri: resolvedRedirectUri,
+      codeChallenge,
+      scope: consent.formatScope(scopes),
+      userId: currentSession.userId,
+      sessionId: currentSession.sessionId,
+      used: false,
     }, AUTH_CODE_TTL_MS);
 
-    const redirectUrl = new URL(redirectUri);
+    await this.clientStore.touchRedirectUri(registered.handle);
+
+    const redirectUrl = new URL(resolvedRedirectUri);
     redirectUrl.searchParams.set('code', code);
     if (state) redirectUrl.searchParams.set('state', state);
     return { redirectTo: redirectUrl.toString() };
@@ -134,9 +201,12 @@ class OAuthService {
   }
 
   /** POST /oauth/token -- authorization_code (PKCE), refresh_token ve device_code grant'lerini yönetir. */
-  async token({ grantType, code, redirectUri, codeVerifier, clientId, refreshToken, ip, userAgent, deviceCode }) {
+  async token({
+    grantType, code, redirectUri, redirectHandle, codeVerifier, clientId, refreshToken,
+    ip, userAgent, deviceCode,
+  }) {
     if (grantType === 'authorization_code') {
-      return this._exchangeAuthorizationCode({ code, redirectUri, codeVerifier, clientId });
+      return this._exchangeAuthorizationCode({ code, redirectUri, redirectHandle, codeVerifier, clientId });
     }
     if (grantType === 'refresh_token') {
       const tokens = await this.sessionManager.refresh({ refreshToken, ip, userAgent });
@@ -148,13 +218,39 @@ class OAuthService {
     throw new AppError('unsupported_grant_type', `Desteklenmeyen grant_type: '${grantType}'`, { httpStatus: 400 });
   }
 
-  async _exchangeAuthorizationCode({ code, redirectUri, codeVerifier, clientId }) {
-    const entry = await this.authCodes.get(code);
-    if (!entry) throw new AppError('invalid_grant', 'Bilinmeyen, süresi dolmuş veya zaten kullanılmış kod', { httpStatus: 400 });
-    await this.authCodes.delete(code); // tek kullanımlık -- sonuç ne olursa olsun tüket
+  async _exchangeAuthorizationCode({ code, redirectUri, redirectHandle, codeVerifier, clientId }) {
+    // Biçimsel olarak bozuk ya da BAŞKA bir istemciye ait olduğu kodun kendisinden
+    // görülebilen istekler depoya hiç gitmez. Reddedilme mesajı, depodan dönen
+    // "bilinmeyen kod" ile AYNI: hangi aşamada reddedildiğini söylemek, bir
+    // saldırgana kodun neresinin yanlış olduğunu öğretir.
+    const invalidGrant = () => new AppError('invalid_grant',
+      'Bilinmeyen, süresi dolmuş veya zaten kullanılmış kod', { httpStatus: 400 });
 
-    if (entry.clientId !== clientId || entry.redirectUri !== redirectUri) {
-      throw new AppError('invalid_grant', 'client_id/redirect_uri eşleşmedi', { httpStatus: 400 });
+    const parsed = redirects.parseAuthorizationCode(code, { clientId });
+    if (!parsed) throw invalidGrant();
+
+    const entry = await this.authCodes.get(parsed.lookupKey);
+    if (!entry) throw invalidGrant();
+    await this.authCodes.delete(parsed.lookupKey); // tek kullanımlık -- sonuç ne olursa olsun tüket
+
+    if (entry.clientId !== clientId) throw invalidGrant();
+
+    // RFC 6749 §4.1.3: redirect_uri yetkilendirme isteğindekiyle aynı olmalı.
+    // Karşılaştırma artık iki metin arasında değil, iki kayıt referansı arasında:
+    // aynı adresin sondaki eğik çizgiyle ya da açık portla yazılmış hâli
+    // eşleşmeyi bozamaz. Standart istemciler adresi gönderir, bu dağıtımın
+    // istemcileri tutamağı; ikisi de kabul edilir.
+    if (redirectHandle && redirectHandle !== entry.redirectHandle) {
+      throw new AppError('invalid_grant', 'redirect_uri eşleşmedi', { httpStatus: 400 });
+    }
+    if (redirectUri) {
+      const registered = await this.clientStore.resolveRedirectUri(clientId, redirectUri);
+      if (!registered || registered.handle !== entry.redirectHandle) {
+        throw new AppError('invalid_grant', 'redirect_uri eşleşmedi', { httpStatus: 400 });
+      }
+    }
+    if (!redirectUri && !redirectHandle) {
+      throw new AppError('invalid_request', 'redirect_uri ya da ru gerekli', { httpStatus: 400 });
     }
 
     // PKCE doğrulaması: S256(code_verifier) === code_challenge (yetkilendirme kodunun
@@ -213,14 +309,47 @@ class OAuthService {
     }, DEVICE_CODE_TTL_MS + 60_000);
     await this.userCodes.set(userCode, { deviceCode }, DEVICE_CODE_TTL_MS);
 
+    // verification_uri_complete artık kullanıcı kodunu TAŞIMIYOR.
+    //
+    // RFC 8628 §3.3.1 bu alanı kullanıcının kodu elle yazmasını gerektirmesin
+    // diye tanımlar -- tipik olarak bir QR kodun içine konur. Ama kodu adresin
+    // içine koymak onu adres çubuğuna, tarayıcı geçmişine, yönlendiren
+    // (Referer) başlığına ve omzunuzun üzerinden bakan herkese koyar; ve o kod,
+    // onaylandığı anda bir oturuma dönüşecek olan şeydir.
+    //
+    // Bunun yerine tek kullanımlık, opak bir bağlantı tutamağı üretiliyor.
+    // /device/link/<tutamak> ilk açılışta TÜKETİLİR: sunucu kodu kısa ömürlü,
+    // HttpOnly bir çereze koyar ve sorgu dizesi olmayan /device'a yönlendirir.
+    // QR akışı bozulmaz, ama sızan bir adres ikinci kez işe yaramaz.
+    const linkToken = base64url.encode(crypto.randomBytes(32));
+    await this.deviceLinks.set(linkToken, { userCode }, DEVICE_LINK_TTL_MS);
+
     return {
       deviceCode,
       userCode,
       verificationUri: `${this.issuer}/device`,
-      verificationUriComplete: `${this.issuer}/device?user_code=${encodeURIComponent(userCode)}`,
+      verificationUriComplete: `${this.issuer}/device/link/${linkToken}`,
       expiresIn: Math.floor(DEVICE_CODE_TTL_MS / 1000),
       interval: this.deviceCodePollIntervalS,
     };
+  }
+
+  /**
+   * Bir bağlantı tutamağını tüketir ve arkasındaki kullanıcı kodunu döner.
+   *
+   * Tek kullanımlık: ikinci çağrı `null` döner. Tarayıcı geçmişinde ya da bir
+   * ekran görüntüsünde kalan adres, kullanıcı onu bir kez açtıktan sonra hiçbir
+   * işe yaramaz.
+   */
+  async consumeDeviceLink(linkToken) {
+    const entry = await this.deviceLinks.get(linkToken);
+    if (!entry) return null;
+    await this.deviceLinks.delete(linkToken);
+    // Kod hâlâ geçerli mi? Tutamak yaşıyor ama arkasındaki cihaz kodu süresi
+    // dolmuş olabilir; kullanıcıyı çalışmayacak bir onay ekranına göndermek
+    // yerine burada anlaşılır bir şekilde bitirmek daha iyi.
+    const pointer = await this.userCodes.get(entry.userCode);
+    return pointer ? entry.userCode : null;
   }
 
   /** Onay sayfası (GET /device) "hangi uygulama erişim istiyor" bilgisini göstermek için çağırır. */
@@ -361,13 +490,23 @@ class OAuthService {
 // /admin/oauth-clients/* uç noktaları (oauth-server.js) bunu yönetir; redirect URI'ler
 // dahil her şey DB'de saklanır ve admin panelinden düzenlenebilir.
 // ============================================================================
-function createDbClientStore(db) {
+function createDbClientStore(db, { handleSecret, allowInsecureLocalhost = false } = {}) {
+  if (!handleSecret || handleSecret.length < 32) {
+    throw new Error('[fitfak-idp] createDbClientStore: yönlendirme tutamaklarını türetmek için en az '
+      + '32 baytlık bir handleSecret gerekli');
+  }
   const clients = db.collection('oauth_clients');
+  const redirectRows = db.collection('oauth_redirect_uris');
 
-  function toView(row) {
+  function toView(row, redirectUris = []) {
     return {
       clientId: row.clientId, clientSecret: row.clientSecret, name: row.name,
-      redirectUris: JSON.parse(row.redirectUris || '[]'),
+      // Adresler artık kendi tablosunda. `oauth_clients.redirectUris` sütunu
+      // yalnızca eski kayıtlar için okunuyor: yeni yazma yolları oraya bir şey
+      // koymaz, çünkü iki yerde tutulan bir liste, ikisinin ayrışmasıyla biten
+      // bir listedir.
+      redirectUris: redirectUris.length ? redirectUris.map((r) => r.redirectUri) : JSON.parse(row.redirectUris || '[]'),
+      redirects: redirectUris,
       allowedScopes: JSON.parse(row.allowedScopes || '[]'),
       // Onay ekranını atlama hakkı. Kayıt sırasında client'ın KENDİSİ
       // tarafından belirlenemez -- yalnızca admin verir.
@@ -377,52 +516,165 @@ function createDbClientStore(db) {
     };
   }
 
+  function redirectView(row) {
+    return {
+      handle: row.handle,
+      redirectUri: row.redirectUri,
+      label: row.label || '',
+      createdAt: Number(row.createdAt),
+      lastUsedAt: Number(row.lastUsedAt) || null,
+      disabled: !!row.disabled,
+    };
+  }
+
+  async function listRedirects(clientId) {
+    const rows = await redirectRows.find('clientId', clientId);
+    return rows.filter((row) => !row.disabled).map(redirectView);
+  }
+
+  async function addRedirect(clientId, value, label = '') {
+    const redirectUri = redirects.validateRedirectUri(value, { allowInsecureLocalhost });
+    const key = redirects.clientUriKey(clientId, redirectUri);
+    const existing = await redirectRows.findOne('clientUriKey', key);
+    if (existing) {
+      // Zaten kayıtlıysa aynı tutamak döner. İkinci bir kayıt oluşturmak, aynı
+      // adresin iki tutamağı olması demek olurdu -- ve birini iptal etmek
+      // diğerini bırakırdı.
+      if (existing.disabled) await redirectRows.update(existing._id, { disabled: false });
+      return redirectView(existing);
+    }
+    const row = {
+      handle: redirects.deriveHandle({ clientId, redirectUri, secret: handleSecret }),
+      clientId,
+      redirectUri,
+      clientUriKey: key,
+      label: label || '',
+      createdAt: BigInt(Date.now()),
+      lastUsedAt: BigInt(0),
+      disabled: false,
+    };
+    await redirectRows.insert(row);
+    return redirectView(row);
+  }
+
   return {
     async getClient(clientId) {
       const row = await clients.findOne('clientId', clientId);
-      return row ? toView(row) : null;
+      if (!row) return null;
+      return toView(row, await listRedirects(clientId));
     },
     async listClients() {
       const result = [];
       // eslint-disable-next-line no-restricted-syntax
-      for await (const row of clients.scan()) result.push(toView(row));
+      for await (const row of clients.scan()) {
+        result.push(toView(row, await listRedirects(row.clientId)));
+      }
       return result;
     },
+
+    // ---- yönlendirme adresleri ---------------------------------------------------------------
+
+    listRedirectUris: listRedirects,
+    addRedirectUri: addRedirect,
+
+    /** Tutamaktan kayda. Başka bir istemcinin tutamağı bu istemci için çözülmez. */
+    async resolveRedirectHandle(clientId, handle) {
+      const row = await redirectRows.findOne('handle', String(handle || ''));
+      if (!row || row.disabled || row.clientId !== clientId) return null;
+      return redirectView(row);
+    },
+
+    /** Tam adresten kayda -- RFC 6749 uyumlu istemciler için. */
+    async resolveRedirectUri(clientId, value) {
+      let normalized;
+      // Doğrulama burada da çalışıyor, çünkü gelen değer istemcinin YAZDIĞI bir
+      // metin: normalleştirilmemiş bir adres, kayıtlı olanla eşleşmeyip
+      // geçersiz sayılmalı -- ham metinle karşılaştırılıp kabul edilmemeli.
+      try { normalized = redirects.validateRedirectUri(value, { allowInsecureLocalhost }); }
+      catch (_) { return null; }
+      const row = await redirectRows.findOne('clientUriKey', redirects.clientUriKey(clientId, normalized));
+      if (!row || row.disabled) return null;
+      return redirectView(row);
+    },
+
+    async touchRedirectUri(handle) {
+      const row = await redirectRows.findOne('handle', String(handle || ''));
+      if (row) await redirectRows.update(row._id, { lastUsedAt: BigInt(Date.now()) });
+    },
+
+    async removeRedirectUri(clientId, handle) {
+      const row = await redirectRows.findOne('handle', String(handle || ''));
+      if (!row || row.clientId !== clientId) {
+        throw new AppError('not_found', 'Yönlendirme adresi bulunamadı', { httpStatus: 404 });
+      }
+      // Silmek yerine devre dışı bırakmak: aynı adres yeniden eklenirse aynı
+      // tutamağı almalı, yoksa dışarıda dağıtılmış yapılandırmalar sessizce kırılır.
+      await redirectRows.update(row._id, { disabled: true });
+      return { removed: true };
+    },
+
+    // ---- istemciler ---------------------------------------------------------------------------
+
     async createClient({
       clientId, clientSecret, name, redirectUris, allowedScopes, firstParty, clientUri,
     }) {
       if (await clients.findOne('clientId', clientId)) {
         throw new AppError('client_exists', 'Bu clientId zaten kayıtlı', { httpStatus: 409 });
       }
+      // Adresler İSTEMCİ KAYDINDAN ÖNCE doğrulanır. Sonra doğrulamak, geçersiz
+      // bir adres yüzünden reddedilen bir kayıttan geriye yönlendirme adresi
+      // olmayan yarım bir istemci bırakırdı.
+      const validated = (redirectUris || []).map((value) => redirects.validateRedirectUri(value, { allowInsecureLocalhost }));
+      if (validated.length === 0) {
+        throw new AppError('invalid_request',
+          'En az bir yönlendirme adresi gerekli: yönlendirme adresi olmayan bir istemci '
+          + 'yetkilendirme kodu alamaz', { httpStatus: 400 });
+      }
+
       const row = {
         clientId,
         clientSecret,
         name: name || clientId,
-        redirectUris: JSON.stringify(redirectUris || []),
+        redirectUris: '[]',
         allowedScopes: JSON.stringify(allowedScopes || []),
         firstParty: !!firstParty,
         clientUri: clientUri || '',
         createdAt: BigInt(Date.now()),
       };
       await clients.insert(row);
-      return toView(row);
+      const created = [];
+      for (const value of validated) created.push(await addRedirect(clientId, value));
+      return toView(row, created);
     },
+
     async updateClient(clientId, patch) {
       const row = await clients.findOne('clientId', clientId);
       if (!row) throw new AppError('not_found', 'Client bulunamadı', { httpStatus: 404 });
       const next = {};
       if (patch.name !== undefined) next.name = patch.name;
-      if (patch.redirectUris !== undefined) next.redirectUris = JSON.stringify(patch.redirectUris);
       if (patch.allowedScopes !== undefined) next.allowedScopes = JSON.stringify(patch.allowedScopes);
       if (patch.clientSecret !== undefined) next.clientSecret = patch.clientSecret;
       if (patch.firstParty !== undefined) next.firstParty = !!patch.firstParty;
       if (patch.clientUri !== undefined) next.clientUri = String(patch.clientUri || '');
       await clients.update(row._id, next);
+
+      // Adresler ayrı uçlardan yönetiliyor (addRedirectUri/removeRedirectUri).
+      // Toplu değiştirmeye izin vermek, bir listeyi yanlışlıkla boşaltan tek bir
+      // PATCH'in bir uygulamanın girişini tamamen kapatmasına yol açardı.
+      if (patch.redirectUris !== undefined) {
+        throw new AppError('invalid_request',
+          'Yönlendirme adresleri /admin/oauth-clients/redirects uçlarından tek tek yönetilir',
+          { httpStatus: 400 });
+      }
       return { updated: true };
     },
+
     async deleteClient(clientId) {
       const row = await clients.findOne('clientId', clientId);
       if (row) await clients.delete(row._id);
+      for (const redirect of await redirectRows.find('clientId', clientId)) {
+        await redirectRows.delete(redirect._id);
+      }
       return { deleted: true };
     },
   };
@@ -430,9 +682,46 @@ function createDbClientStore(db) {
 
 // Testler/hızlı-demo için basit, statik (bellek-içi) client registry -- üretimde
 // createDbClientStore kullanın (admin panelinden yönetilebilir).
-function createStaticClientStore(clients) {
-  const byId = new Map(clients.map((c) => [c.clientId, c]));
-  return { async getClient(clientId) { return byId.get(clientId) || null; } };
+//
+// Yönlendirme tutamakları burada da üretiliyor. Testlerde adresleri düz metin
+// karşılaştırmakla yetinmek, üretimde çalışan yolun (tutamak araması) testlerde
+// hiç çalışmaması demek olurdu -- ve bu, bir test sahtesinin gerçekten daha
+// güvenli olduğu her durumun kaynağıdır.
+function createStaticClientStore(clients, { handleSecret = Buffer.alloc(32, 1), allowInsecureLocalhost = true } = {}) {
+  const byId = new Map();
+  const byHandle = new Map();
+  const byUri = new Map();
+
+  for (const client of clients) {
+    const entries = (client.redirectUris || []).map((value) => {
+      const redirectUri = redirects.validateRedirectUri(value, { allowInsecureLocalhost });
+      const entry = {
+        handle: redirects.deriveHandle({ clientId: client.clientId, redirectUri, secret: handleSecret }),
+        redirectUri,
+        label: '',
+        createdAt: Date.now(),
+        lastUsedAt: null,
+        disabled: false,
+      };
+      byHandle.set(`${client.clientId}|${entry.handle}`, entry);
+      byUri.set(`${client.clientId}|${redirectUri}`, entry);
+      return entry;
+    });
+    byId.set(client.clientId, { ...client, redirects: entries });
+  }
+
+  return {
+    async getClient(clientId) { return byId.get(clientId) || null; },
+    async listRedirectUris(clientId) { return byId.get(clientId)?.redirects || []; },
+    async resolveRedirectHandle(clientId, handle) { return byHandle.get(`${clientId}|${handle}`) || null; },
+    async resolveRedirectUri(clientId, value) {
+      let normalized;
+      try { normalized = redirects.validateRedirectUri(value, { allowInsecureLocalhost }); }
+      catch (_) { return null; }
+      return byUri.get(`${clientId}|${normalized}`) || null;
+    },
+    async touchRedirectUri() { /* statik depoda kullanım izlenmiyor */ },
+  };
 }
 
 module.exports = { OAuthService, createStaticClientStore, createDbClientStore };

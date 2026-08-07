@@ -101,8 +101,12 @@ function createStatusHandler({ db, pkiIssuer, cacheStore }) {
           Buffer.from(pkiIssuer.rootCA.certPem));
       }
       if (pathname === '/chain.pem' && req.method === 'GET') {
+        // Zincir artık kasadan geliyor ve amaca göre farklı olabilir (her amacın
+        // kendi ara CA'sı var). Burada yayınlanan, uç istemci sertifikalarının
+        // zinciri: bu adresi AIA'dan takip eden bir doğrulayıcının eksik olan
+        // halkası odur.
         return send(res, 200, { 'content-type': 'application/x-pem-file' },
-          Buffer.from(pkiIssuer.getChainPem()));
+          Buffer.from(await pkiIssuer.getChainPem()));
       }
 
       if (pathname === '/' && (req.method === 'GET' || req.method === 'HEAD')) {
