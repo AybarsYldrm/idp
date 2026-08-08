@@ -848,6 +848,21 @@ async function main() {
   }
 
   async function finishAuthorization(req, res, params, { consentGranted = false } = {}) {
+    // Yönlendirme adresi HER ŞEYDEN ÖNCE bir KAYDA çözülür.
+    //
+    // Aşağıdaki `prompt=none` dalı bir hata yönlendirmesi üretiyor ve bunu
+    // istekteki adresle yapıyor. O adres doğrulanmamışsa, IdP'ye
+    // `?redirect_uri=https://saldirgan.example&prompt=none` ile gelen herkes bir
+    // 302 alır -- yani IdP bir açık yönlendirme aracına dönüşür. RFC 6749
+    // §4.1.2.1'in "doğrulanmamış bir adrese hata gönderme" kuralı tam olarak bu
+    // yüzden var, ve kontrolün burada, HER daldan önce olması gerekiyor.
+    const client = await clientStore.getClient(params.clientId);
+    if (!client) throw new AppError('invalid_client', 'Bilinmeyen client_id', { httpStatus: 400 });
+    const registered = await oauthService._resolveRedirect({
+      client, redirectUri: params.redirectUri, redirectHandle: params.redirectHandle,
+    });
+    const redirectUri = registered.redirectUri;
+
     const accounts = await resolveValidAccounts(req);
     const silent = String(params.prompt || '').split(/\s+/).includes('none');
 
@@ -858,7 +873,7 @@ async function main() {
       if (silent) {
         res.statusCode = 302;
         res.setHeader('location', oauthService._errorRedirect({
-          redirectUri: params.redirectUri, state: params.state,
+          redirectUri, state: params.state,
           error: 'account_selection_required', description: 'Birden fazla açık hesap var',
         }));
         return res.end();
@@ -876,7 +891,16 @@ async function main() {
     if (result.requiresConsent) {
       const pending = await consentService.createPendingAuthorization({
         store: consentStore,
-        request: { params, userId: String(currentSession.userId), sessionId: currentSession.sessionId },
+        // ÇÖZÜLMÜŞ adres saklanıyor, istekteki değil. Tutamakla (`ru=`) gelen bir
+        // istemcide `params.redirectUri` hiç yoktur; onay ekranı ve reddetme yolu
+        // ise adrese ihtiyaç duyar ve olmayınca `new URL(undefined)` ile düşerdi.
+        // Ayrıca burada saklanan değer normalleştirilmiş olduğu için, onay
+        // ekranının gösterdiği ana makine ile kodun gideceği yer aynı olur.
+        request: {
+          params: { ...params, redirectUri },
+          userId: String(currentSession.userId),
+          sessionId: currentSession.sessionId,
+        },
       });
       res.statusCode = 302;
       res.setHeader('location', `/consent?request=${encodeURIComponent(pending)}`);
