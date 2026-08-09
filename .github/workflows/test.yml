@@ -1,0 +1,65 @@
+name: test
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  # Only the suites that need no published packages.
+  #
+  # Most of this repository's tests need @fitfak/ssl, @fitfak/database or @fitfak/qr, none of
+  # which are published yet, so a job that ran `npm test` would fail on packaging rather than on
+  # code and would be ignored within a week. These two need nothing beyond a sibling checkout:
+  # the redirect and authorization-code rules are pure string handling, and the short-lived
+  # identity rules run against the in-memory database double.
+  #
+  # They are also the two places where a silent regression is most expensive. An unregistered
+  # redirect URI reaching an authorization request is an open redirect; a renewal that stops
+  # re-checking the authority behind it turns a five-minute certificate into a year-old
+  # decision. Both keep working right up until they do not.
+  unit:
+    name: unit (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    steps:
+      # Both repositories are checked out side by side, because core/spiffe.js resolves
+      # @fitfak/database and falls back to `../database` when the package is not installed.
+      # The SPIFFE parser is shared with that repository on purpose: two parsers would
+      # eventually read one certificate as two different identities.
+      - uses: actions/checkout@v4
+        with:
+          path: idp
+
+      - uses: actions/checkout@v4
+        id: database
+        continue-on-error: true
+        with:
+          repository: AybarsYldrm/database
+          # The matching branch first, so a change that spans both repositories is tested
+          # against itself rather than against whatever is on main.
+          ref: ${{ github.head_ref || github.ref_name }}
+          path: database
+
+      - name: Fall back to the default branch of @fitfak/database
+        if: steps.database.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: AybarsYldrm/database
+          path: database
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Redirect handles and authorization codes
+        working-directory: idp
+        run: npm run test:redirects
+
+      - name: Short-lived workload identities
+        working-directory: idp
+        run: npm run test:workload
