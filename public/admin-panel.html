@@ -8,7 +8,7 @@
      Harici bir font CDN'i yükleniyordu; bir kimlik sağlayıcısında bu, HER
      ziyaretçinin IP'sini üçüncü bir tarafa göndermek ve o taraf erişilemez
      olduğunda giriş sayfasının görünümünü ona bağlamak demekti. -->
-<link rel="stylesheet" href="/static/fitfak-ui.css">
+<link rel="stylesheet" href="https://session.fitfak.net/static/fitfak-ui.css">
 <style>
   /* Renkler tasarım paketinden türetiliyor -- bkz. demo-login.html'deki not.
      Kenar çubuğu KASITLI olarak her iki temada da koyu: yönetim yüzeyi, giriş
@@ -45,7 +45,7 @@
   button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
   /* ---------- sidebar ---------- */
-  aside { background: var(--bg-sidebar); color: var(--sidebar-ink); padding: 20px 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+  aside { background: var(--bg-sidebar); color: var(--sidebar-ink); padding: 20px 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
   /* Kenar çubuğu her iki temada da koyu -- yukarıdaki nota bakın. */
   .brand { padding: 0 20px 22px; font-weight: 700; font-size: 15px; color: #fff; letter-spacing: -0.01em; }
   .brand span { color: var(--ink-3); font-weight: 400; }
@@ -54,7 +54,16 @@
   .nav-item { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--sidebar-ink); padding: 9px 20px; cursor: pointer; font-size: 13.5px; border-left: 2px solid transparent; }
   .nav-item:hover { background: var(--sidebar-hover); color: #fff; }
   .nav-item.active { background: var(--sidebar-hover); color: var(--sidebar-ink-active); border-left-color: #fff; font-weight: 600; }
-  .sidebar-foot { padding: 16px 20px 0; border-top: 1px solid #1c1c1f; margin-top: 20px; font-size: 12px; color: #52525b; }
+  
+  /* ---------- sidebar user profile (portal style) ---------- */
+  .sidebar-foot { margin-top: auto; padding: 16px 20px 20px; border-top: 1px solid #1c1c1f; }
+  .user-card { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .user-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; background: #1c1c1f; border: 1px solid #27272a; flex-shrink: 0; }
+  .user-info { flex: 1; min-width: 0; }
+  .user-name { font-size: 13px; font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2; }
+  .user-email { font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
+  .logout-btn { width: 100%; display: block; text-align: center; background: #1c1c1f; color: var(--sidebar-ink); border: 1px solid #27272a; padding: 7px 0; border-radius: 5px; font-size: 12.5px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+  .logout-btn:hover { background: var(--bad-bg); color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
 
   /* ---------- main ---------- */
   main { padding: 32px 40px 64px; max-width: 1180px; }
@@ -130,6 +139,16 @@
   .scope-chip { display: inline-block; background: var(--bg-hover); border: 1px solid var(--line-strong); padding: 2px 7px; border-radius: 3px; font-size: 11px; margin: 1px 3px 1px 0; }
   .filter-bar { display: flex; gap: 8px; margin-bottom: 14px; }
   .filter-bar input { max-width: 280px; }
+
+  /* Açıklama kutusu: bir yönetim panelinde en pahalı hata, bir düğmenin ne yaptığını
+     yanlış anlamaktır -- özellikle sonucu "her servis bağlantısını kaybeder" olan bir
+     düğmenin. Bu yüzden gerekçe ekranda duruyor, dokümanda değil. */
+  .notice-box { border: 1px solid var(--line); border-left: 3px solid var(--ink); background: var(--bg-subtle);
+    padding: 12px 15px; border-radius: 5px; font-size: 12.5px; color: var(--ink-2); margin-bottom: 22px; line-height: 1.55; }
+  .notice-box strong { color: var(--ink); }
+  .num { font-family: var(--fk-mono); text-align: right; }
+  .bar { height: 5px; background: var(--bg-hover); border-radius: 3px; overflow: hidden; margin-top: 5px; }
+  .bar > i { display: block; height: 100%; background: var(--ink); }
 </style>
 </head>
 <body>
@@ -150,12 +169,29 @@
     <button class="nav-item" data-view="apps">Kayıtlı uygulamalar</button>
   </div>
   <div class="nav-group">
+    <div class="nav-label">Zero Trust</div>
+    <button class="nav-item" data-view="identity">Kısa ömürlü kimlikler</button>
+    <button class="nav-item" data-view="authorities">Otoriteler</button>
+  </div>
+  <div class="nav-group">
     <div class="nav-label">Sertifika otoritesi</div>
     <button class="nav-item" data-view="certs">Sertifikalar</button>
     <button class="nav-item" data-view="acme">ACME</button>
     <button class="nav-item" data-view="revocation">İptal (OCSP/CRL)</button>
   </div>
-  <div class="sidebar-foot" id="whoami">yükleniyor…</div>
+
+  <div class="sidebar-foot">
+    <div class="user-card">
+      <img id="whoami-avatar" class="user-avatar" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2352525b'%3E%3Cpath d='M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z'/%3E%3C/svg%3E" alt="Profil">
+      <div class="user-info">
+        <div class="user-name" id="whoami-name">Yükleniyor...</div>
+        <div class="user-email" id="whoami-email">—</div>
+      </div>
+    </div>
+    <form method="POST" action="/logout">
+      <button type="submit" class="logout-btn">Oturumu Kapat</button>
+    </form>
+  </div>
 </aside>
 
 <main>
@@ -226,6 +262,83 @@
     </div>
   </section>
 
+  <!-- ================= KISA ÖMÜRLÜ KİMLİKLER ================= -->
+  <section class="view" id="view-identity">
+    <div class="page-head">
+      <div>
+        <h1>Kısa ömürlü kimlikler</h1>
+        <p class="page-sub">BeyondCorp modeli: sertifika kalıcı bir kimlik değil, doğrulanmış bir
+          oturumun dakikalarla ölçülen yetkisidir. İptal mekanizması CRL değil, yenilememektir.</p>
+      </div>
+      <button class="btn" id="btn-refresh-identity">Yenile</button>
+    </div>
+    <div class="stats" id="identity-stats"></div>
+
+    <div class="notice-box" id="identity-explainer"></div>
+
+    <div class="table-wrap">
+      <div class="table-head"><h2>Canlı kimlikler</h2><span class="badge badge-neutral" id="identity-count">0</span></div>
+      <table>
+        <thead><tr><th>SPIFFE kimliği</th><th>Profil</th><th>Kaynak</th><th>Kalan süre</th></tr></thead>
+        <tbody id="identity-body"><tr><td colspan="4" class="empty">yükleniyor…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-head">
+        <h2>Profiller</h2>
+        <button class="btn btn-sm" id="btn-sweep">Süresi dolmuş kayıtları temizle</button>
+      </div>
+      <table>
+        <thead><tr><th>Profil</th><th>Ömür</th><th>İmzalayan amaç</th><th>Canlı</th></tr></thead>
+        <tbody id="profiles-body"><tr><td colspan="4" class="empty">yükleniyor…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-head"><h2>Kayıtlı iş yükleri</h2></div>
+      <table>
+        <thead><tr><th>İş yükü</th><th>Gerekli kapsam</th><th>Profil</th></tr></thead>
+        <tbody id="workloads-body"><tr><td colspan="3" class="empty">yükleniyor…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= OTORİTELER ================= -->
+  <section class="view" id="view-authorities">
+    <div class="page-head">
+      <div>
+        <h1>Sertifika otoriteleri</h1>
+        <p class="page-sub">Kök yalnızca ara CA imzalar; her amaç için ayrı bir ara CA vardır.
+          Anahtarlar dosyada değil, şifreli sır deposunda durur.</p>
+      </div>
+      <button class="btn btn-primary" id="btn-new-authority">Ara CA üret</button>
+    </div>
+
+    <div class="notice-box">
+      <strong>Neden birden fazla ara CA.</strong> Bir CA kısıtlanabilir (isim kısıtları, EKU
+      kısıtları, yol uzunluğu) ve kısıtlar ancak kısıtladıkları şey darsa bir anlam ifade eder —
+      her şeyi imzalayan tek bir ara CA hiçbir şeye kısıtlanamaz. Ayrıca ele geçirilme sınırlanır:
+      iş yükü ara CA'sını emekliye ayırmak, e-posta sertifikalarına dokunmaz. Kaybedilmesi telafi
+      edilemeyecek tek şey olan kök ise yalnızca yeni bir ara CA imzalamak için ortaya çıkar.
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-head"><h2>Otoriteler</h2><span class="badge badge-neutral" id="authority-count">0</span></div>
+      <table>
+        <thead><tr><th>Otorite</th><th>Rol</th><th>Amaçlar</th><th>Geçerlilik</th><th>Durum</th><th></th></tr></thead>
+        <tbody id="authorities-body"><tr><td colspan="6" class="empty">yükleniyor…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="notice-box">
+      <strong>Burada olmayan şey.</strong> Bir CA özel anahtarını döndüren bir uç nokta yok ve
+      olmayacak. O malzemeyi şifreli depoya taşımanın bütün amacı kopyalanamaz olmasıydı; onu
+      döndüren bir HTTP ucu bunu tek satırda geri alırdı. İmzalama, anahtarı yalnızca imza anında
+      çözen tek bir çağrıdan geçer.
+    </div>
+  </section>
+
   <!-- ================= SERTİFİKALAR ================= -->
   <section class="view" id="view-certs">
     <div class="page-head">
@@ -293,7 +406,10 @@
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
-  var state = { users: [], apps: [], certs: [], orders: [], acmeAccounts: [] };
+  var state = {
+    users: [], apps: [], certs: [], orders: [], acmeAccounts: [],
+    identity: null, authorities: [], purposes: [],
+  };
 
   function showErr(m) { $('ok').classList.remove('show'); var e = $('err'); e.textContent = m; e.classList.add('show'); }
   function showOk(m) { $('err').classList.remove('show'); var e = $('ok'); e.textContent = m; e.classList.add('show'); setTimeout(function(){ e.classList.remove('show'); }, 4000); }
@@ -337,11 +453,15 @@
   function closeModal() { $('modal-backdrop').classList.remove('open'); modalSaveHandler = null; }
   $('modal-cancel').addEventListener('click', closeModal);
   $('modal-backdrop').addEventListener('click', function (e) { if (e.target === $('modal-backdrop')) closeModal(); });
+  
   $('modal-save').addEventListener('click', function () {
     if (!modalSaveHandler) return;
     var btn = this; btn.disabled = true; btn.textContent = 'Kaydediliyor…';
     Promise.resolve(modalSaveHandler())
-      .then(function () { closeModal(); })
+      .then(function (status) { 
+        // HATA ÇÖZÜMÜ BURADA: Eğer kaydeden fonksiyon 'KEEP_OPEN' dönerse modali kapatma!
+        if (status !== 'KEEP_OPEN') closeModal(); 
+      })
       .catch(function (e) { showErr(e.message); })
       .finally(function () { btn.disabled = false; btn.textContent = 'Kaydet'; });
   });
@@ -405,7 +525,7 @@
   }
 
   function openCertProfileModal(u) {
-    var all = ['client-auth', 'server-auth', 'timestamping'];
+    var all = ['client-auth', 'server-auth', 'code-signing', 'smime', 'document-signing', 'timestamping', 'ocsp-responder'];
     var current = u.certProfiles || [];
     var html = '<p class="field-hint" style="margin-top:0">Kullanıcının hangi profillerde sertifika talep edebileceğini belirler. '
       + '<strong>client-auth</strong> herkese açıktır. Yöneticiler tüm profilleri kullanabilir.</p>';
@@ -468,7 +588,7 @@
   });
 
   // ---------- UYGULAMALAR ----------
-  var KNOWN_SCOPES = ['openid', 'profile', 'email', 'dns:read', 'dns:write', 'cert:issue', 'admin:read'];
+  var KNOWN_SCOPES = ['openid', 'profile', 'email', 'offline_access', 'service:enrol', 'cert:issue'];
 
   function renderApps() {
     $('app-count').textContent = state.apps.length;
@@ -480,7 +600,15 @@
       tr.innerHTML =
         '<td><div class="cell-strong">' + esc(c.name) + '</div><div class="cell-sub mono">' + esc(c.clientId) + '</div>'
           + '<div class="cell-sub mono">gizli anahtar: ' + esc(c.clientSecretMasked || '••••') + '</div></td>' +
-        '<td>' + (c.redirectUris || []).map(function (u) { return '<div class="cell-sub mono">' + esc(u) + '</div>'; }).join('') + '</td>' +
+        // Adres ve TUTAMAĞI birlikte gösteriliyor. Uygulamanın yapılandırmasına
+        // yazacağı değer tutamaktır: `ru=<tutamak>` ile gelen bir istekte adres
+        // hiçbir yerde metin olarak görünmez, dolayısıyla kayıtlı olmayan bir
+        // adres istekte GÖRÜNEMEZ.
+        '<td>' + ((c.redirects && c.redirects.length ? c.redirects : (c.redirectUris || []).map(function (u) { return { redirectUri: u, handle: null }; }))
+          .map(function (r) {
+            return '<div class="cell-sub mono">' + esc(r.redirectUri) + '</div>'
+              + (r.handle ? '<div class="cell-sub mono" style="opacity:.7">ru=' + esc(r.handle) + '</div>' : '');
+          }).join('')) + '</td>' +
         '<td>' + (c.allowedScopes || []).map(function (s) { return '<span class="scope-chip">' + esc(s) + '</span>'; }).join('') + '</td>' +
         '<td><div class="btn-row"></div></td>';
       var actions = tr.querySelector('.btn-row');
@@ -490,6 +618,12 @@
       editBtn.textContent = 'Düzenle';
       editBtn.addEventListener('click', function () { openAppModal(c); });
       actions.appendChild(editBtn);
+
+      var redirBtn = document.createElement('button');
+      redirBtn.className = 'btn btn-sm';
+      redirBtn.textContent = 'Yönlendirme adresleri';
+      redirBtn.addEventListener('click', function () { openRedirectModal(c); });
+      actions.appendChild(redirBtn);
 
       var delBtn = document.createElement('button');
       delBtn.className = 'btn btn-sm btn-danger';
@@ -523,29 +657,97 @@
     var html =
       '<label>Görünen ad</label><input type="text" id="app-name" value="' + esc(isEdit ? existing.name : '') + '" placeholder="DNS Paneli">' +
       (isEdit ? '' : '<label>İstemci kimliği (client_id)</label><input type="text" id="app-id" placeholder="dns-fitfak-net">') +
-      '<label>Yönlendirme adresleri (her satıra bir tane)</label>' +
-      '<textarea id="app-redirects" placeholder="https://fitfak.net/oauth/callback">' + esc((isEdit ? existing.redirectUris : []).join('\n')) + '</textarea>' +
-      '<div class="field-hint">OAuth2 geri dönüş adresleri. Tam eşleşme aranır.</div>' +
+      // Adresler düzenleme ekranında YOK ve olmaması bilinçli: tek bir PATCH ile
+      // listeyi toptan değiştirmek, yanlışlıkla boş bir dizi gönderen bir isteğin
+      // bir uygulamanın girişini tamamen kapatması demekti. Tek tek yönetiliyorlar.
+      (isEdit
+        ? '<div class="field-hint" style="margin:15px 0 0">Yönlendirme adresleri ayrı bir ekrandan, tek tek yönetilir.</div>'
+        : '<label>Yönlendirme adresleri (her satıra bir tane)</label>'
+          + '<textarea id="app-redirects" placeholder="https://dns.fitfak.net/callback"></textarea>'
+          + '<div class="field-hint">Gerçek geri dönüş adresiniz. <code>example.com</code> gibi yer '
+          + 'tutucular reddedilir — kayıtlı kalırsa bu uygulamanın yetkilendirme kodları, sahibi siz '
+          + 'olmayan bir adrese gönderilir.</div>') +
       '<label>İzin kapsamları (scope)</label>' + scopeCheckboxes(isEdit ? existing.allowedScopes : ['openid', 'profile']);
 
     openModal(isEdit ? ('Uygulamayı düzenle — ' + existing.name) : 'Yeni uygulama kaydet', html, function () {
-      var redirects = $('app-redirects').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
-      var payload = { name: $('app-name').value.trim(), redirectUris: redirects, allowedScopes: readScopes() };
+      var payload = { name: $('app-name').value.trim(), allowedScopes: readScopes() };
+
       if (isEdit) {
         payload.clientId = existing.clientId;
         return post('/admin/oauth-clients/update', payload).then(function () { showOk('Uygulama güncellendi.'); return loadApps(); });
       }
+
       payload.clientId = $('app-id').value.trim();
+      payload.redirectUris = $('app-redirects').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+
       return post('/admin/oauth-clients', payload).then(function (created) {
-        return loadApps().then(function () {
-          openModal('Uygulama oluşturuldu',
-            '<p>İstemci gizli anahtarı <strong>yalnızca şimdi</strong> gösterilir. Kaydedin — bir daha görüntülenemez.</p>'
-            + '<div class="secret-reveal"><span class="label">client_id</span>' + esc(created.clientId) + '</div>'
-            + '<div class="secret-reveal"><span class="label">client_secret</span>' + esc(created.clientSecret) + '</div>', null);
-        });
+        loadApps(); // listeyi arkadan sessizce güncelle
+        var handles = (created.redirects || []).map(function (r) {
+          return '<div class="secret-reveal"><span class="label">ru (' + esc(r.redirectUri) + ')</span>' + esc(r.handle) + '</div>';
+        }).join('');
+        openModal('Uygulama oluşturuldu',
+          '<p>İstemci gizli anahtarı <strong>yalnızca şimdi</strong> gösterilir. Kaydedin — bir daha görüntülenemez.</p>'
+          + '<div class="secret-reveal"><span class="label">client_id</span>' + esc(created.clientId) + '</div>'
+          + '<div class="secret-reveal"><span class="label">client_secret</span>' + esc(created.clientSecret) + '</div>'
+          + handles
+          + '<p class="field-hint">Yetkilendirme isteğinde <span class="mono">ru=&lt;tutamak&gt;</span> '
+          + 'kullanabilirsiniz. <span class="mono">redirect_uri</span> da kabul edilir (RFC 6749 onu '
+          + 'ister) ama tutamakla gelen bir istekte adres hiçbir yerde metin olarak görünmez.</p>', null);
+        return 'KEEP_OPEN';
       });
     }, isEdit ? 'Güncelle' : 'Oluştur');
   }
+
+  // ---------- YÖNLENDİRME ADRESLERİ ----------
+  function openRedirectModal(client) {
+    get('/admin/oauth-clients/redirects?clientId=' + encodeURIComponent(client.clientId))
+      .then(function (data) { renderRedirectModal(client, data.redirects || []); })
+      .catch(function (e) { showErr(e.message); });
+  }
+
+  function renderRedirectModal(client, redirects) {
+    var rows = redirects.length
+      ? redirects.map(function (r) {
+        return '<div class="secret-reveal" style="margin-bottom:8px">'
+          + '<span class="label">' + esc(r.redirectUri) + '</span>ru=' + esc(r.handle)
+          + '<div style="font-size:11px;opacity:.7;margin-top:6px">son kullanım: '
+          + (r.lastUsedAt ? fmtDate(r.lastUsedAt) : 'hiç') + '</div></div>'
+          + '<button class="btn btn-sm btn-danger" data-remove="' + esc(r.handle) + '" style="margin:-4px 0 14px">Kaldır</button>';
+      }).join('')
+      : '<p class="field-hint">Bu uygulamanın kayıtlı adresi yok — yetkilendirme kodu alamaz.</p>';
+
+    openModal('Yönlendirme adresleri — ' + client.name,
+      rows
+      + '<label>Yeni adres ekle</label>'
+      + '<input type="text" id="new-redirect" placeholder="https://dns.fitfak.net/callback">'
+      + '<div class="field-hint">https zorunlu (yerel geliştirme adresleri hariç). Joker karakter, '
+      + 'parça (#) ve kullanıcı bilgisi kabul edilmez — <span class="mono">https://kurban.com@saldirgan.com/</span> '
+      + 'bir insana kurban.com gibi görünür ve tarayıcı saldirgan.com\'a gider.</div>',
+      function () {
+        var uri = $('new-redirect').value.trim();
+        if (!uri) return Promise.resolve();
+        return post('/admin/oauth-clients/redirects', { clientId: client.clientId, redirectUri: uri })
+          .then(function () {
+            showOk('Adres eklendi.');
+            loadApps();
+            // Listeyi tazelemek için ekranı yeniden çiziyoruz; KEEP_OPEN olmadan
+            // modal-save bunu hemen kapatırdı.
+            openRedirectModal(client);
+            return 'KEEP_OPEN';
+          });
+      }, 'Ekle');
+
+    // Kaldırma düğmeleri modal gövdesi yazıldıktan SONRA bağlanıyor: innerHTML ile
+    // yazılan bir düğmeye önceden dinleyici bağlanamaz.
+    $('modal-body').querySelectorAll('[data-remove]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        post('/admin/oauth-clients/redirects/remove', { clientId: client.clientId, handle: btn.dataset.remove })
+          .then(function () { showOk('Adres kaldırıldı.'); loadApps(); openRedirectModal(client); })
+          .catch(function (e) { showErr(e.message); });
+      });
+    });
+  }
+  
   $('btn-new-app').addEventListener('click', function () { openAppModal(null); });
 
   async function loadApps() {
@@ -680,28 +882,237 @@
       '<div class="stat"><div class="stat-label">Sertifikalar</div><div class="stat-value">' + validCerts + '</div>'
         + '<div class="stat-note">' + revokedCerts + ' iptal edilmiş</div></div>' +
       '<div class="stat"><div class="stat-label">ACME siparişleri</div><div class="stat-value">' + state.orders.length + '</div>'
-        + '<div class="stat-note">' + state.acmeAccounts.length + ' hesap</div></div>';
+        + '<div class="stat-note">' + state.acmeAccounts.length + ' hesap</div></div>' +
+      // Kısa ömürlü kimlikler AYRI sayılıyor: uzun ömürlü sertifikalarla aynı kutuya
+      // koymak, dakikada bir yenilenen bir filonun sayısının diğerini tamamen
+      // gizlemesi demek olurdu.
+      '<div class="stat"><div class="stat-label">Kısa ömürlü kimlik</div><div class="stat-value">'
+        + (state.identity ? state.identity.distinctIdentities : '—') + '</div>'
+        + '<div class="stat-note">' + (state.identity ? state.identity.live + ' canlı sertifika' : '') + '</div></div>' +
+      '<div class="stat"><div class="stat-label">Otoriteler</div><div class="stat-value">' + state.authorities.length + '</div>'
+        + '<div class="stat-note">' + state.authorities.filter(function (a) { return a.role === 'root'; }).length
+        + ' kök · şifreli kasada</div></div>';
 
     $('endpoints-body').innerHTML =
       '<tr><td class="cell-strong">Kimlik / SSO</td><td class="mono">session.fitfak.net</td><td class="mono cell-sub">/oauth/authorize · /oauth/token · /.well-known/jwks.json</td></tr>' +
-      '<tr><td class="cell-strong">Cihaz kodu</td><td class="mono">session.fitfak.net</td><td class="mono cell-sub">/oauth/device/code · /device</td></tr>' +
+      '<tr><td class="cell-strong">Cihaz kodu</td><td class="mono">session.fitfak.net</td><td class="mono cell-sub">/oauth/device/code · /device/link/&lt;tutamak&gt;</td></tr>' +
+      '<tr><td class="cell-strong">Kısa ömürlü kimlik</td><td class="mono">trust.fitfak.net</td><td class="mono cell-sub">/identity/session/certificate · /identity/workload/certificate · /identity/device/certificate</td></tr>' +
+      '<tr><td class="cell-strong">Kayıt otoritesi (RA)</td><td class="mono">trust.fitfak.net</td><td class="mono cell-sub">/pki/ra/issue · /pki/ra/anchors</td></tr>' +
       '<tr><td class="cell-strong">ACME</td><td class="mono">trust.fitfak.net</td><td class="mono cell-sub">/acme/directory</td></tr>' +
       '<tr><td class="cell-strong">OCSP</td><td class="mono">status.trust.fitfak.net</td><td class="mono cell-sub">/ocsp</td></tr>' +
       '<tr><td class="cell-strong">CRL</td><td class="mono">status.trust.fitfak.net</td><td class="mono cell-sub">/crl</td></tr>';
   }
 
+  // ---------- KISA ÖMÜRLÜ KİMLİKLER ----------
+  function fmtRemaining(notAfter) {
+    var s = Math.floor((Number(notAfter) - Date.now()) / 1000);
+    if (s <= 0) return '<span class="badge badge-bad">doldu</span>';
+    if (s < 60) return '<span class="badge badge-warn">' + s + ' sn</span>';
+    if (s < 300) return '<span class="badge badge-warn">' + Math.floor(s / 60) + ' dk</span>';
+    if (s < 3600) return '<span class="badge badge-ok">' + Math.floor(s / 60) + ' dk</span>';
+    return '<span class="badge badge-ok">' + Math.floor(s / 3600) + ' sa</span>';
+  }
+  function fmtSeconds(s) {
+    if (s < 60) return s + ' sn';
+    if (s < 3600) return (s / 60) + ' dk';
+    return (s / 3600) + ' sa';
+  }
+
+  async function loadIdentity() {
+    try {
+      var d = await get('/admin/identity/stats');
+      state.identity = d;
+
+      $('identity-stats').innerHTML =
+        '<div class="stat"><div class="stat-label">Canlı sertifika</div><div class="stat-value">' + d.live + '</div>'
+          + '<div class="stat-note">' + d.distinctIdentities + ' farklı kimlik</div></div>' +
+        '<div class="stat"><div class="stat-label">Son bir saat</div><div class="stat-value">' + d.issuedLastHour + '</div>'
+          + '<div class="stat-note">üretilen sertifika</div></div>' +
+        '<div class="stat"><div class="stat-label">2 dk içinde dolacak</div><div class="stat-value">' + d.expiringSoon + '</div>'
+          + '<div class="stat-note">yenilenmesi beklenenler</div></div>' +
+        '<div class="stat"><div class="stat-label">Güven alanı</div><div class="stat-value" style="font-size:14px;padding-top:8px">'
+          + esc(d.trustDomain) + '</div><div class="stat-note">' + d.expired + ' süresi dolmuş kayıt</div></div>';
+
+      // Bu ekranın en yararlı satırı: yenilemesi duran bir iş yükü burada birikir ve
+      // başka hiçbir yerde hata vermez -- sertifikası dolana kadar çalışmaya devam
+      // eder, sonra anlaşılması zor bir TLS hatasıyla düşer.
+      $('identity-explainer').innerHTML = d.expiringSoon > 0
+        ? '<strong>' + d.expiringSoon + ' sertifikanın süresi iki dakika içinde doluyor.</strong> '
+          + 'Bu normaldir: her kimlik ömrünün yarısında yenilenir, yani her an bir kısmı '
+          + 'yenilenme penceresindedir. Anormal olan, bu sayının aynı kimlikler için '
+          + 'sürekli yüksek kalmasıdır — o zaman yenileme başarısız oluyor demektir ve '
+          + 'ilgili servisin logları bakılacak yerdir.'
+        : '<strong>İptal listesi burada boş olmalı ve boş.</strong> Kısa ömürlü bir kimlik, bir '
+          + 'iptalin yayılmasından daha hızlı geçersizleşir; yetki geri alındığında yapılacak şey '
+          + 'iptal etmek değil, yenilememektir — ve bu dakikalar içinde etkilidir.';
+
+      $('identity-count').textContent = d.identities.length;
+      var tb = $('identity-body');
+      if (!d.identities.length) {
+        tb.innerHTML = '<tr><td colspan="4" class="empty">Şu anda canlı kısa ömürlü kimlik yok.</td></tr>';
+      } else {
+        tb.innerHTML = '';
+        d.identities.forEach(function (i) {
+          tb.innerHTML += '<tr><td class="mono cell-sub">' + esc(i.spiffeId) + '</td>'
+            + '<td><span class="scope-chip">' + esc(i.profile) + '</span></td>'
+            + '<td><span class="badge badge-neutral">' + esc(i.issuedVia) + '</span></td>'
+            + '<td>' + fmtRemaining(i.notAfter) + '</td></tr>';
+        });
+      }
+
+      var pb = $('profiles-body');
+      pb.innerHTML = '';
+      (d.profiles || []).forEach(function (p) {
+        pb.innerHTML += '<tr><td class="cell-strong">' + esc(p.name) + '</td>'
+          + '<td>' + fmtSeconds(p.seconds) + '</td>'
+          + '<td><span class="scope-chip">' + esc(p.purpose) + '</span></td>'
+          + '<td class="num">' + (d.byProfile[p.name] || 0) + '</td></tr>';
+      });
+
+      var wb = $('workloads-body');
+      wb.innerHTML = '';
+      if (!(d.workloads || []).length) {
+        wb.innerHTML = '<tr><td colspan="3" class="empty">Kayıtlı iş yükü yok.</td></tr>';
+      } else {
+        d.workloads.forEach(function (w) {
+          wb.innerHTML += '<tr><td class="cell-strong">' + esc(w.name) + '</td>'
+            + '<td><span class="scope-chip">' + esc(w.requiredScope || '—') + '</span></td>'
+            + '<td>' + esc(w.profile) + '</td></tr>';
+        });
+      }
+    } catch (e) { showErr(e.message); }
+  }
+
+  $('btn-refresh-identity').addEventListener('click', function () { clearBanners(); loadIdentity(); });
+  $('btn-sweep').addEventListener('click', function () {
+    post('/admin/identity/sweep', {})
+      .then(function (r) { showOk(r.swept + ' kayıt temizlendi.'); return loadIdentity(); })
+      .catch(function (e) { showErr(e.message); });
+  });
+
+  // ---------- OTORİTELER ----------
+  async function loadAuthorities() {
+    try {
+      var d = await get('/admin/pki/authorities');
+      state.authorities = d.authorities || [];
+      state.purposes = d.purposes || [];
+      $('authority-count').textContent = state.authorities.length;
+
+      var tb = $('authorities-body');
+      if (!state.authorities.length) {
+        tb.innerHTML = '<tr><td colspan="6" class="empty">Otorite yok.</td></tr>';
+        return;
+      }
+      tb.innerHTML = '';
+      state.authorities.forEach(function (a) {
+        var tr = document.createElement('tr');
+        var role = a.role === 'root'
+          ? '<span class="badge badge-dark">kök</span>'
+          : '<span class="badge badge-neutral">ara</span>';
+        var status = a.state === 'active' ? '<span class="badge badge-ok">etkin</span>'
+          : a.state === 'compromised' ? '<span class="badge badge-bad">ele geçirildi</span>'
+          : '<span class="badge badge-warn">' + esc(a.state) + '</span>';
+        var purposes = (a.purposes || []).length
+          ? a.purposes.map(function (p) { return '<span class="scope-chip">' + esc(p) + '</span>'; }).join('')
+          // Amacı olmayan bir ara CA hâlâ zincirde durur (eski sertifikalar doğrulanabilir
+          // kalsın diye) ama yeni hiçbir talep ona gitmez.
+          : '<span class="cell-sub">amaç atanmamış — yeni talep almaz</span>';
+
+        tr.innerHTML =
+          '<td><div class="cell-strong">' + esc(a.name) + '</div>'
+            + '<div class="cell-sub">' + esc(a.subject) + '</div>'
+            + '<div class="cell-sub mono">' + esc(a.fingerprint || '') + '</div></td>' +
+          '<td>' + role + (a.parent ? '<div class="cell-sub">üst: ' + esc(a.parent) + '</div>' : '') + '</td>' +
+          '<td>' + purposes + '</td>' +
+          '<td><div class="cell-sub">' + fmtDate(a.notBefore) + '</div><div class="cell-sub">→ ' + fmtDate(a.notAfter) + '</div></td>' +
+          '<td>' + status + '</td>' +
+          '<td><div class="btn-row"></div></td>';
+
+        if (a.role !== 'root' && a.state === 'active') {
+          var btn = document.createElement('button');
+          btn.className = 'btn btn-sm btn-danger';
+          btn.textContent = 'Ele geçirildi işaretle';
+          btn.addEventListener('click', function () { markCompromised(a); });
+          tr.querySelector('.btn-row').appendChild(btn);
+        }
+        tb.appendChild(tr);
+      });
+    } catch (e) { showErr(e.message); }
+  }
+
+  function markCompromised(a) {
+    openModal('Otoriteyi ele geçirilmiş işaretle — ' + a.name,
+      '<p>“' + esc(a.name) + '” bir daha hiçbir şey imzalayamayacak ve amaçları için '
+      + '<strong>seçilemez</strong> hâle gelecek. Bu amaçlarda sertifika talep eden her şey, '
+      + 'yerine yeni bir ara CA üretilene kadar hata alır.</p>'
+      + '<p class="field-hint">Bu işlem <strong>yerel yarımdır</strong>: üst CA\'da bir iptal '
+      + 'yayınlamaz ve altında verilmiş sertifikaları geçersiz kılmaz. Onlar üst otoritenin ve '
+      + 'doğrulayan tarafların işidir. Buna “iptal” demek, yaptığından fazlasını iddia etmek olurdu.</p>'
+      + '<label>Sebep</label><input type="text" id="compromise-reason" placeholder="anahtar bir yedekte açıkta kaldı">',
+      function () {
+        return post('/admin/pki/authorities/compromise', {
+          name: a.name, reason: $('compromise-reason').value.trim(),
+        }).then(function () { showOk('İşaretlendi.'); return loadAuthorities(); });
+      }, 'İşaretle');
+  }
+
+  $('btn-new-authority').addEventListener('click', function () {
+    var purposeChecks = (state.purposes || []).map(function (p) {
+      return '<div class="check-row"><input type="checkbox" id="pp-' + p.replace(/[^a-z]/g, '') + '" value="' + p + '">'
+        + '<label for="pp-' + p.replace(/[^a-z]/g, '') + '">' + p + '</label></div>';
+    }).join('');
+
+    openModal('Ara CA üret',
+      '<label>Ad</label><input type="text" id="auth-name" placeholder="partner-ca">'
+      + '<div class="field-hint">Kasadaki kayıt adı. Küçük harf ve tire.</div>'
+      + '<label>Konu (CN)</label><input type="text" id="auth-cn" placeholder="FITFAK Partner Federation CA G1">'
+      + '<label>Amaçlar</label>' + purposeChecks
+      + '<div class="field-hint">Her amaç için <strong>tam olarak bir</strong> etkin ara CA olmalı. '
+      + 'Halihazırda bir amacı olan ikinci bir CA üretirseniz, o amaç için talepler belirsizleşir ve '
+      + 'sunucu bir tanesini seçmek yerine hata verir — önce eskisini emekliye ayırın.</div>'
+      + '<div class="field-hint" style="margin-top:12px">Bu işlem <strong>kök anahtarı kullanır</strong>: '
+      + 'kasadan çözülür, imzalar, ve hemen ardından bellekten düşürülür. Kökün başka hiçbir işi yoktur.</div>',
+      function () {
+        var purposes = (state.purposes || []).filter(function (p) {
+          return $('pp-' + p.replace(/[^a-z]/g, '')).checked;
+        });
+        return post('/admin/pki/authorities', {
+          name: $('auth-name').value.trim(),
+          commonName: $('auth-cn').value.trim(),
+          purposes: purposes,
+        }).then(function () { showOk('Ara CA üretildi.'); return loadAuthorities(); });
+      }, 'Üret');
+  });
+
   // ---------- başlangıç ----------
   async function loadAll() {
-    await Promise.all([loadUsers(), loadApps(), loadCerts(), loadAcme()]);
+    await Promise.all([loadUsers(), loadApps(), loadCerts(), loadAcme(), loadIdentity(), loadAuthorities()]);
   }
   $('btn-refresh-all').addEventListener('click', function () {
     clearBanners();
     loadAll().then(function () { showOk('Yenilendi.'); });
   });
 
-  get('/oauth/userinfo').then(function (me) {
-    $('whoami').innerHTML = 'Oturum: <strong style="color:#fff">' + esc(me.preferred_username || me.sub) + '</strong>';
-  }).catch(function () { $('whoami').textContent = 'Oturum bilgisi alınamadı'; });
+
+  // YENİ PROFİL API KULLANIMI: Avatar ve profil verisini session üzerinden almak
+  get('https://session.fitfak.net/api/profile')
+    .then(function (me) {
+      $('whoami-name').textContent = me.displayName || me.username || 'Yönetici';
+      $('whoami-email').textContent = me.email || '—';
+      if (me.avatarUrl) {
+        // HATA ÇÖZÜMÜ: Eğer gelen avatar linki '/' ile başlıyorsa,
+        // onu zorla session.fitfak.net adresine yönlendiriyoruz.
+        var finalAvatarUrl = me.avatarUrl.startsWith('/') 
+          ? 'https://session.fitfak.net' + me.avatarUrl 
+          : me.avatarUrl;
+          
+        $('whoami-avatar').src = finalAvatarUrl;
+      }
+    })
+    .catch(function () { 
+      $('whoami-name').textContent = 'Bağlantı hatası';
+      $('whoami-email').textContent = 'Profil bilgisi alınamadı';
+    });
 
   loadAll();
 }());

@@ -1444,6 +1444,35 @@ async function main() {
     sendJson(res, 200, await clientStore.removeRedirectUri(body.clientId, body.handle));
   }), ADMIN_IP);
 
+  // ---- kısa ömürlü kimlikler: istatistik --------------------------------------
+  server.addHttpHandler({ method: 'GET', path: '/admin/identity/stats' }, wrapHandler(async (req, res) => {
+    await requireAdmin(req);
+    const stats = await workloadIdentityService.statistics({ db });
+    sendJson(res, 200, {
+      ...stats,
+      trustDomain: config.trustDomain,
+      // Panel bu profillerin ne kadar yaşadığını gösterebilsin: "5 dakika" ile
+      // "1 saat" arasındaki fark, bir sayının anlamını tamamen değiştirir.
+      profiles: Object.entries(require('./core/certificate-profiles').PROFILE_MAP)
+        .filter(([, mapping]) => mapping.shortLived)
+        .map(([name, mapping]) => ({
+          name, seconds: mapping.seconds, purpose: mapping.purpose,
+          requiresSpiffeId: !!mapping.requiresSpiffeId,
+        })),
+      workloads: Object.entries(WORKLOAD_REGISTRY).map(([name, entry]) => ({
+        name, requiredScope: entry.requiredScope, profile: entry.profile || 'workload',
+      })),
+    });
+  }), ADMIN_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/admin/identity/sweep' }, wrapHandler(async (req, res) => {
+    await requireAdmin(req);
+    // Süpürme normalde üretim sırasında fırsatçı olarak çalışır. Elle tetiklemek,
+    // üretimin durduğu bir sistemde tablonun temizlenmesi için var: hiç sertifika
+    // üretilmiyorsa süpürmeyi tetikleyecek bir şey de yoktur.
+    sendJson(res, 200, await workloadIdentityService.sweepExpired(db, { force: true }));
+  }), ADMIN_IP);
+
   // ---- PKI: kök ve ara CA yönetimi -------------------------------------------
   //
   // Kök yalnızca ara CA imzalar; her AMAÇ için ayrı bir ara CA vardır. Gerekçe
