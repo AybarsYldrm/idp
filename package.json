@@ -24,7 +24,10 @@
     "test:consent": "node test/consent-demo.js",
     "test:cookies": "node test/cookie-consent-demo.js",
     "test:hardening": "node test/hardening-demo.js",
-    "test:db": "node test/db-integration-demo.js"
+    "test:db": "node test/db-integration-demo.js",
+    "test:redirects": "node test/oauth-redirect-demo.js",
+    "test:workload": "node test/workload-identity-demo.js",
+    "test:zero-trust": "npm run test:redirects && npm run test:workload"
   },
   "notes": {
     "neden-sifir-bagimlilik": "WebAuthn/FIDO2, TOTP (RFC 6238), ES256 JWT, CBOR, base32/base64url, ve gRPC-Web tarzı çerçeveleme dahil HER ŞEY node:crypto ve diğer Node.js yerleşikleri üzerine sıfırdan yazıldı -- talep edilen kısıtlamaya uygun olarak harici kütüphane YOK.",

@@ -124,8 +124,8 @@ async function main() {
     console.log('SKIP - iptal zinciri: openssl bulunamadi');
     process.exit(0);
   }
-  const db = createMockDb(['certificates']);
-  const issuer = new ProductionPkiIssuer(dir);
+  const db = createMockDb(['certificates', 'secrets']);
+  const issuer = await ProductionPkiIssuer.open({ db, caDir: dir, logger: null });
 
   const cacheStore = {
     _m: new Map(),
@@ -144,8 +144,11 @@ async function main() {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
 
+  // OCSP isteği yayıncının adı ve anahtar özeti üzerine kurulur; kasadan tam
+  // imzalayıcıyı almak, bu alanların sertifikanın kendisinden gelmesini garanti eder.
+  const subCaSigner = await issuer.vault.loadSigner(issuer.subCA.name);
   const ocspFor = async (serialHex) => {
-    const { der } = pki.buildOcspRequest(issuer.subCA, BigInt(`0x${serialHex}`), { nonce: true });
+    const { der } = pki.buildOcspRequest(subCaSigner, BigInt(`0x${serialHex}`), { nonce: true });
     const res = await post(port, '/ocsp', der);
     return readOcspStatus(res.body, dir);
   };

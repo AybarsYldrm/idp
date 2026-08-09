@@ -13,31 +13,47 @@ const crypto = require('node:crypto');
 //   veritabanı -> IdP    : "bu bağlanan kim ve ne yapmaya yetkili" sorusunu ona sorar
 //
 // Bu döngü kendiliğinden kırılmaz. Kırılması için zincirin bir ucunun, karşı
-// tarafa hiç soru sormadan doğrulanabilir olması gerekir -- ilk çalıştırmada
-// bunu yapan şey sunucunun TLS sertifikasıdır (server.crt/key) ve IdP'ye elden
-// verilmiş tek kullanımlık bir enrolment sırrıdır.
+// tarafa hiç soru sormadan var olabilmesi gerekir. O uç IdP'nin SERTİFİKA
+// OTORİTESİDİR ve bu yüzden YEREL bir depoda durur.
 //
-// Sıra şudur ve her adım bir öncekinin kanıtına dayanır:
 //
-//   0. soğuk açılış     veritabanı sunucusunun bir TLS kimliği vardır (kendi
-//                       CA'sından ya da elle sağlanmış server.crt/key). IdP'nin
-//                       hiçbir şeyi yoktur.
-//   1. bootstrap TLS    SADECE sunucu kimliğini kanıtlar. IdP sunucuyu pinlenmiş
-//                       CA parmak iziyle doğrular. Bu kanal üzerinde yalnızca
-//                       EnrollmentService erişilebilir.
-//   2. güven çıpaları   IdP CA bundle'ını çeker. Bunlar açık veridir; istek
-//                       hiçbir sır taşımaz.
-//   3. enrolment        IdP, paylaşılan sırla HMAC üretir (TLS oturumuna ve CSR'ye
-//                       bağlı), CSR'sini yollar, sertifikasını alır.
-//   4. mTLS'e yükselme  aynı hedefe, artık karşılıklı kimlik doğrulamalı.
-//   5. kararlı durum    veri düzlemi yalnızca mTLS. Paylaşılan sır TÜKENMİŞTİR.
-//   6. yenileme         mTLS üzerinden, süre dolmadan. Sır bir daha kullanılmaz.
+// NEDEN CA UZAK VERİTABANINDA DEĞİL
 //
-// Adım 5'ten sonra döngü artık yoktur: IdP ayaktadır, dolayısıyla veritabanı
-// SONRAKİ her servis için kimlik sorusunu IdP'ye sorabilir (bkz.
-// createIdpTokenAttestor). Paylaşılan sır yalnızca ilk halkayı kurmak içindir
-// ve bu yüzden tek kullanımlıktır -- kalıcı olsaydı kimlik sisteminin yanında
-// duran kalıcı bir arka kapı olurdu.
+// Kök ve ara CA'lar `secrets` koleksiyonunda, diskte şifreli olarak duruyor --
+// dosyada değil (gerekçe core/ca-vault.js'in başında). Ama o koleksiyon UZAK
+// veritabanında olamaz, ve sebebi bir tercih değil bir kilitlenme:
+//
+//   veritabanı mühürlü açılır ve IdP ona bir sunucu sertifikası verene kadar
+//   kimseye hizmet etmez  ->  IdP o sertifikayı üretmek için CA'sına ihtiyaç
+//   duyar  ->  CA uzak veritabanındaysa IdP oraya bağlanmak zorundadır  ->
+//   ama orası mühürlü.
+//
+// Her veritabanı yeniden başlatmasında bu kilit yeniden kurulurdu. O yüzden CA,
+// IdP'nin YANINDA duran gömülü bir fitdb örneğindedir: aynı şifreleme, aynı
+// sürümleme, aynı erişim yolu -- ama ağ yok, dolayısıyla bağımlılık yok.
+// Uygulama verisi (kullanıcılar, oturumlar, sertifika kayıtları) uzak
+// veritabanında kalır; orası zaten IdP ayağa kalktıktan sonra erişilir.
+//
+//
+// SIRA
+//
+//   0. yerel CA deposu   IdP kök ve ara CA'larını açar. Ağ yok, kimseye soru yok.
+//   1. sunucu kimliği    IdP, VERİTABANI İÇİN bir TLS sunucu sertifikası üretir.
+//                        Kendi kimliği için de bir istemci sertifikası üretir --
+//                        CA kendisi olduğu için enrolment'a gerek yok.
+//   2. denetim düzlemi   Mühürlü veritabanına bağlanır. İki taraf da paylaşılan
+//                        denetim sırrıyla kendini kanıtlar (ÇİFT YÖNLÜ: aksi
+//                        halde araya giren biri, IdP'nin ürettiği ÖZEL ANAHTARI
+//                        teslim alır). Sertifika + anahtar + güven çıpaları
+//                        kurulur. Veritabanı artık PROVISIONED ama hâlâ kapalı.
+//   3. mTLS              IdP kendi istemci sertifikasıyla geri bağlanır.
+//                        Veritabanı bunu görünce AÇILIR.
+//   4. kararlı durum     Diğer servisler enrolment ile girer; veritabanı onların
+//                        sertifikalarını IdP'nin /pki/ra/issue ucundan ister.
+//                        Kendisi hiçbir şey imzalamaz.
+//
+// Adım 2 ile 3 arasında bir SÜRE SINIRI vardır (veritabanı tarafında hold
+// timer). IdP orada takılırsa veritabanı malzemeyi siler ve yeniden mühürlenir.
 
 const IDENTITY_FILE = 'identity.json';
 // Veritabanı tutamağı: dbId + istemci sırrı. Sır sunucuda SAKLANMAZ (yalnızca
@@ -105,11 +121,161 @@ async function loadStoredDbHandle(dir) {
 }
 
 /**
- * Veritabanına bağlanır; gerekiyorsa önce enrolment yaparak mTLS kimliği edinir.
+ * IdP'nin sertifika otoritesinin durduğu YEREL gömülü veritabanı.
+ *
+ * Ayrı bir örnek, uygulama verisinden ayrı bir dizin ve ayrı bir yaşam döngüsü.
+ * Dosya başındaki nota bakın: uzak veritabanına koymak, veritabanının her
+ * yeniden başlatmasında çözülemeyen bir kilit yaratır.
+ *
+ * Şifreleme uygulama veritabanıyla AYNI kök sırdan türetiliyor. Ayrı bir sır
+ * daha iyi bir yalıtım sağlardı, ama işletme maliyeti de iki katına çıkardı --
+ * ve ikisini de kaybetmek aynı sonucu verdiği için kazanç sanıldığı kadar
+ * büyük değil.
+ */
+async function openCaStore({ config, logger = null }) {
+  const {
+    DatabaseManager, ClientSecretKeyProvider, SnowflakeGenerator,
+  } = require('@fitfak/database');
+
+  const baseDir = config.caStoreDir;
+  await fsp.mkdir(baseDir, { recursive: true, mode: 0o700 });
+
+  const manager = new DatabaseManager({
+    baseDir,
+    snowflake: new SnowflakeGenerator({
+      workerId: Number(process.env.FITFAK_IDP_SNOWFLAKE_WORKER_ID || 1),
+    }),
+  });
+  const keyProvider = new ClientSecretKeyProvider(config.db.rootSecret);
+
+  const idFile = path.join(baseDir, 'ca-store-db-id.txt');
+  const existingId = fs.existsSync(idFile) ? fs.readFileSync(idFile, 'utf8').trim() : null;
+
+  if (existingId) {
+    const db = await manager.openDatabase({
+      ownerId: 'fitfak-idp-ca', dbId: existingId, requesterId: 'fitfak-idp-ca', keyProvider,
+    });
+    return { db, manager, created: false };
+  }
+
+  const created = await manager.createDatabase({ ownerId: 'fitfak-idp-ca', name: 'ca', keyProvider });
+  // Kimlik ÖNCE yazılıyor: aradaki bir çökme, bir daha açılamayan bir CA deposu
+  // bırakırdı ve o depoda kök anahtar var.
+  await fsp.writeFile(idFile, created.dbId, { mode: 0o600 });
+  log(logger, 'warn', `[bootstrap] Yeni CA deposu oluşturuldu: ${baseDir} (dbId=${created.dbId})`);
+  return { db: created.db, manager, created: true };
+}
+
+/**
+ * Mühürlü veritabanına sunucu kimliğini kurar ve IdP'nin kendi istemci
+ * sertifikasını üretir.
+ *
+ * İkisi de IdP'nin KENDİ kökünden çıkar ve ikisi de her açılışta yeniden
+ * üretilir. Veritabanının sunucu anahtarı hiçbir yerde diske yazılmaz -- ne
+ * veritabanında, ne burada. Yeniden başlatma, bir dakikalık bir devirle
+ * çözülür; bir dosyada duran anahtar ise kalıcı bir sorumluluktur.
+ *
+ * @returns {{ clientCertPem, clientKeyPem, chainPem, spiffeId }}
+ */
+async function provisionDatabase({ config, pkiIssuer, logger = null }) {
+  const { provisionServerIdentity, createFitfakSslCsrProvider } = require('@fitfak/database');
+  const spiffe = require('./spiffe');
+  const dbCfg = config.db;
+
+  const csrProvider = createFitfakSslCsrProvider();
+  const anchors = await pkiIssuer.getTrustAnchorsPem();
+
+  // ---- 1. veritabanının sunucu sertifikası --------------------------------------------
+  const serverNames = dbCfg.serverNames;
+  const serverKey = await csrProvider.generateKeyPair();
+  const serverCsr = await csrProvider.createCsr({
+    keyPair: serverKey,
+    subject: { CN: serverNames[0] },
+    altNames: serverNames,
+  });
+  const serverCert = await pkiIssuer.signCertificateFromCsr({
+    csrPem: serverCsr,
+    profile: 'server-auth',
+    subjectOverride: { cn: serverNames[0], sans: serverNames.map((value) => ({ type: inferSanType(value), value })) },
+  });
+
+  // ---- 2. IdP'nin kendi istemci sertifikası --------------------------------------------
+  //
+  // Enrolment YOK. Enrolment, CA'ya erişimi olmayan bir servisin sertifika alma
+  // yoludur; IdP'nin CA'ya erişimi var, çünkü CA odur. Kendine enrolment
+  // yaptırmak, ürettiği sertifikayı kendisinden istemek olurdu.
+  const idpSpiffeId = spiffe.identities.service('idp');
+  const clientKey = await csrProvider.generateKeyPair();
+  const clientCsr = await csrProvider.createCsr({
+    keyPair: clientKey,
+    subject: { CN: dbCfg.serviceName },
+    altNames: [idpSpiffeId.uri, dbCfg.serviceName],
+  });
+  const clientCert = await pkiIssuer.signCertificateFromCsr({
+    csrPem: clientCsr,
+    profile: 'service-identity',
+    subjectOverride: { cn: dbCfg.serviceName },
+    spiffeId: idpSpiffeId.uri,
+    // Servis kimliği saatlerle ölçülür, dakikalarla değil: IdP kendi
+    // sertifikasını yenilerken bir hata olursa geri dönmek için zamana ihtiyacı
+    // var, ve beş dakika tek bir yavaş adımı kesintiye çevirir.
+    validitySeconds: dbCfg.identityValiditySeconds,
+  });
+
+  // ---- 3. devir ------------------------------------------------------------------------
+  const result = await provisionServerIdentity({
+    target: dbCfg.remoteTarget,
+    bootstrapSecret: dbCfg.controlSecret,
+    serverIdentity: {
+      certPem: serverCert.leafPem,
+      privateKeyPem: serverKey.privateKeyPem,
+      chainPem: splitPemChain(serverCert.chainPem),
+    },
+    // Veritabanı bundan sonra İSTEMCİ sertifikalarını bunlarla doğrulayacak.
+    // Yerel yapılandırmadan değil buradan gelmesi kasıtlı: "kimin
+    // sertifikalarına inanıyorum" ile "kimlik sağlayıcım kim" aynı sorudur ve
+    // tek bir cevabı olmalıdır.
+    trustAnchorsPem: anchors,
+    controlSpiffeId: idpSpiffeId.uri,
+    pinnedFingerprints: dbCfg.bootstrapFingerprints,
+    logger: { info: (m) => log(logger, 'info', `[bootstrap] ${m}`) },
+  });
+
+  if (result.alreadyOpen) {
+    log(logger, 'info', '[bootstrap] Veritabanı zaten açık; sunucu kimliği yeniden kurulmadı.');
+  } else {
+    log(logger, 'info',
+      `[bootstrap] Veritabanının sunucu kimliği kuruldu. Veritabanı ${new Date(result.holdExpiresAt).toISOString()} `
+      + 'tarihine kadar bekliyor; mTLS bağlantısı tamamlanmazsa kendini yeniden mühürleyecek.');
+  }
+
+  return {
+    clientCertPem: clientCert.leafPem,
+    clientKeyPem: clientKey.privateKeyPem,
+    chainPem: splitPemChain(clientCert.chainPem),
+    spiffeId: idpSpiffeId.uri,
+    notAfter: clientCert.notAfter.getTime(),
+  };
+}
+
+function splitPemChain(pem) {
+  const matches = String(pem || '').match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g);
+  return matches ? matches.map((m) => `${m}\n`) : [];
+}
+
+function inferSanType(value) {
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return 'ip';
+  if (value.includes('://')) return 'uri';
+  return 'dns';
+}
+
+/**
+ * Veritabanına bağlanır; uzak modda önce onu sağlar (provision), sonra kendi
+ * sertifikasıyla mTLS'e geçer.
  *
  * @returns {{ handle, identity, db, mode }} `mode`: 'embedded' | 'mtls'
  */
-async function connectToDatabase({ config, logger = null }) {
+async function connectToDatabase({ config, pkiIssuer = null, logger = null }) {
   const dbCfg = config.db;
 
   // ---- gömülü motor: ağ yok, enrolment yok --------------------------------------------
@@ -145,92 +311,77 @@ async function connectToDatabase({ config, logger = null }) {
     return { handle: null, identity: null, db: created.db, manager, mode: 'embedded', created: true };
   }
 
-  // ---- uzak veritabanı: TLS -> enrolment -> mTLS ---------------------------------------
-  const {
-    enroll, resume, connectDatabase, createFitfakSslCsrProvider,
-  } = require('@fitfak/database');
-  const csrProvider = createFitfakSslCsrProvider();
-
-  const trust = {};
-  if (dbCfg.caPath) trust.caPem = await fsp.readFile(dbCfg.caPath, 'utf8');
-  else if (dbCfg.caFingerprint) trust.pinnedFingerprints = [dbCfg.caFingerprint];
-  else {
-    // Buraya düşmek, sunucuyu doğrulamadan enrolment yapmak demektir. config.js
-    // üretimde bunu zaten reddediyor; burada da reddediyoruz, çünkü bu modül
-    // başka bir yapılandırmayla da çağrılabilir.
+  // ---- uzak veritabanı: sağla (provision) -> mTLS --------------------------------------
+  //
+  // Enrolment BURADA YOK ve olmaması doğru. Enrolment, CA'ya erişimi olmayan bir
+  // servisin sertifika alma yoludur. IdP'nin CA'ya erişimi vardır -- CA odur --
+  // ve kendine enrolment yaptırması, ürettiği sertifikayı kendisinden istemesi
+  // olurdu. Diğer her servis enrolment kullanır; IdP kullanamaz.
+  if (!pkiIssuer) {
     throw new Error(
-      '[bootstrap] Veritabanı sunucusunu doğrulayacak bir güven çıpası yok '
-      + '(FITFAK_IDP_DB_CA_FINGERPRINT ya da FITFAK_IDP_DB_CA_PATH gerekli).',
+      '[bootstrap] Uzak veritabanı modunda bir pkiIssuer gerekli.\n'
+      + '  Veritabanı mühürlü açılır ve sunucu sertifikasını IdP\'den bekler; onu üretecek\n'
+      + '  olan da IdP\'nin sertifika otoritesidir.',
+    );
+  }
+  if (!dbCfg.controlSecret) {
+    throw new Error(
+      '[bootstrap] FITFAK_IDP_DB_CONTROL_SECRET verilmemiş.\n'
+      + '  Veritabanının sunucu kimliğini kurmak için gereken denetim düzlemi sırrı bu;\n'
+      + '  db-server.js açılışta yazdırır. Enrolment sırrından AYRIDIR: bu sır veritabanının\n'
+      + '  sunucu anahtarını değiştirme yetkisidir, bir istemci sertifikası alma yetkisi değil.',
     );
   }
 
-  const stored = await loadStoredIdentity(dbCfg.identityDir);
+  const { resume, connectDatabase, createFitfakSslCsrProvider } = require('@fitfak/database');
+  const csrProvider = createFitfakSslCsrProvider();
 
-  let identity;
-  if (stored) {
-    // Zaten bir sertifikamız var: enrolment adımı tamamen atlanır. Yenileme
-    // mTLS üzerinden yapılır ve paylaşılan sırra hiç dokunmaz.
-    log(logger, 'info', '[bootstrap] Kayıtlı mTLS kimliği bulundu, enrolment atlanıyor.');
-    identity = await resume({
-      target: dbCfg.remoteTarget,
-      certPem: stored.certPem,
-      privateKeyPem: stored.privateKeyPem,
-      chainPem: stored.chainPem,
-      principal: stored.principal,
-      roles: stored.roles,
-      notAfter: stored.notAfter,
-      renewAfter: stored.renewAfter,
-      csrProvider,
-      logger: { info: (m) => log(logger, 'info', `[bootstrap] ${m}`) },
-    });
-  } else {
-    if (!dbCfg.enrolmentSecret) {
-      throw new Error(
-        '[bootstrap] mTLS kimliği yok ve FITFAK_IDP_DB_ENROLMENT_SECRET verilmemiş.\n'
-        + '  İlk çalıştırmada IdP kendini veritabanına tanıtacak tek kullanımlık bir sırra ihtiyaç duyar.\n'
-        + '  Veritabanı tarafında üretin (generateEnrolmentSecret) ve bu değişkende verin.',
-      );
-    }
-    log(logger, 'info', '[bootstrap] mTLS kimliği yok -- enrolment yapılıyor (TLS -> enrol -> mTLS).');
+  const provisioned = await provisionDatabase({ config, pkiIssuer, logger });
 
-    identity = await enroll({
-      target: dbCfg.remoteTarget,
-      serviceName: dbCfg.serviceName,
-      csrProvider,
-      trust,
-      bootstrap: { secret: Buffer.from(dbCfg.enrolmentSecret, 'base64') },
-      altNames: [dbCfg.serviceName],
-      logger: {
-        info: (m) => log(logger, 'info', `[bootstrap] ${m}`),
-        warn: (m) => log(logger, 'warn', `[bootstrap] ${m}`),
-      },
-    });
-
-    await storeIdentity(dbCfg.identityDir, {
-      certPem: identity.certPem,
-      privateKeyPem: identity.privateKeyPem,
-      chainPem: identity.chainPem,
-      principal: identity.principal,
-      roles: identity.roles,
-      notAfter: identity.notAfter,
-      renewAfter: identity.renewAfter,
-    });
-    log(logger, 'info', `[bootstrap] Enrolment tamamlandı: principal=${identity.principal}`);
-    log(logger, 'warn',
-      '[bootstrap] Paylaşılan enrolment sırrı TÜKENDİ. Ortam değişkeninden kaldırabilirsiniz; '
-      + 'yenileme artık mTLS üzerinden yapılıyor.');
-  }
-
-  // Yenileme ömrün ~2/3'ünde başlar: başarısız olursa tekrar denemek için yer kalır.
-  identity.startAutoRenewal();
-  identity.on('renewed', async (e) => {
-    await storeIdentity(dbCfg.identityDir, {
-      certPem: identity.certPem, privateKeyPem: identity.privateKeyPem, chainPem: identity.chainPem,
-      principal: identity.principal, roles: identity.roles,
-      notAfter: e.notAfter, renewAfter: e.renewAfter,
-    });
-    log(logger, 'info', `[bootstrap] Sertifika yenilendi, geçerlilik: ${new Date(e.notAfter).toISOString()}`);
+  // Kendi sertifikamızla geri bağlan. Veritabanı için ASIL OLAY budur: mühürlü
+  // durumdan çıkıp herkese açılması, bu bağlantının başarılı olmasına bağlı.
+  const identity = await resume({
+    target: dbCfg.remoteTarget,
+    certPem: provisioned.clientCertPem,
+    privateKeyPem: provisioned.clientKeyPem,
+    chainPem: provisioned.chainPem,
+    principal: dbCfg.serviceName,
+    roles: ['admin'],
+    notAfter: provisioned.notAfter,
+    csrProvider,
+    logger: { info: (m) => log(logger, 'info', `[bootstrap] ${m}`) },
   });
+
+  log(logger, 'info',
+    `[bootstrap] mTLS bağlantısı kuruldu (${provisioned.spiffeId}). Veritabanı artık açık.`);
+
+  // Yenileme, sertifikayı YENİDEN ÜRETEREK yapılıyor -- enrolment ile değil.
+  // Aynı sebeple: yenileme de bir sertifika talebidir ve talebin muhatabı biziz.
+  //
+  // Veritabanının sunucu sertifikası da aynı anda yenilenmeli, yoksa saatler
+  // sonra IdP'nin sertifikası tazeyken veritabanınınki ölür ve bağlantı
+  // anlaşılması zor bir TLS hatasıyla düşer.
+  const renewEveryMs = Math.floor((dbCfg.identityValiditySeconds * 1000) / 2);
+  const renewalTimer = setInterval(async () => {
+    try {
+      const renewed = await provisionDatabase({ config, pkiIssuer, logger });
+      await identity.client.upgrade({
+        key: renewed.clientKeyPem,
+        cert: [renewed.clientCertPem, ...renewed.chainPem.slice(0, -1)].join(''),
+        ca: renewed.chainPem.join(''),
+        rejectUnauthorized: true,
+      });
+      log(logger, 'info', '[bootstrap] Kimlik yenilendi (veritabanı sunucu sertifikası dahil).');
+    } catch (err) {
+      // Yenileme başarısızlığı MEVCUT sertifikayı bozmaz: eldeki hâlâ geçerli
+      // ve bir sonraki turda tekrar denenecek. Bu yüzden hata bir uyarıdır,
+      // bir çökme değil.
+      log(logger, 'warn', `[bootstrap] Kimlik yenilenemedi, mevcut sertifika ile devam ediliyor: ${err.message}`);
+    }
+  }, renewEveryMs);
+  // Yenileme zamanlayıcısı sürecin ayakta kalma sebebi olmamalı.
+  if (typeof renewalTimer.unref === 'function') renewalTimer.unref();
+  identity.on('closed', () => clearInterval(renewalTimer));
 
   const handle = await connectDatabase({ target: dbCfg.remoteTarget, identity });
 
@@ -285,6 +436,7 @@ async function connectToDatabase({ config, logger = null }) {
 }
 
 module.exports = {
-  connectToDatabase, loadStoredIdentity, storeIdentity,
+  connectToDatabase, openCaStore, provisionDatabase,
+  loadStoredIdentity, storeIdentity,
   loadStoredDbHandle, storeDbHandle, DB_HANDLE_FILE,
 };

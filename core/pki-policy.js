@@ -19,6 +19,10 @@
 //           .5  code signing
 //           .6  document signing
 //           .7  OCSP responder
+//           .8  kısa ömürlü iş yükü kimliği   (SPIFFE, BeyondCorp)
+//           .9  kısa ömürlü oturum kimliği
+//           .10 kısa ömürlü cihaz kimliği
+//           .11 servisler arası mTLS kimliği
 //         .2            protokol/uzantı arc'ı (ileride)
 
 const PEN = '1.3.6.1.4.1.65133';
@@ -79,6 +83,44 @@ const POLICIES = {
     name: 'FITFAK OCSP Responder',
     identityProofing: 'Yalnızca FITFAK altyapı bileşenlerine verilir',
     notice: 'Bu sertifika OCSP yanıtlarını imzalamak için verilmiştir.',
+  },
+
+  // ---- kısa ömürlü (BeyondCorp) politikalar --------------------------------------------------
+  //
+  // Bunların ayrı OID'leri olması önemli: bir doğrulayıcı "yalnızca kısa ömürlü,
+  // JIT üretilmiş kimlikleri kabul et" diyebilmelidir. EKU bunu söyleyemez --
+  // kısa ömürlü bir iş yükü sertifikası ile bir yıllık bir istemci sertifikası
+  // aynı clientAuth EKU'sunu taşır. Fark, kimliğin NASIL doğrulandığındadır ve
+  // sertifika politikası tam olarak o sorunun cevabıdır.
+  //
+  // `identityProofing` alanları, iptalin neden nadiren gerektiğini de açıklar:
+  // her biri, üretim anında canlı olarak doğrulanmış bir yetkiye dayanır ve o
+  // yetki geri alındığında sertifika YENİLENMEZ -- iptal edilmesi gerekmez,
+  // dakikalar içinde kendiliğinden yok olur.
+  workload: {
+    oid: `${POLICY_ARC}.8`,
+    name: 'FITFAK Short-Lived Workload Identity',
+    identityProofing: 'Üretim anında doğrulanmış OAuth 2.0 yetkisi ya da mevcut mTLS kimliği; '
+      + 'kimlik SAN\'daki SPIFFE URI\'sinde taşınır',
+    notice: 'Kısa ömürlü iş yükü sertifikası. Kalıcı bir kimlik değil, dakikalarla ölçülen bir yetkidir.',
+  },
+  session: {
+    oid: `${POLICY_ARC}.9`,
+    name: 'FITFAK Short-Lived Session Identity',
+    identityProofing: 'Üretim anında canlı olduğu doğrulanmış, MFA tamamlanmış kullanıcı oturumu',
+    notice: 'Bu sertifika tek bir doğrulanmış oturumu temsil eder ve o oturumdan uzun yaşamaz.',
+  },
+  device: {
+    oid: `${POLICY_ARC}.10`,
+    name: 'FITFAK Short-Lived Device Identity',
+    identityProofing: 'Kayıtlı cihaz bağlaması (WebAuthn ya da donanım destekli kimlik bilgisi)',
+    notice: 'Kısa ömürlü cihaz sertifikası. Cihaz kaydı geri alındığında yenilenmez.',
+  },
+  'service-identity': {
+    oid: `${POLICY_ARC}.11`,
+    name: 'FITFAK Service Identity (mTLS)',
+    identityProofing: 'Kayıt otoritesi (fitdb) tarafından doğrulanmış servis kimliği',
+    notice: 'Servisler arası mTLS kimliği. Saatlerle ölçülür ve mTLS üzerinden yenilenir.',
   },
 };
 

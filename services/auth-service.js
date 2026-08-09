@@ -283,12 +283,26 @@ async function loginWithPassword({
     return { requiresMfaSetup: true, setupToken: await issueSetupToken(String(user._id)), userId: String(user._id) };
   }
 
-  const availableMethods = JSON.parse(user.mfaMethods || '[]');
   return {
     requiresSecondFactor: true,
     mfaChallengeToken: await issueMfaChallengeToken(String(user._id)),
-    availableMethods,
+    availableMethods: availableSecondFactors(user),
   };
+}
+
+/**
+ * Bu hesabın ikinci faktör olarak SUNABİLECEĞİ yöntemler.
+ *
+ * `email_otp` kayıtlı bir yöntem DEĞİL, bir kurtarma yolu -- ama giriş ekranının
+ * onu gösterebilmesi gerekiyor, çünkü gösterilmediğinde ortaya çıkan durum şu:
+ * yalnızca WebAuthn kurmuş bir kullanıcı, anahtarının olmadığı bir cihazda
+ * "güvenlik anahtarınızı kullanın" yazan bir ekranla baş başa kalıyor ve yapacak
+ * hiçbir şeyi yok. Listede görünmesi, o çıkmazın olmaması demek.
+ */
+function availableSecondFactors(user) {
+  const methods = JSON.parse(user.mfaMethods || '[]');
+  if (user.emailVerified) methods.push('email_otp');
+  return methods;
 }
 
 /**
@@ -314,7 +328,7 @@ async function issueMfaChallengeForUser({ db, userId }) {
   return {
     requiresSecondFactor: true,
     mfaChallengeToken: await issueMfaChallengeToken(String(user._id)),
-    availableMethods: JSON.parse(user.mfaMethods || '[]'),
+    availableMethods: availableSecondFactors(user),
   };
 }
 
@@ -429,6 +443,165 @@ async function completeLoginWithTotp({
   return completeLogin({
     db, sessionManager, userId: pending.userId, ip, userAgent, fingerprintId,
     deviceId, isNewDeviceCookie, mailer, method: 'password + TOTP',
+  });
+}
+
+// ============================================================================
+// 2. FAKTÖR: E-POSTA KODU -- KURTARMA YOLU
+// ----------------------------------------------------------------------------
+// Bu, WebAuthn ya da TOTP'nin YERİNE GEÇEN bir yöntem değil, onlara ULAŞILAMADIĞINDA
+// devreye giren bir kurtarma yoludur. Çözdüğü somut sorun şu:
+//
+//   Kullanıcı hesabını yalnızca WebAuthn ile korumuş. Anahtarı evdeki bilgisayarına
+//   ya da telefonuna bağlı. Başka bir cihazdan girmeye çalışıyor. O cihazda anahtar
+//   YOK ve olmayacak. Sonuç: parolasını bilse bile hesabına giremiyor -- ve bu, en
+//   güvenli yöntemi seçtiği için başına geliyor.
+//
+// DÜRÜST OLMAK GEREKİRSE bu faktör diğerlerinden ZAYIFTIR. E-posta hesabını ele
+// geçiren biri, buradan geçer. O yüzden ona bir eşit gibi davranılmıyor:
+//
+//   - yalnızca DOĞRULANMIŞ bir e-posta adresi olan hesaplarda çalışır
+//   - parola faktörü ZATEN kanıtlanmış olmak zorunda (mfaChallengeToken gerekiyor),
+//     yani tek başına bir giriş yolu değil, ikinci faktörün ikamesi
+//   - kullanılan her seferinde kullanıcıya AYRICA bildirim gider -- "kurtarma yolu
+//     kullanıldı" bilgisi, gerçekten kullanan kişi sen değilsen fark etmen gereken
+//     tek şeydir
+//   - dönen oturum `viaRecovery` işaretli gelir, böylece çağıran taraf kullanıcıyı
+//     bu cihaza bir faktör eklemeye yönlendirebilir
+//
+// Kod 6 hane, yani 10^6 olasılık. Tek başına bu, kaba kuvvete karşı yetersiz olurdu;
+// hız sınırlayıcının `emailotp:<userId>` ekseni ve 10 dakikalık ömür birlikte
+// çalışıyor.
+// ============================================================================
+
+const EMAIL_OTP_TTL_MS = 10 * 60_000;
+
+/** Bir e-posta adresini kısmen gizler: `ay****@gmail.com`. */
+function maskEmail(email) {
+  const [local, domain] = String(email || '').split('@');
+  if (!domain) return '';
+  const head = local.slice(0, Math.min(2, local.length));
+  return `${head}${'*'.repeat(Math.max(2, local.length - head.length))}@${domain}`;
+}
+
+/**
+ * İkinci faktör olarak e-posta kodu gönderir. Parola adımı ZATEN geçilmiş
+ * olmalıdır -- `mfaChallengeToken` bunun kanıtı.
+ */
+async function beginEmailOtpChallenge({ db, mfaChallengeToken, mailer }) {
+  const pending = await peekEphemeralToken('mfa', mfaChallengeToken);
+  if (!pending) throw new AppError('invalid_mfa_challenge', 'Geçersiz veya süresi dolmuş 2FA isteği', { httpStatus: 401 });
+
+  const user = await db.collection('users').get(pending.userId);
+  if (!user) throw new AppError('user_not_found', 'Kullanıcı bulunamadı', { httpStatus: 404 });
+  if (!user.emailVerified) {
+    // Doğrulanmamış bir adrese kurtarma kodu göndermek, o adresi kontrol eden
+    // herkese hesabı vermektir -- ve adres doğrulanmadıysa onu kimin kontrol
+    // ettiği bilinmiyor demektir.
+    throw new AppError('email_not_verified',
+      'Bu hesabın e-posta adresi doğrulanmamış; e-posta ile kurtarma kullanılamaz',
+      { httpStatus: 400 });
+  }
+
+  await enforceEmailRateLimit(user.email);
+
+  const code = generateVerificationCode();
+  await ephemeralStore.set(`emailotp:${mfaChallengeToken}`, {
+    code, userId: String(user._id), attempts: 0,
+  }, EMAIL_OTP_TTL_MS);
+
+  if (mailer) {
+    const html = mailerModule.buildEmailHtml({
+      title: 'Giriş doğrulama kodun',
+      bodyHtml: mailerModule.otpBadgeHtml(code,
+        `Merhaba ${mailerModule.escHtml(user.username)}, güvenlik anahtarına ulaşamadığın için `
+        + 'giriş kodunu e-posta ile istedin. Kod 10 dakika geçerli. Bu isteği sen yapmadıysan '
+        + 'parolan başkasının elinde olabilir -- kodu kimseyle paylaşma ve parolanı değiştir.'),
+    });
+    await mailer.send({
+      from: mailer.defaultFrom, to: user.email, subject: 'Giriş doğrulama kodun', message: html,
+    });
+  }
+
+  return { sent: true, maskedEmail: maskEmail(user.email), expiresInS: EMAIL_OTP_TTL_MS / 1000 };
+}
+
+async function completeLoginWithEmailOtp({
+  db, sessionManager, mfaChallengeToken, code, ip, userAgent, fingerprintId,
+  antiBot, deviceId = null, isNewDeviceCookie = false, mailer = null,
+}) {
+  const pending = await peekEphemeralToken('mfa', mfaChallengeToken);
+  if (!pending) throw new AppError('invalid_mfa_challenge', 'Geçersiz veya süresi dolmuş 2FA isteği', { httpStatus: 401 });
+
+  const record = await ephemeralStore.get(`emailotp:${mfaChallengeToken}`);
+  if (!record) throw new AppError('invalid_code', 'Önce kod istemelisiniz', { httpStatus: 400 });
+
+  const rateLimitKey = `emailotp:${pending.userId}`;
+  const supplied = String(code || '').trim();
+
+  // Sabit zamanlı karşılaştırma: 6 haneli bir kodda erken çıkan bir karşılaştırma,
+  // yeterince ölçüm alan birine haneleri tek tek verir.
+  const expected = Buffer.from(record.code, 'utf8');
+  const got = Buffer.from(supplied, 'utf8');
+  const ok = expected.length === got.length && crypto.timingSafeEqual(expected, got);
+
+  if (!ok) {
+    // Deneme sayacı kodun KENDİ kaydında: hız sınırlayıcı IP ve kullanıcı adı
+    // eksenlerinde çalışır, ama tek bir kodun kaç kez denendiği ayrı bir sorudur
+    // ve cevabı kodla birlikte ölmelidir.
+    const attempts = (record.attempts || 0) + 1;
+    if (attempts >= 5) {
+      await ephemeralStore.delete(`emailotp:${mfaChallengeToken}`);
+      throw new AppError('too_many_attempts',
+        'Çok fazla hatalı deneme. Yeni bir kod isteyin.', { httpStatus: 429 });
+    }
+    await ephemeralStore.set(`emailotp:${mfaChallengeToken}`, { ...record, attempts }, EMAIL_OTP_TTL_MS);
+    await antiBot?.rateLimiter?.recordFailure(rateLimitKey);
+    throw new AppError('invalid_code', 'Kod geçersiz veya süresi dolmuş', { httpStatus: 401 });
+  }
+
+  await antiBot?.rateLimiter?.recordSuccess(rateLimitKey);
+  await ephemeralStore.delete(`emailotp:${mfaChallengeToken}`);
+  await consumeEphemeralToken('mfa', mfaChallengeToken);
+
+  const { completeLogin } = require('./login-completion');
+  const session = await completeLogin({
+    db, sessionManager, userId: pending.userId, ip, userAgent, fingerprintId,
+    deviceId, isNewDeviceCookie, mailer, method: 'parola + e-posta kurtarma kodu',
+  });
+
+  await notifyRecoveryUsed({ db, mailer, userId: pending.userId, ip, userAgent }).catch((e) => {
+    // eslint-disable-next-line no-console
+    console.error('[auth-service] kurtarma bildirimi gönderilemedi:', e.message);
+  });
+
+  return {
+    ...session,
+    // Çağıran taraf bunu görüp kullanıcıyı BU cihaza bir faktör eklemeye
+    // yönlendirmeli. Kurtarma yolunu kalıcı bir giriş alışkanlığına
+    // dönüştürmek, hesabın güvenliğini e-posta hesabının güvenliğine indirger.
+    viaRecovery: true,
+  };
+}
+
+async function notifyRecoveryUsed({ db, mailer, userId, ip, userAgent }) {
+  if (!mailer) return;
+  const user = await db.collection('users').get(userId);
+  if (!user?.email) return;
+  const html = mailerModule.buildEmailHtml({
+    title: 'Hesabına kurtarma yoluyla giriş yapıldı',
+    bodyHtml: `<p style="margin:0 0 20px; font-size:14px; color:#5f6b76; line-height:1.65; font-family:'Segoe UI', Helvetica, Arial, sans-serif;">`
+      + `Merhaba ${mailerModule.escHtml(user.username)}, hesabına güvenlik anahtarın ya da doğrulayıcı `
+      + `uygulaman yerine E-POSTA KURTARMA KODU ile giriş yapıldı.<br><br>`
+      + `IP: ${mailerModule.escHtml(ip || 'bilinmiyor')}<br>`
+      + `Tarayıcı: ${mailerModule.escHtml(String(userAgent || 'bilinmiyor').slice(0, 120))}<br><br>`
+      + `Bu sen değilsen parolan başkasının elinde demektir: hemen parolanı değiştir ve açık `
+      + `oturumları kapat. Bu sensen, bu cihaza bir güvenlik anahtarı eklemeni öneririz -- `
+      + `kurtarma yolu her seferinde kullanılacak bir yöntem değildir.</p>`,
+  });
+  await mailer.send({
+    from: mailer.defaultFrom, to: user.email,
+    subject: 'fitfak kimlik -- kurtarma yoluyla giriş yapıldı', message: html,
   });
 }
 
@@ -640,6 +813,10 @@ module.exports = {
   loginWithPassword,
   issueMfaChallengeForUser,
   completeLoginWithTotp,
+  beginEmailOtpChallenge,
+  completeLoginWithEmailOtp,
+  availableSecondFactors,
+  maskEmail,
   beginTotpEnrollment,
   finishTotpEnrollment,
   markMfaMethodEnrolled,

@@ -170,6 +170,8 @@
       <input type="password" id="login-password" autocomplete="current-password">
       
       <button class="btn btn-primary" id="btn-login-password">Giriş yap</button>
+      <button class="btn btn-danger-text" id="btn-forgot"
+              style="margin-top:12px;display:block;text-align:center;width:100%">Şifremi unuttum</button>
       <div class="divider">veya</div>
       <button class="btn btn-secondary" id="btn-login-passkey">Cihaz anahtarı ile giriş yap</button>
     </div>
@@ -250,9 +252,74 @@
       <label for="twofa-code">Doğrulayıcı Kodu</label>
       <input type="text" id="twofa-code" class="mono-input" maxlength="6" inputmode="numeric" placeholder="000000">
       <button class="btn btn-primary" id="btn-confirm-2fa-totp">Giriş Yap</button>
-      
+
       <div class="divider">veya</div>
       <button class="btn btn-secondary" id="btn-confirm-2fa-passkey">Cihaz anahtarı ile onayla</button>
+
+      <!-- Anahtarına ulaşamayan kullanıcının çıkış yolu.
+           Bu bağlantı olmadan, hesabını YALNIZCA cihaz anahtarıyla korumuş bir
+           kullanıcı, anahtarının bağlı olmadığı bir cihazda yapacak hiçbir şeyi
+           olmayan bir ekranla baş başa kalıyordu -- ve bu, en güvenli yöntemi
+           seçtiği için başına geliyordu. -->
+      <button class="btn btn-danger-text" id="btn-2fa-email-fallback"
+              style="margin-top:16px;display:block;text-align:center;width:100%">
+        Cihaz anahtarıma ulaşamıyorum
+      </button>
+    </div>
+
+    <!-- ---- 2. FAKTÖR: E-POSTA KURTARMA KODU ---- -->
+    <div class="view" id="view-2fa-email">
+      <h3 style="margin-top:0">E-posta ile doğrulama</h3>
+      <p class="hint" style="margin-bottom:20px" id="email-otp-hint">
+        Adresinize 6 haneli bir kod gönderildi.
+      </p>
+
+      <label for="email-otp-code">E-postadaki kod</label>
+      <input type="text" id="email-otp-code" class="mono-input" maxlength="6" inputmode="numeric" placeholder="000000">
+      <button class="btn btn-primary" id="btn-confirm-2fa-email">Giriş Yap</button>
+
+      <p class="hint" style="margin-top:20px;font-size:12px">
+        Bu yol, güvenlik anahtarınızdan daha zayıftır: e-posta hesabınıza erişebilen biri
+        buradan geçebilir. Girişten sonra bu cihaza bir güvenlik anahtarı eklemenizi öneririz.
+      </p>
+
+      <button class="btn btn-secondary" id="btn-2fa-email-back" style="margin-top:12px">Geri dön</button>
+    </div>
+
+    <!-- ---- ŞİFREMİ UNUTTUM ---- -->
+    <div class="view" id="view-forgot-request">
+      <h3 style="margin-top:0">Şifreni sıfırla</h3>
+      <p class="hint" style="margin-bottom:20px">
+        Hesabınızın e-posta adresini girin. Kayıtlıysa bir sıfırlama kodu göndereceğiz.
+      </p>
+
+      <label for="forgot-email">E-posta adresi</label>
+      <input type="email" id="forgot-email" autocomplete="email" placeholder="ornek@fitfak.net">
+      <button class="btn btn-primary" id="btn-forgot-request">Sıfırlama kodu gönder</button>
+      <button class="btn btn-secondary" id="btn-forgot-cancel" style="margin-top:12px">Girişe dön</button>
+    </div>
+
+    <div class="view" id="view-forgot-confirm">
+      <h3 style="margin-top:0">Yeni şifre belirle</h3>
+      <p class="hint" style="margin-bottom:20px" id="forgot-confirm-hint">
+        E-postanıza gelen kodu ve yeni şifrenizi girin.
+      </p>
+
+      <label for="forgot-code">Sıfırlama kodu</label>
+      <input type="text" id="forgot-code" class="mono-input" maxlength="6" inputmode="numeric" placeholder="000000">
+
+      <label for="forgot-newpass" style="margin-top:16px">Yeni şifre</label>
+      <input type="password" id="forgot-newpass" autocomplete="new-password">
+      <p class="hint" style="font-size:12px;margin-top:6px">
+        En az 12 karakter; büyük harf, küçük harf, rakam ve özel karakter içermeli.
+      </p>
+
+      <button class="btn btn-primary" id="btn-forgot-confirm">Şifreyi değiştir</button>
+      <p class="hint" style="margin-top:16px;font-size:12px">
+        Şifre değiştiğinde açık olan TÜM oturumlarınız kapatılır -- sıfırlamanın en yaygın
+        sebebi hesabın ele geçirilmiş olma ihtimalidir ve saldırganın oturumu açık kalırsa
+        sıfırlamanın bir anlamı olmaz.
+      </p>
     </div>
 
     <!-- ---- OTURUMLAR YÖNETİMİ ---- -->
@@ -597,6 +664,69 @@
       var result = await FitfakWebAuthn.authenticate(begin);
       await FitfakOAuth.finishWebauthnLogin(Object.assign({ mfaChallengeToken: state.mfaChallengeToken }, result));
       onAuthSuccess();
+    });
+  });
+
+  // ---- 2. FAKTÖR: E-POSTA KURTARMA ----
+  //
+  // Kod, kullanıcı bu düğmeye BASINCA gönderiliyor -- ikinci faktör ekranına her
+  // gelindiğinde değil. Her girişte bir e-posta göndermek, kullanıcının çoğu
+  // zaman hiç kullanmayacağı bir kod için posta kutusunu doldurur ve gerçekten
+  // önemli olan güvenlik bildirimlerini gürültünün içinde kaybeder.
+  $('btn-2fa-email-fallback').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      var begun = await FitfakOAuth.beginEmailOtp(state.mfaChallengeToken);
+      $('email-otp-hint').textContent =
+        begun.maskedEmail + ' adresine 6 haneli bir kod gönderildi. Kod 10 dakika geçerli.';
+      showView('view-2fa-email');
+    });
+  });
+
+  $('btn-2fa-email-back').addEventListener('click', function () { showView('view-2fa'); });
+
+  $('btn-confirm-2fa-email').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      var result = await FitfakOAuth.completeLoginWithEmailOtp(
+        state.mfaChallengeToken, $('email-otp-code').value.trim());
+      // Sunucu bu girişin kurtarma yoluyla yapıldığını söylüyor. Kullanıcıyı bu
+      // cihaza bir faktör eklemeye yönlendirmek, kurtarma yolunun kalıcı bir
+      // giriş alışkanlığına dönüşmesini engelleyen tek şey.
+      if (result && result.suggestEnrolFactor) state.suggestEnrolFactor = true;
+      onAuthSuccess();
+    });
+  });
+
+  // ---- ŞİFREMİ UNUTTUM ----
+  $('btn-forgot').addEventListener('click', function (e) {
+    e.preventDefault();
+    $('forgot-email').value = $('login-username').value.indexOf('@') > -1 ? $('login-username').value : '';
+    showView('view-forgot-request');
+  });
+
+  $('btn-forgot-cancel').addEventListener('click', function () { showView('view-login'); });
+
+  $('btn-forgot-request').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      var email = $('forgot-email').value.trim();
+      await FitfakOAuth.requestPasswordReset(email);
+      state.resetEmail = email;
+      // Yanıt, adres kayıtlı OLSA DA OLMASA DA aynı. Farklı davranmak, hangi
+      // e-postaların sistemde olduğunu taramak için bir araç verirdi.
+      $('forgot-confirm-hint').textContent =
+        email + ' adresi kayıtlıysa bir sıfırlama kodu gönderildi. Kod 15 dakika geçerli.';
+      showView('view-forgot-confirm');
+    });
+  });
+
+  $('btn-forgot-confirm').addEventListener('click', function () {
+    withBusyButton(this, async function () {
+      await FitfakOAuth.confirmPasswordReset({
+        email: state.resetEmail,
+        code: $('forgot-code').value.trim(),
+        newPassword: $('forgot-newpass').value,
+      });
+      showView('view-login');
+      $('login-username').value = state.resetEmail;
     });
   });
 
