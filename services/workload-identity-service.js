@@ -390,6 +390,75 @@ async function listForSession({ db, sessionId, now = Date.now() }) {
   return rows.filter((row) => Number(row.notAfter) > now).map(toView);
 }
 
+/**
+ * Yönetim paneli için toplu görünüm.
+ *
+ * Tabloyu tarar. Bu, kısa ömürlü kimliklerin doğası gereği kabul edilebilir: kayıtlar
+ * bir gün sonra süpürüldüğü için tablo, filo büyüklüğü × (gün / yenileme aralığı)
+ * civarında sabitlenir -- büyümesi sınırlı bir tarama, sınırsız büyüyen bir tabloda
+ * tutulan bir sayaçtan daha güvenilir.
+ *
+ * `expiringSoon` en yararlı sütun: yenilemesi duran bir iş yükü burada birikir ve
+ * hiçbir yerde hata vermez -- sertifikası dolana kadar çalışmaya devam eder, sonra
+ * anlaşılması zor bir TLS hatasıyla düşer.
+ */
+async function statistics({ db, now = Date.now(), soonMs = 120_000 }) {
+  const certs = db.collection('workload_certificates');
+  const byProfile = new Map();
+  const byIssuedVia = new Map();
+  const identities = new Map();
+
+  let total = 0;
+  let live = 0;
+  let expired = 0;
+  let expiringSoon = 0;
+  let issuedLastHour = 0;
+
+  const bump = (map, key) => map.set(key || 'bilinmiyor', (map.get(key || 'bilinmiyor') || 0) + 1);
+
+  // eslint-disable-next-line no-restricted-syntax
+  for await (const row of certs.scan()) {
+    total += 1;
+    const notAfter = Number(row.notAfter);
+    const isLive = notAfter > now;
+    if (isLive) {
+      live += 1;
+      if (notAfter - now <= soonMs) expiringSoon += 1;
+      bump(byProfile, row.profile);
+      bump(byIssuedVia, row.issuedVia);
+      const existing = identities.get(row.spiffeId);
+      if (!existing || Number(row.notAfter) > existing.notAfter) {
+        identities.set(row.spiffeId, {
+          spiffeId: row.spiffeId,
+          profile: row.profile,
+          issuedVia: row.issuedVia,
+          workloadName: row.workloadName || null,
+          notBefore: Number(row.notBefore),
+          notAfter,
+        });
+      }
+    } else {
+      expired += 1;
+    }
+    if (now - Number(row.createdAt) <= 3600_000) issuedLastHour += 1;
+  }
+
+  return {
+    total,
+    live,
+    expired,
+    expiringSoon,
+    issuedLastHour,
+    // Aynı kimliğin birden fazla canlı sertifikası olabilir (yenileme penceresinde
+    // eskisi hâlâ geçerlidir); ayrı sayılması gereken şey KİMLİK sayısıdır.
+    distinctIdentities: identities.size,
+    byProfile: Object.fromEntries(byProfile),
+    byIssuedVia: Object.fromEntries(byIssuedVia),
+    identities: [...identities.values()].sort((a, b) => a.notAfter - b.notAfter),
+    retentionMs: RECORD_RETENTION_MS,
+  };
+}
+
 function toView(row) {
   return {
     serialNumberHex: row.serialNumberHex,
@@ -410,6 +479,7 @@ module.exports = {
   assertStillAuthorised,
   listLiveCertificates,
   listForSession,
+  statistics,
   sweepExpired,
   RECORD_RETENTION_MS,
 };
