@@ -72,6 +72,9 @@ class DatabaseLink extends EventEmitter {
     this._retryTimer = null;
     this._renewalTimer = null;
     this._stopped = false;
+    // Bu süreçte kurduğumuz sunucu sertifikasının parmak izi; yeniden denemelerde sabitleme
+    // listesine ekleniyor (gerekçe _resolveSettings içinde).
+    this._installedServerFingerprint = null;
 
     // Çağıranın tuttuğu TEK nesne. İçerideki hedef tampondan gerçek veritabanına geçtiğinde
     // çağıranın hiçbir şey yapması gerekmiyor -- `db` referansı aynı kalıyor.
@@ -174,7 +177,16 @@ class DatabaseLink extends EventEmitter {
         bufferedOperations: this.staging.size,
         msg: 'veritabanına bağlanılamadı — açılış tamponuyla devam ediliyor',
       });
-      this.emit('error', err);
+      // Olay adı 'error' DEĞİL, ve bu fark bir süslemeden ibaret değil.
+      //
+      // Node'da bir EventEmitter üzerinde dinleyicisi olmayan 'error' olayı YAKALANMAZ: fırlatılır
+      // ve süreci öldürür. Yani bu satır 'error' yayınlarken, veritabanına ulaşılamadığı her
+      // durumda IdP çöküyordu -- tam olarak bu modülün önlemek için var olduğu şey. Açılış
+      // tamponu, yeniden deneme, geri çekilme, hepsi ilk denemede öldürülen bir süreçte anlamsız.
+      //
+      // Bağlanamamak bu mimaride BEKLENEN bir durum: veritabanı IdP'den sonra açılabilir. Bunu
+      // Node'un ölümcül olay adıyla bildirmek, normal bir sıralamayı çökme sebebine çeviriyordu.
+      this.emit('attemptFailed', err);
 
       if (this._stopped) return;
       this._retryTimer = setTimeout(() => this._attempt(), delay);
@@ -210,9 +222,23 @@ class DatabaseLink extends EventEmitter {
       );
     }
 
+    // Sabitlenen parmak izleri: önyükleme sertifikası VE bizim kurduğumuz sunucu sertifikası.
+    //
+    // İkincisi bir düzeltme. Liste yalnızca önyükleme sertifikasını içerdiğinde, sağlama
+    // BAŞARILI olduktan sonraki her yeniden deneme başarısız oluyordu: veritabanı artık bizim
+    // kurduğumuz sertifikayı sunuyor ve o listede yok. Yani sağlamadan sonraki herhangi bir
+    // geçici hata bağlantıyı KALICI olarak imkânsız kılıyordu, ve mesaj "sabitlenmiş parmak
+    // izleri arasında değil" diyerek bunu bir saldırı gibi gösteriyordu.
+    //
+    // Kendi kurduğumuz sertifikayı kabul etmek sabitlemeyi zayıflatmaz: onu biz ürettik ve özel
+    // anahtarını biz verdik. Liste hâlâ "ya hiç sağlanmamış bir veritabanı, ya da bizim
+    // sağladığımız veritabanı" diyor.
     const fingerprints = dbCfg.bootstrapFingerprints.length
-      ? dbCfg.bootstrapFingerprints
+      ? dbCfg.bootstrapFingerprints.slice()
       : (discovered?.bootstrapFingerprint ? [discovered.bootstrapFingerprint] : []);
+    if (this._installedServerFingerprint && !fingerprints.includes(this._installedServerFingerprint)) {
+      fingerprints.push(this._installedServerFingerprint);
+    }
 
     this._resolvedTarget = target;
     return { target, controlSecret, fingerprints };
@@ -234,6 +260,7 @@ class DatabaseLink extends EventEmitter {
       pkiIssuer: this.pkiIssuer,
       settings,
       logger: this.log,
+      onServerIdentityInstalled: (fingerprint) => { this._installedServerFingerprint = fingerprint; },
     });
 
     const csrProvider = createFitfakSslCsrProvider();

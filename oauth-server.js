@@ -27,7 +27,15 @@ const {
   Server, Service, GRPC_STATUS, GrpcError, requireBearerAuth,
 } = require('./core/http-transport');
 const { mountBidiBridge } = require('./core/bidi-bridge');
-const qrcode = require('@fitfak/qr');
+// QR kodlayıcı BU DEPODA (core/qrcode.js). Dışarıdan bir paket değil.
+//
+// Buraya `require('@fitfak/qr')` yazılıydı ve o paket yayınlanmamıştı: yani bu dosya hiç
+// yüklenemiyordu ve IdP hiç açılamıyordu. Hata da modül çözümleme hatası olarak çıkıyordu, yani
+// "QR kodu" ile ilgili görünmüyordu.
+//
+// Aynı işi yapan kod zaten depoda duruyordu. README'nin "sıfır bağımlılık" iddiası da bunu
+// gerektiriyor: TOTP kurulum karesi için harici bir paket, o iddianın istisnası olurdu.
+const qrcode = require('./core/qrcode');
 const { ProductionPkiIssuer } = require('./core/pki-issuer');
 const spiffe = require('./core/spiffe');
 const certificateService = require('./services/certificate-service');
@@ -156,6 +164,9 @@ async function openDatabaseLink({ pkiIssuer }) {
 
   link.on('connected', (e) => log.info({ ...e, msg: 'veritabanı bağlandı' }));
   link.on('flushed', (e) => log.info({ ...e, msg: 'açılış tamponu boşaltıldı' }));
+  // Başarısız deneme zaten db-link içinde günlüğe düşüyor; buradaki dinleyici, olayın bir
+  // dinleyicisi olduğundan emin olmak için. (Olay adı bilerek 'error' değil -- gerekçe orada.)
+  link.on('attemptFailed', () => {});
 
   link.start();
   return { db: link.db, link, mode: 'linked' };
@@ -486,7 +497,6 @@ async function main() {
     logger: log.child('cors'),
   });
   await corsOrigins.refresh();
-  server.setCorsOriginResolver((origin) => corsOrigins.allows(origin));
   log.info({ ...corsOrigins.snapshot(), msg: 'CORS kaynakları kayıtlı uygulamalardan türetildi' });
 
   // Uygulama kaydı: iki sistemi tek adla bağlayan yer.
@@ -675,6 +685,9 @@ async function main() {
   // 🌐 HTTP ROTALARI (Multi-Bind ile IP Bazlı Yönlendirme)
   // --------------------------------------------------------------------------
   const server = new Server();
+  // Kaynak çözücü sunucu kurulduktan sonra bağlanıyor. Yukarıda, küme hazırlandığı yerde
+  // bağlanıyordu ve `server` henüz tanımlı olmadığı için açılış orada ölüyordu.
+  server.setCorsOriginResolver((origin) => corsOrigins.allows(origin));
 
   // IDP ROTALARI (127.0.0.1)
   server.addHttpHandler({ method: 'GET', path: '/.well-known/jwks.json' }, (req, res) => { sendJson(res, 200, publicKeyToJwks(signingKeyPair.publicKey, signingKeyPair.kid)); }, IDP_IP);
@@ -766,7 +779,7 @@ async function main() {
   server.addHttpHandler({ method: 'POST', path: '/auth/mfa/totp/begin' }, wrapHandler(async (req, res) => {
     const body = await readJsonBody(req);
     const enrollment = await authService.beginTotpEnrollment({ db, setupToken: body.setupToken, accountLabel: body.username });
-    const qrPngBuffer = qrcode.generatePngBuffer(enrollment.provisioningUri);
+    const qrPngBuffer = qrcode.textToPngBuffer(enrollment.provisioningUri);
     sendJson(res, 200, { ...enrollment, qrCodeBase64: `data:image/png;base64,${qrPngBuffer.toString('base64')}` });
   }), IDP_IP);
   
