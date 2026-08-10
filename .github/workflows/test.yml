@@ -135,3 +135,9 @@ jobs:
       - name: Database admin proxy
         working-directory: idp
         run: npm run test:db-admin-proxy
+
+      # Two processes with no distributed transaction between them: most of these checks are
+      # about what is left behind when one half fails.
+      - name: One-action application registration
+        working-directory: idp
+        run: npm run test:applications

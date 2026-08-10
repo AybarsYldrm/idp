@@ -13,6 +13,7 @@ const { KeyVault } = require('./core/key-vault');
 const { createCorsOriginSet } = require('./core/cors-origins');
 const { createInternalRedirects } = require('./core/internal-redirects');
 const { createDatabaseAdminProxy } = require('./core/database-admin-proxy');
+const { createApplicationRegistry } = require('./core/application-registry');
 const { assertSslCompatible } = require('./core/ssl-compat');
 const { SessionManager, ACCOUNTS_COOKIE_NAME } = require('./core/session-manager');
 const { WebAuthnService } = require('./core/webauthn');
@@ -487,6 +488,17 @@ async function main() {
   await corsOrigins.refresh();
   server.setCorsOriginResolver((origin) => corsOrigins.allows(origin));
   log.info({ ...corsOrigins.snapshot(), msg: 'CORS kaynakları kayıtlı uygulamalardan türetildi' });
+
+  // Uygulama kaydı: iki sistemi tek adla bağlayan yer.
+  const applications = createApplicationRegistry({
+    clientStore,
+    databaseProxy: dbAdminProxy,
+    trustDomain: config.trustDomain,
+    // Yeni bir uygulamanın kaynağı hemen izinli olmalı: ilk tarayıcı isteğinin CORS'ta
+    // reddedilmesi, kaydın çalışmadığı izlenimi verir.
+    onChanged: () => corsOrigins.refresh(),
+    logger: log.child('apps'),
+  });
 
   const oauthService = new OAuthService({
     sessionManager, clientStore, db, issuer: ISSUER,
@@ -1584,6 +1596,48 @@ async function main() {
     }
     await requireAdmin(req);
     servePage(res, 'admin-panel.html');
+  }), ADMIN_IP);
+
+  // ---- UYGULAMALAR: TEK İŞLEMDE İKİ SİSTEM ---------------------------------------------------
+  //
+  // Bir tünel, bir SMTP aktarıcısı ya da bir DNS çözücüsü eklemek üç ayrı iş gerektiriyordu:
+  // IdP'de OAuth istemcisi, veritabanında servis, ve ikisinin adlarının ELLE tutturulması.
+  // Üçüncüsü sessizce yanlış yapılabilen kısımdı -- iki ayrı ad, uygulamanın belirteç alıp
+  // veritabanına bağlanamaması demek, ve bu ancak ilk yazma denemesinde anlaşılıyor.
+  //
+  // Tek ad var artık: OAuth istemci kimliği, veritabanı servis adı ve SPIFFE kimliği ondan
+  // türüyor. Gerekçenin tamamı core/application-registry.js'de.
+  server.addHttpHandler({ method: 'GET', path: '/admin/applications' }, wrapHandler(async (req, res) => {
+    await requireAdmin(req);
+    sendJson(res, 200, await applications.list());
+  }), ADMIN_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/admin/applications' }, wrapHandler(async (req, res) => {
+    const admin = await requireAdmin(req);
+    const body = await readJsonBody(req);
+    const created = await applications.register({
+      name: body.name,
+      description: body.description,
+      redirectUris: body.redirectUris || [],
+      scopes: body.scopes && body.scopes.length ? body.scopes : undefined,
+      roles: body.roles && body.roles.length ? body.roles : undefined,
+      needsOauth: body.needsOauth !== false,
+      needsDatabase: body.needsDatabase !== false,
+      altNames: body.altNames || [],
+      // Sır ÜRETİMİ çağırana bırakılmıyor: kayıt defterinin kendi rastgeleliğini seçmesi,
+      // bir gün birinin oraya tahmin edilebilir bir değer geçirmesini mümkün kılardı.
+      generateSecret: () => crypto.randomBytes(32).toString('base64url'),
+    });
+    log.warn({ actor: admin.userId, application: created.name, msg: 'uygulama one.fitfak.net üzerinden kaydedildi' });
+    sendJson(res, 200, created);
+  }), ADMIN_IP);
+
+  server.addHttpHandler({ method: 'POST', path: '/admin/applications/remove' }, wrapHandler(async (req, res) => {
+    const admin = await requireAdmin(req);
+    const body = await readJsonBody(req);
+    const removed = await applications.remove(body.name);
+    log.warn({ actor: admin.userId, application: body.name, ...removed, msg: 'uygulama kaldırıldı' });
+    sendJson(res, 200, removed);
   }), ADMIN_IP);
 
   // ---- VERİTABANI YÖNETİMİ (one.fitfak.net üzerinden) ----------------------------------------
