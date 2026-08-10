@@ -12,6 +12,7 @@ const { loadOrCreateSigningKeyPair, publicKeyToJwks } = require('./core/keys');
 const { KeyVault } = require('./core/key-vault');
 const { createCorsOriginSet } = require('./core/cors-origins');
 const { createInternalRedirects } = require('./core/internal-redirects');
+const { createDatabaseAdminProxy } = require('./core/database-admin-proxy');
 const { assertSslCompatible } = require('./core/ssl-compat');
 const { SessionManager, ACCOUNTS_COOKIE_NAME } = require('./core/session-manager');
 const { WebAuthnService } = require('./core/webauthn');
@@ -469,6 +470,13 @@ async function main() {
   // kayıtlı listede varsa çözülür, yani açık yönlendirme engellenmesi gereken bir şey olmaktan
   // çıkıp ifade edilemez bir şey haline geliyor. Gerekçenin tamamı core/internal-redirects.js'de.
   const internalRedirects = createInternalRedirects({ secret: config.redirectHandleSecret });
+
+  // Veritabanının yönetim API'sine giden vekil. Adres ve kimlik bilgisi eşleştirme dizininden
+  // okunuyor; veritabanı henüz açılmamışsa uçlar 503 döner ve sebebini söyler.
+  const dbAdminProxy = createDatabaseAdminProxy({
+    readPairing: () => require('./core/pairing').readDatabase({ dir: config.pairingDir, logger: log }),
+    logger: log.child('db-admin'),
+  });
   log.info({ destinations: internalRedirects.list().length, msg: 'iç dönüş adresleri tutamaklara bağlandı' });
 
   const corsOrigins = createCorsOriginSet({
@@ -1576,6 +1584,46 @@ async function main() {
     }
     await requireAdmin(req);
     servePage(res, 'admin-panel.html');
+  }), ADMIN_IP);
+
+  // ---- VERİTABANI YÖNETİMİ (one.fitfak.net üzerinden) ----------------------------------------
+  //
+  // Veritabanının paneli 127.0.2.1'de ve orada kalıyor: düz HTTP konuşuyor ve tek taşıma
+  // seviyesi koruması ağdan erişilemez olmak. Ama bu, veritabanına bakmanın tek yolunun o
+  // makinede bir kabuk açmak olması demekti.
+  //
+  // Buradaki uçlar isteği IdP oturumuyla doğrulayıp yerel adrese iletiyor. İki ayrı kimlik
+  // doğrulama var ve ikisi de gerekli: kullanıcının IdP yöneticisi olması (requireAdmin) ve
+  // IdP'nin veritabanına makine kimlik bilgisiyle gitmesi (eşleştirme dizininden). İkincisi
+  // olmasaydı operatörün veritabanının açılış anahtarını bilmesi gerekirdi -- tarayıcıya
+  // yapıştırılan, sohbete düşen, ekran görüntüsünde kalan bir değer.
+  //
+  // Yollar OLDUĞU GİBİ iletilmiyor; iletilenler core/database-admin-proxy.js'de açıkça listeli.
+  const forwardToDatabase = async (req, res, route) => {
+    const admin = await requireAdmin(req);
+    const body = req.method === 'POST' ? await readJsonBody(req) : null;
+    const { status, payload } = await dbAdminProxy.forward(req.method, route, body);
+    if (req.method === 'POST' && status < 400) {
+      // Veritabanı üzerindeki değişiklikler IdP'nin günlüğüne de düşüyor: iki sistemde iki ayrı
+      // denetim izi, "bunu kim yaptı" sorusunu iki yerde aramak demektir.
+      log.warn({ actor: admin.userId, route, msg: 'veritabanı yönetim işlemi one.fitfak.net üzerinden yapıldı' });
+    }
+    sendJson(res, status, payload);
+  };
+
+  for (const route of ['/overview', '/services', '/connections', '/storage', '/settings']) {
+    server.addHttpHandler({ method: 'GET', path: `/admin/database${route}` },
+      wrapHandler((req, res) => forwardToDatabase(req, res, route)), ADMIN_IP);
+  }
+  for (const route of ['/services', '/services/update', '/services/rotate', '/services/remove',
+    '/metrics/reset', '/admission/seal']) {
+    server.addHttpHandler({ method: 'POST', path: `/admin/database${route}` },
+      wrapHandler((req, res) => forwardToDatabase(req, res, route)), ADMIN_IP);
+  }
+
+  server.addHttpHandler({ method: 'GET', path: '/admin/database/status' }, wrapHandler(async (req, res) => {
+    await requireAdmin(req);
+    sendJson(res, 200, await dbAdminProxy.status());
   }), ADMIN_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/admin/users' }, wrapHandler(async (req, res) => {

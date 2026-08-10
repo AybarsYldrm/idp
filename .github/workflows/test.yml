@@ -129,3 +129,9 @@ jobs:
       - name: Internal redirect handles
         working-directory: idp
         run: npm run test:internal-redirects
+
+      # Database operations from one.fitfak.net. The weight is on the allow-list: a proxy that
+      # forwarded whatever path it was given would carry endpoints nobody decided to expose.
+      - name: Database admin proxy
+        working-directory: idp
+        run: npm run test:db-admin-proxy
