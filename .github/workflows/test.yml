@@ -141,3 +141,9 @@ jobs:
       - name: One-action application registration
         working-directory: idp
         run: npm run test:applications
+
+      # Checks that every endpoint the panel calls actually exists: a page calling a missing one
+      # renders an empty table, and an empty table looks exactly like a forbidden one.
+      - name: Admin panel screens
+        working-directory: idp
+        run: npm run test:panel-views

@@ -180,7 +180,7 @@ async function openCaStore({ config, logger = null }) {
  *
  * @returns {{ clientCertPem, clientKeyPem, chainPem, spiffeId }}
  */
-async function provisionDatabase({ config, pkiIssuer, settings, logger = null }) {
+async function provisionDatabase({ config, pkiIssuer, settings, logger = null, onServerIdentityInstalled = null }) {
   const { provisionServerIdentity, createFitfakSslCsrProvider } = require('@fitfak/database');
   const spiffe = require('./spiffe');
   const pairing = require('./pairing');
@@ -250,6 +250,10 @@ async function provisionDatabase({ config, pkiIssuer, settings, logger = null })
     pinnedFingerprints: fingerprints,
     logger,
   });
+
+  // Kurduğumuz sertifikanın parmak izini çağırana bildir: bir sonraki denemede veritabanı ONU
+  // sunacak ve sabitleme listesinde olması gerekiyor.
+  if (result.fingerprint256) onServerIdentityInstalled?.(result.fingerprint256);
 
   if (result.alreadyOpen) {
     logger?.info?.({ msg: 'veritabanı zaten açık — sunucu kimliği yeniden kurulmadı' });

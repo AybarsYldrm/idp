@@ -260,12 +260,33 @@ function load() {
     });
 
   if (cfg.isProduction && !cfg.devMockDb) {
-    if (cfg.db.remoteTarget && !cfg.db.caFingerprint && !cfg.db.caPath) {
+    // IdP'nin veritabanına bağlanmak için bir CA parmak izine İHTİYACI YOK, ve bunu istemek
+    // yanlıştı.
+    //
+    // Bu kontrol mühürlü açılıştan ÖNCEden kalmaydı: o zaman IdP de diğer servisler gibi
+    // enrolment yapıyordu ve ilk temasta sunucuyu doğrulamak için bir çıpa gerekiyordu. Artık
+    // öyle değil ve zincir tam ters yönde işliyor:
+    //
+    //   * Veritabanının sunucu sertifikasını İDP ÜRETİR. Kendi verdiği bir sertifikayı
+    //     doğrulamak için kendisine bir çıpa vermesi gerekmez -- çıpa odur.
+    //   * Denetim düzlemi el sıkışması paylaşılan sırla ve RFC 9266 kanal bağlamayla
+    //     doğrulanır, sertifikayla değil. Karşı tarafın kimliğini kanıtlayan şey odur.
+    //   * Önyükleme sertifikasının parmak izi isteğe bağlı olarak sabitlenebilir ve
+    //     eşleştirme dizininden GELİR (core/pairing.js) -- elle girilecek bir değer değil.
+    //
+    // Kontrol yerinde durduğu sürece sonuç şuydu: uzak veritabanı yapılandırıldığında IdP
+    // ÜRETİMDE HİÇ AÇILMIYORDU, ve hata mesajı var olmayan bir gereksinimi işaret ettiği için
+    // operatörü olmayan bir değeri aramaya gönderiyordu.
+    //
+    // Gerçekten gerekli olan şey denetim düzlemi sırrı, ve o da eşleştirme dizininden gelebilir;
+    // ikisi de yoksa core/db-link.js bağlanmayı denerken bunu açıkça söylüyor.
+    if (cfg.db.remoteTarget && !cfg.db.controlSecret && !cfg.db.pairingDiscovery) {
       throw new ConfigError(
-        '[fitfak-idp] FITFAK_IDP_DB_TARGET verildi ama FITFAK_IDP_DB_CA_FINGERPRINT '
-        + 've FITFAK_IDP_DB_CA_PATH ikisi de yok.\n'
-        + '  Sunucuyu ilk temasta doğrulayamadan enrolment yapmak, kanıtı ortadaki '
-        + 'herkese vermek demektir.',
+        '[fitfak-idp] FITFAK_IDP_DB_TARGET verildi ama denetim düzlemi sırrı yok ve '
+        + 'eşleştirme dizini keşfi kapalı.\n'
+        + '  Veritabanı, mühürlü durumdayken yalnızca paylaşılan denetim sırrını kanıtlayan '
+        + 'tarafla konuşur. O sırrı ya FITFAK_IDP_DB_CONTROL_SECRET ile verin, ya da '
+        + 'eşleştirme dizini keşfini açık bırakın -- veritabanı sırrı oraya kendisi yazar.',
       );
     }
   }
