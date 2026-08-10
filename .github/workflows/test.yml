@@ -63,3 +63,26 @@ jobs:
       - name: Short-lived workload identities
         working-directory: idp
         run: npm run test:workload
+
+      # The identity provider resolves @fitfak/database as a package. The checkout above puts
+      # it beside this repository, so it has to be linked in before anything that opens the
+      # encrypted secret store can run.
+      - name: Link @fitfak/database
+        working-directory: idp
+        run: |
+          mkdir -p node_modules/@fitfak
+          ln -sfn "$GITHUB_WORKSPACE/database" node_modules/@fitfak/database
+
+      - name: Startup buffer — work before the database exists
+        working-directory: idp
+        run: npm run test:staging
+
+      - name: Keys in the encrypted vault, not in .keys/
+        working-directory: idp
+        run: npm run test:key-vault
+
+      # The one that catches a class of bug with no symptom: a certificate carrying an address
+      # that does not answer. Chain building and revocation both fail silently when it happens.
+      - name: Certificate distribution points
+        working-directory: idp
+        run: npm run test:crl-distribution

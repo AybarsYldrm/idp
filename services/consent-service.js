@@ -60,6 +60,12 @@ const SCOPE_CATALOG = {
     detail: 'Altyapı servislerinin veritabanına kaydolmasını sağlar. Yalnızca servis hesapları içindir.',
     sensitive: true,
   },
+  'fitdb:admin': {
+    title: 'Veritabanı yönetimi',
+    detail: 'Veritabanı yönetim panelini sizin adınıza açar: servis kaydı, sayaçlar, mühürleme. '
+      + 'Veri okumaz -- boyut bildirir, içerik değil.',
+    sensitive: true,
+  },
   offline_access: {
     title: 'Siz yokken de erişim',
     detail: 'Tarayıcınızı kapattıktan sonra da erişimini sürdürür (yenileme belirteci). İzni geri aldığınızda sona erer.',

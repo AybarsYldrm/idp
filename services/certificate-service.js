@@ -51,7 +51,7 @@ async function requestCertificate({
   const certs = db.collection('certificates');
 
   const {
-    certPem, serialNumberHex, skidHex, notBefore, notAfter,
+    certPem, serialNumberHex, skidHex, notBefore, notAfter, issuerName,
   } = await pkiIssuer.signCertificateFromCsr({
     csrPem,
     profile,
@@ -87,6 +87,8 @@ async function requestCertificate({
       revocationReason: '',
       createdAt: BigInt(Date.now()),
       issuedVia: 'device_code',
+      // Hangi ara CA imzaladı. İptal edildiğinde doğru listeye düşmesi buna bağlı.
+      issuerName: issuerName || '',
     }, { unique: ['skidHex'] });
   } catch (e) {
     if (e.code === 'UNIQUE_CONSTRAINT' || e.code === 'ALREADY_EXISTS' || /already exists/i.test(e.message || '')) {

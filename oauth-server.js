@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 
 const { loadOrCreateSigningKeyPair, publicKeyToJwks } = require('./core/keys');
+const { KeyVault } = require('./core/key-vault');
 const { SessionManager, ACCOUNTS_COOKIE_NAME } = require('./core/session-manager');
 const { WebAuthnService } = require('./core/webauthn');
 const { ProofOfWorkService } = require('./core/proof-of-work');
@@ -52,7 +53,27 @@ const consentService = require('./services/consent-service');
 // koddan silmek onları geçmişten kaldırmaz. İLGİLİ KİMLİK BİLGİLERİ
 // DÖNDÜRÜLMELİDİR; ayrıntı için README'deki "Sır rotasyonu" bölümüne bakın.
 const config = require('./core/config').load();
-const { connectToDatabase } = require('./core/db-bootstrap');
+
+// ----------------------------------------------------------------------------
+// 📋 GÜNLÜKLEME
+// ----------------------------------------------------------------------------
+// Tek akış. @fitfak/database'in motor satırları da buraya akıyor (aşağıdaki
+// configureLogging çağrısı), yani "ne olup bitiyor" sorusunun cevabı tek bir
+// yerde ve tek bir biçimde: zaman damgası, seviye, bileşen, mesaj ve iç içe
+// ayrıntı bloğu.
+//
+// Sırlar koşulsuz maskeleniyor -- "yalnızca trace'te yazdırıyoruz" koruma
+// değildir, çünkü trace'i açan kişi çıktıyı bir yere yapıştırır.
+const logger = require('./core/logger');
+const log = logger.mk('idp');
+
+try {
+  // Motorun her satırı IdP'nin günlükleyicisine gider: iki günlükleyici, iki
+  // biçim, iki hedef yerine tek bir akış.
+  require('@fitfak/database').configureLogging({ sink: log.child('fitdb') });
+} catch (err) {
+  log.warn({ error: err.message, msg: '@fitfak/database günlükleri bağlanamadı' });
+}
 
 const PORT = config.port;
 const ISSUER = config.issuer;
@@ -93,31 +114,43 @@ const requireTrustOrigin = createSameOriginGuard({
 });
 
 // ----------------------------------------------------------------------------
-// 🏗️ VERİTABANI KURULUMU
+// 🏗️ VERİTABANI BAĞLANTISI
 // ----------------------------------------------------------------------------
-// Yumurta-tavuk sorununun çözümü core/db-bootstrap.js'te: ilk çalıştırmada
-// bootstrap TLS -> enrolment -> mTLS, sonraki her açılışta diskteki
-// sertifikadan devam. Ayrıntılı gerekçe o dosyanın başındadır.
-async function bootstrapDatabase({ pkiIssuer = null } = {}) {
+// Bağlantı artık bir AÇILIŞ KOŞULU DEĞİL.
+//
+// Eskiden burada `await connectToDatabase(...)` vardı ve sonucu şuydu: veritabanı
+// ayakta değilse IdP hiç açılmıyordu. Oysa veritabanı, IdP ona bir sunucu
+// sertifikası verene kadar mühürlü bekliyor -- iki taraf da diğerini bekliyordu
+// ve sistem kendini açamıyordu. "Önce hangisini çalıştırmalıyım" sorusunun
+// cevabı yoktu, çünkü ikisi de yanlıştı.
+//
+// core/db-link.js bunu çözüyor: IdP her hâlükârda açılır, yazmalar bir açılış
+// tamponuna gider, bağlantı arka planda kurulur ve kurulduğu anda tampon
+// veritabanına boşaltılır. Ayrıntılı gerekçe o dosyanın başında.
+async function openDatabaseLink({ pkiIssuer }) {
   if (config.devMockDb) {
-    console.warn('[fitfak-idp] UYARI: FITFAK_IDP_DEV_DB=1 -- bellek-içi MOCK veritabanı (kalıcılık ve şifreleme YOK).');
+    log.warn({
+      msg: 'FITFAK_IDP_DEV_DB=1 — bellek-içi MOCK veritabanı (kalıcılık ve şifreleme YOK)',
+    });
     const { createMockDb } = require('./test/mock-db');
-    return { db: createMockDb([...Object.keys(schema), 'secrets']), mode: 'mock' };
+    const db = createMockDb([...Object.keys(schema), 'secrets']);
+    await db.applySchemaRegistry(schema);
+    return { db, link: null, mode: 'mock' };
   }
 
-  const result = await connectToDatabase({ config, pkiIssuer, logger: console });
+  const { createDatabaseLink } = require('./core/db-link');
+  const link = createDatabaseLink({ config, pkiIssuer, logger: log });
 
-  // Şemayı her açılışta uygula. Bu bir no-op değildir: alan eklemek bir
-  // migrasyondur ve motor bunu tespit edip indeksleri yeniden kurar; kırıcı bir
-  // değişiklik ise açılışta reddedilir -- ilk yazma denemesinde değil.
-  if (typeof result.db.applySchemaRegistry === 'function') {
-    await result.db.applySchemaRegistry(schema);
-  } else {
-    for (const [name, def] of Object.entries(schema)) {
-      await result.db.defineCollectionAsync(name, def);
-    }
-  }
-  return result;
+  // Şema tampona uygulanıyor: boşaltmada gerçek veritabanına da uygulanacak.
+  // Alanları tanımlanmamış bir koleksiyona yazmak, motorun kayıtları reddetmesi
+  // ya da indeksleri hiç kurmaması demek olurdu.
+  await link.db.applySchemaRegistry(schema);
+
+  link.on('connected', (e) => log.info({ ...e, msg: 'veritabanı bağlandı' }));
+  link.on('flushed', (e) => log.info({ ...e, msg: 'açılış tamponu boşaltıldı' }));
+
+  link.start();
+  return { db: link.db, link, mode: 'linked' };
 }
 
 // ----------------------------------------------------------------------------
@@ -195,7 +228,10 @@ function wrapHandler(fn) {
       await fn(req, res);
     } catch (e) {
       const status = e.httpStatus || 500;
-      if (status >= 500) console.error('[fitfak-idp] beklenmeyen hata:', e);
+      // 500'ler tam yığınla, 4xx'ler tek satırla: bir istemci hatasının yığın izi
+      // gürültüdür ve gerçek olanları içinde kaybeder.
+      if (status >= 500) log.error({ error: e.message, stack: e.stack, url: req.url, msg: 'beklenmeyen hata' });
+      else log.debug({ error: e.code || e.message, status, url: req.url, msg: 'istek reddedildi' });
       // "Çok sık denediniz" deyip ne zaman denenebileceğini söylememek,
       // istemciyi daha sık denemeye iter.
       if (e.retryAfterSeconds) res.setHeader('retry-after', String(e.retryAfterSeconds));
@@ -217,26 +253,69 @@ async function main() {
   // Ayrıntılı gerekçe core/db-bootstrap.js'in başında.
   let caStoreDb = null;
   let pkiIssuerEarly = null;
+  let keyVault = null;
 
   if (!config.devMockDb) {
+    const caDone = log.timer('sertifika otoritesi açılışı');
     const { openCaStore } = require('./core/db-bootstrap');
-    ({ db: caStoreDb } = await openCaStore({ config, logger: console }));
+    ({ db: caStoreDb } = await openCaStore({ config, logger: log.child('ca') }));
     pkiIssuerEarly = await ProductionPkiIssuer.open({
       db: caStoreDb,
       // Eski .certs/*.key dosyaları varsa bir kereliğine kasaya alınır.
       caDir: config.caDir,
       trustDomain: config.trustDomain,
+      logger: log.child('pki'),
     });
-    console.log('[fitfak-idp] Sertifika otoritesi açıldı (şifreli yerel kasa).');
+    caDone({
+      root: pkiIssuerEarly.rootCA?.subject,
+      fingerprint: pkiIssuerEarly.rootCA?.fingerprint,
+    });
+
+    // Anahtar kasası CA deposuyla AYNI veritabanında ve aynı gerekçeyle orada: uzak veritabanı
+    // IdP ona bir sunucu sertifikası verene kadar mühürlü bekler, oysa oturum imzalama anahtarı
+    // açılışın ilk adımlarında lazım. Uzakta olsaydı IdP kendi belirteçlerini imzalayamadan
+    // açılmayı beklerdi.
+    keyVault = await KeyVault.open(caStoreDb, { logger: log.child('keys') });
+    // Diskteki `.keys/*` dosyalarını bir kereliğine içeri alır ve `.migrated` olarak yeniden
+    // adlandırır. Silmiyor: geçişte bir hata olursa geri dönülemez olurdu ve geri dönülemeyen
+    // şey oturum imzalama anahtarıysa, herkesin oturumu geçersizleşir.
+    await keyVault.importFromDisk(config.keyDir);
+
+    // Kayıt otoritesi ve panel istemci sırları.
+    //
+    // Yapılandırmada üretilmiyorlar (gerekçe core/config.js'de): yükleme eşzamanlı, kasa
+    // asenkron. Ortamdan geldiyse kasaya hiç bakılmaz -- iki süreç farklı makinelerdeyse
+    // eşleştirme dizini paylaşılamaz ve değerler elle girilir.
+    const { KEY_VAULT_NAMES } = require('./core/key-vault');
+    config.raClientSecret = config.raClientSecret
+      || await keyVault.loadOrCreateSecret(KEY_VAULT_NAMES.RA_CLIENT_SECRET);
+    config.panelClientSecret = config.panelClientSecret
+      || await keyVault.loadOrCreateSecret(KEY_VAULT_NAMES.PANEL_CLIENT_SECRET);
   }
 
-  const { db, mode: dbMode } = await bootstrapDatabase({ pkiIssuer: pkiIssuerEarly });
-  console.log(`[fitfak-idp] Veritabanı bağlantısı hazır (mod: ${dbMode}).`);
+  const { db, link: dbLink, mode: dbMode } = await openDatabaseLink({ pkiIssuer: pkiIssuerEarly });
+  log.info({
+    mode: dbMode,
+    state: dbLink ? dbLink.state : 'mock',
+    msg: dbLink && dbLink.state !== 'connected'
+      ? 'veritabanı henüz bağlı değil — IdP açılış tamponuyla başlıyor, bağlantı arka planda kuruluyor'
+      : 'veritabanı hazır',
+  });
 
   // --------------------------------------------------------------------------
   // ⚙️ SERVİSLER
   // --------------------------------------------------------------------------
-  const signingKeyPair = loadOrCreateSigningKeyPair(KEY_DIR);
+  // Oturum imzalama anahtarı: şifreli kasadan.
+  //
+  // Bu anahtar her erişim ve yenileme belirtecini imzalar, yani bir kopyası herhangi bir
+  // kullanıcı için herhangi bir belirteci üretebilme yetkisidir -- parolayı bilmeden, ikinci
+  // faktörü geçmeden, IdP'ye hiç bağlanmadan ve hiçbir yerde iz bırakmadan. Dosyada durduğu
+  // sürece kök CA anahtarını kasaya almanın anlamı yarım kalıyordu.
+  //
+  // Kasa yokken (dev-mock) dosyaya düşülüyor: o modda gömülü bir CA deposu da yok.
+  const signingKeyPair = keyVault
+    ? await keyVault.loadOrCreateSigningKeyPair()
+    : loadOrCreateSigningKeyPair(KEY_DIR);
   const sessionManager = new SessionManager({
     store: authService.createSessionStoreAdapter(db),
     signingKeyPair, issuer: ISSUER, cookieDomain: COOKIE_DOMAIN,
@@ -255,17 +334,18 @@ async function main() {
   // --------------------------------------------------------------------------
   process.env.FITFAK_IDP_REAL_PKI = '1';
   if (process.env.FITFAK_IDP_REAL_PKI === '1') {
-    console.log('[fitfak-idp] ÜRETİM MODU: Gerçek PKI / ACME / OCSP / CRL altyapısı devrede.');
+    log.info({ msg: 'üretim modu — gerçek PKI / ACME / OCSP / CRL altyapısı devrede' });
   } else {
-    console.warn('[fitfak-idp] UYARI: PKI/ACME/OCSP/CRL SAHTE (dev-mock) issuer ile çalışıyor -- ÜRETİMDE KULLANMAYIN.');
+    log.warn({ msg: 'PKI/ACME/OCSP/CRL SAHTE (dev-mock) issuer ile çalışıyor — ÜRETİMDE KULLANMAYIN' });
   }
   
   // CT log'u önce kurulur: sertifika üretimi ona bağlı (önsertifika -> SCT ->
   // sertifika). Log yoksa sertifikalar SCT'siz üretilir, üretim durmaz.
-  const ctLog = createCtLog({ db, keyDir: config.keyDir });
-  const ctPublicKeyPem = require('node:fs').readFileSync(
-    path.join(config.keyDir, 'ct-log.pub'), 'utf8',
-  );
+  const ctKeyPair = keyVault
+    ? await keyVault.loadOrCreateCtLogKey()
+    : require('./services/ct-log-service').loadOrCreateLogKey(config.keyDir);
+  const ctLog = createCtLog({ db, keyPair: ctKeyPair });
+  const ctPublicKeyPem = ctKeyPair.publicKeyPem;
   // CA malzemesi DOSYADA DEĞİL, şifreli sır deposunda (core/ca-vault.js).
   //
   // Uzak veritabanı modunda otorite yukarıda, veritabanına bağlanmadan ÖNCE
@@ -302,7 +382,42 @@ async function main() {
         // onay ekranlarını okumadan geçmeye alıştırır.
         firstParty: true,
       });
-      console.warn(`[fitfak-idp] DNS Paneli OAuth client'ı tohumlandı.`);
+      log.warn({ clientId: process.env.FITFAK_IDP_DNS_CLIENT_ID, msg: "DNS Paneli OAuth istemcisi tohumlandı" });
+    }
+  }
+
+  // Veritabanının yönetim paneli.
+  //
+  // O panel de bir OAuth istemcisidir ve olması gerekir: aksi halde kendi parolasını tutardı ve
+  // bu yığındaki TEK yüzey, yöneticinin kim olduğuna kendi karar veren yüzey olurdu.
+  //
+  // Buradan tohumlanmasının sebebi bir sıra sorunu. Veritabanı, IdP onu sağlayana kadar mühürlü
+  // bekler; yani panelin giriş yapabilmesi için gereken istemci kaydının, veritabanı açılmadan
+  // ÖNCE var olması gerekir. Veritabanı hâlâ mühürlüyken bu yazma açılış tamponuna düşer
+  // (core/staging-store.js) ve bağlantı kurulduğunda gerçek veritabanına geçer -- panel, bu
+  // yığındaki her şey ayağa kalkmadan önce çalışır durumda olur.
+  //
+  // Sır KARŞILAŞTIRILMIYOR, yalnızca yokluğunda oluşturuluyor. Her açılışta üzerine yazmak,
+  // operatörün panelden döndürdüğü bir sırrı sessizce geri alırdı.
+  {
+    const existingPanel = await clientStore.getClient(config.panelClientId);
+    if (!existingPanel) {
+      await clientStore.createClient({
+        clientId: config.panelClientId,
+        clientSecret: config.panelClientSecret,
+        name: 'fitdb yönetim paneli',
+        redirectUris: [config.panelRedirectUri],
+        allowedScopes: ['openid', 'profile', 'email', 'fitdb:admin'],
+        clientUri: config.panelRedirectUri.replace(/\/auth\/callback$/, '/'),
+        // Kendi yüzeyimiz. "FITFAK, FITFAK hesabınıza erişmek istiyor" diye sormak kullanıcıya
+        // bilgi vermez, yalnızca onu onay ekranlarını okumadan geçmeye alıştırır.
+        firstParty: true,
+      });
+      log.info({
+        clientId: config.panelClientId,
+        redirectUri: config.panelRedirectUri,
+        msg: 'veritabanı yönetim paneli OAuth istemcisi olarak kaydedildi',
+      });
     }
   }
 
@@ -338,15 +453,15 @@ async function main() {
         password: config.smtp.password,
       });
       mailer.defaultFrom = config.smtp.from || config.smtp.username;
-      console.log(`[fitfak-idp] SMTP yapılandırıldı: ${config.smtp.username}@${config.smtp.host}`);
+      log.info({ host: config.smtp.host, user: config.smtp.username, msg: 'SMTP yapılandırıldı' });
     } catch (e) {
-      console.warn('[fitfak-idp] UYARI: SMTP servisi yüklenemedi:', e.message);
+      log.warn({ error: e.message, msg: 'SMTP servisi yüklenemedi' });
     }
   } else {
     // E-posta olmadan doğrulama kodları ve şüpheli-oturum bildirimleri
     // gönderilemez. Sessizce devam etmek yerine bunu açıkça söylüyoruz:
     // kayıt akışı çalışır görünüp kullanıcıya kod ulaşmazsa sebebi burasıdır.
-    console.warn('[fitfak-idp] UYARI: SMTP_HOST ayarlanmamış -- doğrulama kodları yalnızca loga yazılacak.');
+    log.warn({ msg: 'SMTP_HOST ayarlanmamış — doğrulama kodları yalnızca günlüğe yazılacak' });
   }
 
   async function resolveUsernameFromEmail(reqBody) {
@@ -1554,7 +1669,7 @@ async function main() {
     if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
     const body = await readJsonBody(req);
     const result = await certificateService.revokeCertificate({ db, serialNumberHex: body.serialNumberHex, reason: body.reason, actingUserId: session.userId });
-    await crlService.invalidateCrlCache(new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:'));
+    await crlService.invalidateCrlCache(new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:'), { authorities: await pkiIssuer.listIssuingAuthorityNames() });
     sendJson(res, 200, result);
   }), PKI_IP);
 
@@ -1796,7 +1911,7 @@ async function main() {
   }), PKI_IP);
   
   server.addHttpHandler({ method: 'GET', path: '/admin/certificates' }, wrapHandler(async (req, res) => { await requireAdmin(req); sendJson(res, 200, { certificates: await certificateService.listAllCertificates({ db }) }); }), ADMIN_IP);
-  server.addHttpHandler({ method: 'POST', path: '/admin/certificates/revoke' }, wrapHandler(async (req, res) => { const admin = await requireAdmin(req); const body = await readJsonBody(req); const result = await certificateService.revokeCertificate({ db, serialNumberHex: body.serialNumberHex, reason: body.reason, actingUserId: admin.userId, actingUserRole: 'admin' }); await crlService.invalidateCrlCache(new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:')); sendJson(res, 200, result); }), ADMIN_IP);
+  server.addHttpHandler({ method: 'POST', path: '/admin/certificates/revoke' }, wrapHandler(async (req, res) => { const admin = await requireAdmin(req); const body = await readJsonBody(req); const result = await certificateService.revokeCertificate({ db, serialNumberHex: body.serialNumberHex, reason: body.reason, actingUserId: admin.userId, actingUserRole: 'admin' }); await crlService.invalidateCrlCache(new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:'), { authorities: await pkiIssuer.listIssuingAuthorityNames() }); sendJson(res, 200, result); }), ADMIN_IP);
 
   server.addHttpHandler({ method: 'GET', path: '/admin/acme-orders' }, wrapHandler(async (req, res) => {
       await requireAdmin(req);
@@ -1988,14 +2103,31 @@ async function main() {
     ...(HTTP2_PORT ? { http2Port: HTTP2_PORT } : {}),
     host: [...new Set([IDP_IP, PKI_IP, ADMIN_IP, STATUS_IP])],
   }, resolve));
-  console.log(
-    `[fitfak-idp] dinliyor:\n`
-    + `  ${IDP_IP}:${PORT}    session.fitfak.net   (giris, OAuth, oturum)\n`
-    + `  ${PKI_IP}:${PORT}    trust.fitfak.net     (ACME, sertifika, /policy)\n`
-    + `  ${ADMIN_IP}:${PORT}    one.fitfak.net       (yonetim)\n`
-    + `  ${STATUS_IP}:${PORT}  status.trust.fitfak.net (OCSP, CRL, CA yayini)\n`
-    + `  issuer=${ISSUER} rpId=${RP_ID}`,
-  );
+  log.info({
+    listening: {
+      [`${IDP_IP}:${PORT}`]: 'session.fitfak.net — giriş, OAuth, oturum',
+      [`${PKI_IP}:${PORT}`]: 'trust.fitfak.net — ACME, sertifika, kısa ömürlü kimlik, /policy',
+      [`${ADMIN_IP}:${PORT}`]: 'one.fitfak.net — yönetim',
+      [`${STATUS_IP}:${PORT}`]: 'status.trust.fitfak.net — OCSP, CRL, CA yayını',
+    },
+    issuer: ISSUER,
+    rpId: RP_ID,
+    trustDomain: config.trustDomain,
+    database: dbLink ? dbLink.state : dbMode,
+    msg: 'fitfak kimlik dinliyor',
+  });
+
+  // Veritabanı henüz bağlı değilse bunun NE ANLAMA GELDİĞİ tek satırda yazılı olmalı.
+  // "bağlanılamadı" satırını görüp sistemin bozuk olduğunu düşünmek, tasarımın kendisini
+  // bir arıza sanmaktır.
+  if (dbLink && dbLink.state !== 'connected') {
+    log.warn({
+      pairingDir: require('./core/pairing').pairingDir(config.pairingDir),
+      msg: 'veritabanı henüz bağlı değil. IdP çalışıyor ve yönetici giriş yapabilir; '
+        + 'yazılanlar bellekte tutulup bağlantı kurulunca veritabanına yazılacak. '
+        + 'Veritabanı sunucusunu başlatın — birbirlerini eşleştirme dizininden bulacaklar.',
+    });
+  }
   // Testler için: canlı sunucuya karşı koşan testlerin veritabanına ve oturum
   // yöneticisine de erişmesi gerekiyor (kayıt tohumlamak, PoW + e-posta
   // doğrulaması + TOTP kaydı zincirini her testte tekrarlamamak için oturum
@@ -2007,7 +2139,7 @@ async function main() {
 
 if (require.main === module) {
   main().catch((e) => {
-    console.error('[fitfak-idp] başlatma hatası:', e);
+    log.error({ error: e.message, stack: e.stack, msg: 'başlatma hatası' });
     process.exit(1);
   });
 }

@@ -61,11 +61,14 @@ const IDENTITY_FILE = 'identity.json';
 // açılamaz. Kimlik dosyasıyla aynı muamele: 0600, temp+rename.
 const DB_HANDLE_FILE = 'database.json';
 
-function log(logger, level, message) {
-  if (logger && typeof logger[level] === 'function') logger[level](message);
-  else if (level === 'warn') console.warn(message);
-  else console.log(message);
-}
+// Bir günlükleyici verilmediğinde sessiz kalınır, console'a düşülmez.
+//
+// Düşmek cazip ama yanlış: bu modülün çağıranları (core/db-link.js, oauth-server.js) her
+// zaman bir günlükleyici veriyor, ve console'a düşen bir yol yalnızca birinin unuttuğu
+// durumda devreye girer -- yani satırlar biçimsiz, maskesiz ve başka bir hedefe gider,
+// üstelik tam olarak kimsenin beklemediği anda.
+const { NULL_LOGGER } = require('./logger');
+const withLogger = (logger) => logger || NULL_LOGGER;
 
 /**
  * Diskte saklanan mTLS kimliği. Yeniden başlatmada tekrar enrolment yapmamak
@@ -162,7 +165,7 @@ async function openCaStore({ config, logger = null }) {
   // Kimlik ÖNCE yazılıyor: aradaki bir çökme, bir daha açılamayan bir CA deposu
   // bırakırdı ve o depoda kök anahtar var.
   await fsp.writeFile(idFile, created.dbId, { mode: 0o600 });
-  log(logger, 'warn', `[bootstrap] Yeni CA deposu oluşturuldu: ${baseDir} (dbId=${created.dbId})`);
+  withLogger(logger).warn({ baseDir, dbId: created.dbId, msg: 'yeni CA deposu oluşturuldu' });
   return { db: created.db, manager, created: true };
 }
 
@@ -177,10 +180,17 @@ async function openCaStore({ config, logger = null }) {
  *
  * @returns {{ clientCertPem, clientKeyPem, chainPem, spiffeId }}
  */
-async function provisionDatabase({ config, pkiIssuer, logger = null }) {
+async function provisionDatabase({ config, pkiIssuer, settings, logger = null }) {
   const { provisionServerIdentity, createFitfakSslCsrProvider } = require('@fitfak/database');
   const spiffe = require('./spiffe');
+  const pairing = require('./pairing');
   const dbCfg = config.db;
+
+  // Hedef ve denetim sırrı ÇAĞIRANDAN geliyor, doğrudan yapılandırmadan değil: core/db-link.js
+  // onları ortam ile eşleştirme dizini arasında çözüyor ve bu iki kaynağın birleştirilmesi tek
+  // bir yerde olmalı. Burada da okumak, ikisinin farklı şeye karar verebileceği ikinci bir yer
+  // yaratırdı.
+  const { target, controlSecret, fingerprints = [] } = settings;
 
   const csrProvider = createFitfakSslCsrProvider();
   const anchors = await pkiIssuer.getTrustAnchorsPem();
@@ -224,8 +234,8 @@ async function provisionDatabase({ config, pkiIssuer, logger = null }) {
 
   // ---- 3. devir ------------------------------------------------------------------------
   const result = await provisionServerIdentity({
-    target: dbCfg.remoteTarget,
-    bootstrapSecret: dbCfg.controlSecret,
+    target,
+    bootstrapSecret: controlSecret,
     serverIdentity: {
       certPem: serverCert.leafPem,
       privateKeyPem: serverKey.privateKeyPem,
@@ -237,17 +247,44 @@ async function provisionDatabase({ config, pkiIssuer, logger = null }) {
     // tek bir cevabı olmalıdır.
     trustAnchorsPem: anchors,
     controlSpiffeId: idpSpiffeId.uri,
-    pinnedFingerprints: dbCfg.bootstrapFingerprints,
-    logger: { info: (m) => log(logger, 'info', `[bootstrap] ${m}`) },
+    pinnedFingerprints: fingerprints,
+    logger,
   });
 
   if (result.alreadyOpen) {
-    log(logger, 'info', '[bootstrap] Veritabanı zaten açık; sunucu kimliği yeniden kurulmadı.');
+    logger?.info?.({ msg: 'veritabanı zaten açık — sunucu kimliği yeniden kurulmadı' });
   } else {
-    log(logger, 'info',
-      `[bootstrap] Veritabanının sunucu kimliği kuruldu. Veritabanı ${new Date(result.holdExpiresAt).toISOString()} `
-      + 'tarihine kadar bekliyor; mTLS bağlantısı tamamlanmazsa kendini yeniden mühürleyecek.');
+    logger?.info?.({
+      holdExpiresAt: new Date(result.holdExpiresAt).toISOString(),
+      fingerprint: result.fingerprint256,
+      msg: 'veritabanının sunucu kimliği kuruldu — mTLS bağlantısı tamamlanmazsa kendini yeniden mühürleyecek',
+    });
   }
+
+  // ---- 4. karşı tarafın ihtiyaç duyduğunu yayınla ----------------------------------------
+  //
+  // Veritabanı bir KAYIT OTORİTESİ olarak IdP'den sertifika ister ve bunun için bir istemci
+  // kimliği, bir sır ve bir adres gerekir. Bunları operatörün üretip iki yere girmesi, bu iki
+  // projeyi bağlamayı fiilen imkânsız kılan şeyin ta kendisiydi.
+  //
+  // Kök SERTİFİKASI da yazılıyor -- açık veridir ve veritabanının onu ayrıca indirmesine gerek
+  // kalmaz. Kök ANAHTARI asla: o şifreli kasadadır ve oradan çıkmaz.
+  await pairing.publishIdp({
+    dir: config.pairingDir,
+    issuer: config.issuer,
+    issuanceUrl: `${config.trustIssuer}/pki/ra/issue`,
+    anchorsUrl: `${config.trustIssuer}/pki/ra/anchors`,
+    raClientId: config.raClientId,
+    raClientSecret: config.raClientSecret,
+    // Veritabanının yönetim paneli de buradan giriş yapar. Kayıt otoritesininkinden ayrı bir
+    // istemci; gerekçe core/pairing.js'de.
+    panelClientId: config.panelClientId,
+    panelClientSecret: config.panelClientSecret,
+    rootFingerprint: pkiIssuer.rootCA?.fingerprint || null,
+    rootCertPem: anchors[0] || null,
+    trustDomain: config.trustDomain,
+    logger,
+  });
 
   return {
     clientCertPem: clientCert.leafPem,
@@ -280,7 +317,7 @@ async function connectToDatabase({ config, pkiIssuer = null, logger = null }) {
 
   // ---- gömülü motor: ağ yok, enrolment yok --------------------------------------------
   if (!dbCfg.remoteTarget) {
-    log(logger, 'info', '[bootstrap] Gömülü veritabanı motoru kullanılıyor (ağ yok).');
+    withLogger(logger).info({ msg: 'gömülü veritabanı motoru kullanılıyor (ağ yok)' });
     const {
       DatabaseManager, ClientSecretKeyProvider, SnowflakeGenerator,
     } = require('@fitfak/database');
@@ -307,132 +344,23 @@ async function connectToDatabase({ config, pkiIssuer = null, logger = null }) {
     });
     await fsp.mkdir(config.dataDir, { recursive: true });
     await fsp.writeFile(dbIdFile, created.dbId);
-    log(logger, 'warn', `[bootstrap] Yeni veritabanı oluşturuldu: dbId=${created.dbId}`);
+    withLogger(logger).warn({ dbId: created.dbId, msg: 'yeni veritabanı oluşturuldu' });
     return { handle: null, identity: null, db: created.db, manager, mode: 'embedded', created: true };
   }
 
-  // ---- uzak veritabanı: sağla (provision) -> mTLS --------------------------------------
+  // ---- uzak veritabanı --------------------------------------------------------------------
   //
-  // Enrolment BURADA YOK ve olmaması doğru. Enrolment, CA'ya erişimi olmayan bir
-  // servisin sertifika alma yoludur. IdP'nin CA'ya erişimi vardır -- CA odur --
-  // ve kendine enrolment yaptırması, ürettiği sertifikayı kendisinden istemesi
-  // olurdu. Diğer her servis enrolment kullanır; IdP kullanamaz.
-  if (!pkiIssuer) {
-    throw new Error(
-      '[bootstrap] Uzak veritabanı modunda bir pkiIssuer gerekli.\n'
-      + '  Veritabanı mühürlü açılır ve sunucu sertifikasını IdP\'den bekler; onu üretecek\n'
-      + '  olan da IdP\'nin sertifika otoritesidir.',
-    );
-  }
-  if (!dbCfg.controlSecret) {
-    throw new Error(
-      '[bootstrap] FITFAK_IDP_DB_CONTROL_SECRET verilmemiş.\n'
-      + '  Veritabanının sunucu kimliğini kurmak için gereken denetim düzlemi sırrı bu;\n'
-      + '  db-server.js açılışta yazdırır. Enrolment sırrından AYRIDIR: bu sır veritabanının\n'
-      + '  sunucu anahtarını değiştirme yetkisidir, bir istemci sertifikası alma yetkisi değil.',
-    );
-  }
-
-  const { resume, connectDatabase, createFitfakSslCsrProvider } = require('@fitfak/database');
-  const csrProvider = createFitfakSslCsrProvider();
-
-  const provisioned = await provisionDatabase({ config, pkiIssuer, logger });
-
-  // Kendi sertifikamızla geri bağlan. Veritabanı için ASIL OLAY budur: mühürlü
-  // durumdan çıkıp herkese açılması, bu bağlantının başarılı olmasına bağlı.
-  const identity = await resume({
-    target: dbCfg.remoteTarget,
-    certPem: provisioned.clientCertPem,
-    privateKeyPem: provisioned.clientKeyPem,
-    chainPem: provisioned.chainPem,
-    principal: dbCfg.serviceName,
-    roles: ['admin'],
-    notAfter: provisioned.notAfter,
-    csrProvider,
-    logger: { info: (m) => log(logger, 'info', `[bootstrap] ${m}`) },
-  });
-
-  log(logger, 'info',
-    `[bootstrap] mTLS bağlantısı kuruldu (${provisioned.spiffeId}). Veritabanı artık açık.`);
-
-  // Yenileme, sertifikayı YENİDEN ÜRETEREK yapılıyor -- enrolment ile değil.
-  // Aynı sebeple: yenileme de bir sertifika talebidir ve talebin muhatabı biziz.
+  // BURADA DEĞİL. Uzak bağlantının tamamı core/db-link.js'e taşındı ve sebebi bir hataydı:
+  // burada olduğu sürece bağlantı bir AÇILIŞ KOŞULUYDU, yani veritabanı ayakta değilse IdP hiç
+  // açılmıyordu. Oysa veritabanı, IdP ona bir sunucu sertifikası verene kadar mühürlü bekliyor
+  // -- iki taraf da diğerini bekliyordu ve sistem kendini açamıyordu.
   //
-  // Veritabanının sunucu sertifikası da aynı anda yenilenmeli, yoksa saatler
-  // sonra IdP'nin sertifikası tazeyken veritabanınınki ölür ve bağlantı
-  // anlaşılması zor bir TLS hatasıyla düşer.
-  const renewEveryMs = Math.floor((dbCfg.identityValiditySeconds * 1000) / 2);
-  const renewalTimer = setInterval(async () => {
-    try {
-      const renewed = await provisionDatabase({ config, pkiIssuer, logger });
-      await identity.client.upgrade({
-        key: renewed.clientKeyPem,
-        cert: [renewed.clientCertPem, ...renewed.chainPem.slice(0, -1)].join(''),
-        ca: renewed.chainPem.join(''),
-        rejectUnauthorized: true,
-      });
-      log(logger, 'info', '[bootstrap] Kimlik yenilendi (veritabanı sunucu sertifikası dahil).');
-    } catch (err) {
-      // Yenileme başarısızlığı MEVCUT sertifikayı bozmaz: eldeki hâlâ geçerli
-      // ve bir sonraki turda tekrar denenecek. Bu yüzden hata bir uyarıdır,
-      // bir çökme değil.
-      log(logger, 'warn', `[bootstrap] Kimlik yenilenemedi, mevcut sertifika ile devam ediliyor: ${err.message}`);
-    }
-  }, renewEveryMs);
-  // Yenileme zamanlayıcısı sürecin ayakta kalma sebebi olmamalı.
-  if (typeof renewalTimer.unref === 'function') renewalTimer.unref();
-  identity.on('closed', () => clearInterval(renewalTimer));
-
-  const handle = await connectDatabase({ target: dbCfg.remoteTarget, identity });
-
-  // ---- veritabanı tutamağı -------------------------------------------------
-  //
-  // `createDatabase` istemci sırrını SUNUCUDA SAKLAMAZ; bir kez döner ve o
-  // kadar (bkz. @fitfak/database grpc/client.js). Yani onu kaybeden taraf
-  // veriyi de kaybeder.
-  //
-  // Önceki hâli tam olarak bunu yapıyordu: ilk açılışta oluşturuyor, dönen
-  // sırrı kullanıp atıyor, sonraki açılışta `rootSecret` ile açmayı deniyordu.
-  // O iki değer aynı değil. Sonuç: sistem BİR KEZ çalışıyor, sonra kendi
-  // veritabanını bir daha açamıyordu -- ve bu, enrolment'ın yeniden
-  // başlatmada çalıştığını doğrulayan testin bile göremediği bir yerdeydi
-  // (test, sırrı bellekte taşıyordu).
-  //
-  // Sır artık kimlikle aynı muameleyi görüyor: 0600, temp+rename.
-  const dbHandleFile = path.join(dbCfg.identityDir, DB_HANDLE_FILE);
-  const storedHandle = await loadStoredDbHandle(dbCfg.identityDir);
-
-  let db;
-  if (storedHandle) {
-    db = await handle.openDatabase({
-      dbId: storedHandle.dbId, clientSecret: storedHandle.clientSecret,
-    });
-    log(logger, 'info', `[bootstrap] Veritabanı açıldı: dbId=${storedHandle.dbId}`);
-  } else if (dbCfg.dbId) {
-    // Elle taşınan yapılandırma: dbId ortamdan, sır kök sırdan. Sunucu
-    // tarafındaki veritabanı bu sırla oluşturulmuşsa çalışır.
-    db = await handle.openDatabase({
-      dbId: dbCfg.dbId,
-      clientSecret: dbCfg.rootSecret.toString('base64'),
-    });
-    await storeDbHandle(dbCfg.identityDir, {
-      dbId: dbCfg.dbId, clientSecret: dbCfg.rootSecret.toString('base64'),
-    });
-  } else {
-    const created = await handle.createDatabase('kimlik');
-    // Sır ÖNCE saklanıyor, sonra kullanılıyor: aradaki bir çökme, açılamayan
-    // bir veritabanı bırakırdı.
-    await storeDbHandle(dbCfg.identityDir, {
-      dbId: created.dbId, clientSecret: created.clientSecret,
-    });
-    log(logger, 'warn',
-      `[bootstrap] Yeni veritabanı oluşturuldu: dbId=${created.dbId}\n`
-      + `  Erişim sırrı ${dbHandleFile} dosyasında (0600). Bu dosya kaybolursa\n`
-      + '  veritabanı bir daha AÇILAMAZ -- yedekleyin.');
-    db = await handle.openDatabase({ dbId: created.dbId, clientSecret: created.clientSecret });
-  }
-
-  return { handle, identity, db, mode: 'mtls' };
+  // db-link arka planda bağlanır, IdP'nin açılışını bloklamaz, bu arada yazmaları bir açılış
+  // tamponunda tutar ve bağlantı kurulduğunda hepsini boşaltır.
+  throw new Error(
+    '[bootstrap] connectToDatabase yalnızca gömülü motor içindir. Uzak veritabanı için '
+    + 'core/db-link.js kullanın: createDatabaseLink({ config, pkiIssuer, logger }).start()',
+  );
 }
 
 module.exports = {

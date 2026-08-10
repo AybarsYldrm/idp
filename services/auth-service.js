@@ -8,6 +8,7 @@ const fingerprintModule = require('../core/fingerprint');
 const { scanFindAll } = require('../db/query-utils');
 const mailerModule = require('../core/mailer');
 const { InMemoryEphemeralStore } = require('../core/ephemeral-store');
+const log = require('../core/logger').mk('auth');
 
 // ============================================================================
 // ZORUNLU MFA KURULUM AKIŞI (gereksinim #4)
@@ -178,7 +179,7 @@ async function register({
       await sendAccountExistsNotification(mailer, { toEmail: existing.email, username: existing.username });
     } catch (e) {
       // eslint-disable-next-line no-console
-      console.error('[auth-service] hesap-zaten-var bildirimi gönderilemedi:', e.message);
+      log.warn({ error: e.message, msg: 'hesap-zaten-var bildirimi gönderilemedi' });
     }
     // Gerçek kayıt yolunun scrypt maliyetini taklit et -- yanıt SÜRESİNDEN bile hesabın
     // var olup olmadığı çıkarılamasın. SRP yolunda hash hesaplanmadığı için
@@ -206,7 +207,7 @@ async function register({
     // E-posta gönderilemedi diye kaydı İPTAL ETMİYORUZ -- kullanıcı "kodu tekrar gönder"
     // ile yeniden deneyebilir. Ama operasyonel olarak fark edilsin diye logluyoruz.
     // eslint-disable-next-line no-console
-    console.error('[auth-service] doğrulama e-postası gönderilemedi:', e.message);
+    log.warn({ error: e.message, msg: 'doğrulama e-postası gönderilemedi — kullanıcı yeniden gönderebilir' });
   }
 
   return { userId: String(userId), email, requiresEmailVerification: true };
@@ -371,7 +372,7 @@ async function requestPasswordReset({ db, email, mailer }) {
     }
   } catch (e) {
     // eslint-disable-next-line no-console
-    console.error('[auth-service] parola sıfırlama e-postası gönderilemedi:', e.message);
+    log.warn({ error: e.message, msg: 'parola sıfırlama e-postası gönderilemedi' });
   }
   return { requested: true };
 }
@@ -572,7 +573,7 @@ async function completeLoginWithEmailOtp({
 
   await notifyRecoveryUsed({ db, mailer, userId: pending.userId, ip, userAgent }).catch((e) => {
     // eslint-disable-next-line no-console
-    console.error('[auth-service] kurtarma bildirimi gönderilemedi:', e.message);
+    log.warn({ error: e.message, msg: 'kurtarma bildirimi gönderilemedi' });
   });
 
   return {

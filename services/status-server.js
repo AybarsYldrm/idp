@@ -5,6 +5,11 @@ const http = require('node:http');
 const ocspService = require('./ocsp-service');
 const crlService = require('./crl-service');
 const { policyDirectory, POLICIES } = require('../core/pki-policy');
+// Yolları ÇÖZEN taraf. Kuran taraf (core/pki-issuer.js) aynı dosyayı kullanıyor: iki ayrı
+// düzenli ifade elle karşılaştırılsaydı, ayrıştıkları gün sertifikalar çalışmayan bir adres
+// taşımaya başlar ve bunu hiçbir şey söylemezdi.
+const pkiUrls = require('../core/pki-urls');
+const log = require('../core/logger').mk('status');
 
 // status.trust.fitfak.net — iptal durumu ve CA yayını.
 //
@@ -78,11 +83,20 @@ function createStatusHandler({ db, pkiIssuer, cacheStore }) {
       }
 
       // ---- CRL -------------------------------------------------------------
-      // İki ayrı liste: /crl uç sertifikalar (ara CA imzalı), /crl/root ara
-      // CA'lar (kök imzalı). Sertifikalardaki CDP adresleri buna göre yazılır.
-      if ((pathname === '/crl' || pathname === '/crl/root') && (req.method === 'GET' || req.method === 'HEAD')) {
-        const scope = pathname === '/crl/root' ? 'root' : 'leaf';
-        const crlDer = await crlService.generateCrl({ db, pkiIssuer, cacheStore, scope });
+      //
+      // HER YAYINCININ KENDİ LİSTESİ VAR ve bu bir gereklilik: RFC 5280 §6.3.3'e göre bir CRL
+      // yalnızca kendi yayıncısının verdiği sertifikalar hakkında konuşur. Beş ara CA varken
+      // (her amaç için ayrı) tek bir "uç sertifikalar listesi", o beşten dördünün verdiği her
+      // sertifika için sessizce etkisiz kalırdı.
+      //
+      //   /crl/root          kök imzalar, ARA CA'ların iptallerini taşır
+      //   /crl/<otorite>     o ara CA imzalar, yalnızca onun verdiği uçları
+      //   /crl               varsayılan yayıncının listesi -- düzeltmeden önce üretilmiş
+      //                      sertifikalar bu adrese işaret ediyor ve hâlâ dolaşımdalar
+      const crl = pkiUrls.parseCrlPath(pathname);
+      if (crl && (req.method === 'GET' || req.method === 'HEAD')) {
+        const { scope, authority } = crl;
+        const crlDer = await crlService.generateCrl({ db, pkiIssuer, cacheStore, scope, authority });
         return send(res, 200, {
           'content-type': 'application/pkix-crl',
           'cache-control': `max-age=${Math.floor(crlService.CACHE_TTL_MS / 1000)}`,
@@ -90,8 +104,29 @@ function createStatusHandler({ db, pkiIssuer, cacheStore }) {
       }
 
       // ---- CA yayını -------------------------------------------------------
-      // AIA caIssuers burayı gösterir: zinciri eksik gönderen bir sunucuyla
-      // karşılaşan istemci ara sertifikayı buradan tamamlar.
+      //
+      // AIA caIssuers burayı gösterir: zinciri eksik gönderen bir sunucuyla karşılaşan istemci
+      // ara sertifikayı buradan tamamlar. Adres, uç sertifikayı İMZALAYAN otoritenin adını
+      // taşır -- sabit bir /intermediate.crt, hangi ara CA'nın imzaladığından bağımsız olarak
+      // hep aynı sertifikayı döndürür ve doğrulayıcı zinciri kuramaz.
+      const ca = pkiUrls.parseCaPath(pathname);
+      if (ca && !ca.legacy && req.method === 'GET') {
+        const certPem = await pkiIssuer.getAuthorityCertPem(ca.authority);
+        if (!certPem) {
+          return send(res, 404, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE },
+            'bilinmeyen otorite\n');
+        }
+        return send(res, 200, {
+          'content-type': 'application/pkix-cert',
+          // Bir CA sertifikası yıllarca değişmez. Uzun önbellek, AIA'yı takip eden her
+          // doğrulamanın bir tur atmasını engeller.
+          'cache-control': 'max-age=86400',
+        }, Buffer.from(certPem));
+      }
+
+      // Eski adres. Düzeltmeden önce üretilmiş sertifikalar buna işaret ediyor ve geçerlilik
+      // süreleri dolana kadar dolaşımda kalacaklar; kaldırmak, onların zincir tamamlamasını
+      // bugün kırardı.
       if (pathname === '/intermediate.crt' && req.method === 'GET') {
         return send(res, 200, { 'content-type': 'application/pkix-cert' },
           Buffer.from(pkiIssuer.subCA.certPem));
@@ -114,11 +149,17 @@ function createStatusHandler({ db, pkiIssuer, cacheStore }) {
 
 POST /ocsp                  RFC 6960 OCSP
 GET  /ocsp/<base64url-der>  RFC 6960 Annex A.1
-GET  /crl                   uc sertifika iptal listesi (ara CA imzali)
+GET  /crl/<otorite>         o ara CA'nin verdigi uc sertifikalarin iptal listesi
 GET  /crl/root              ara CA iptal listesi (kok imzali)
-GET  /intermediate.crt      ara CA sertifikasi
+GET  /ca/<otorite>.crt      o ara CA'nin sertifikasi (AIA caIssuers buraya bakar)
 GET  /root.crt              kok CA sertifikasi
-GET  /chain.pem             ara + kok
+GET  /chain.pem             varsayilan ara + kok
+
+Her uc sertifika KENDI yayincisinin adresini tasir: bir CRL yalnizca kendi
+yayincisinin verdigi sertifikalar hakkinda konusur (RFC 5280 6.3.3).
+
+GET  /crl                   varsayilan yayincinin listesi   (eski adres)
+GET  /intermediate.crt      varsayilan ara CA sertifikasi   (eski adres)
 
 Contact: network@fitfak.net
 `;
@@ -127,7 +168,7 @@ Contact: network@fitfak.net
 
       return send(res, 404, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE }, 'not found\n');
     } catch (err) {
-      console.error('[status] hata:', err);
+      log.error({ error: err.message, stack: err.stack, msg: 'durum isteği başarısız' });
       return send(res, 500, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE }, 'internal error\n');
     }
   };
@@ -202,7 +243,7 @@ function startStatusServer({ db, pkiIssuer, cacheStore, host, port = 80 }) {
   const server = http.createServer(createStatusHandler({ db, pkiIssuer, cacheStore }));
   return new Promise((resolve) => {
     server.listen(port, host, () => {
-      console.log(`[status] dinliyor: http://${host}:${port} (OCSP + CRL + CA yayını)`);
+      log.info({ host, port, msg: 'durum sunucusu dinliyor (OCSP + CRL + CA yayını)' });
       resolve(server);
     });
   });

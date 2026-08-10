@@ -71,6 +71,33 @@ anahtarı hiç dışarı vermeyen bir imzalayıcıdır (TPM/PKCS#11/KMS) — bun
 değil. Buradaki kazanç, çok daha yaygın olan başarısızlığı ortadan kaldırması: anahtarın, kimsenin
 fark etmeden kopyalanabileceği bir dosyada *durması*.
 
+#### `.keys/` de aynı yere taşındı
+
+CA malzemesi kasaya alındıktan sonra geriye dosyada duran üç şey kaldı, ve **ilki en ağırıydı**:
+
+```
+.keys/es256-private.pem       oturum imzalama anahtarı            0600
+.keys/ct-log.key              CT günlüğünün imzalama anahtarı     0600
+.keys/ra-client-secret        kayıt otoritesi istemci sırrı       0600
+.keys/db-panel-client-secret  veritabanı paneli istemci sırrı     0600
+```
+
+`es256-private.pem` her erişim ve yenileme belirtecini imzalayan anahtardır. Bir kopyası,
+**herhangi bir kullanıcı için herhangi bir belirteci üretebilme yetkisidir**: parolayı bilmeye,
+ikinci faktörü geçmeye, hatta IdP'ye hiç bağlanmaya gerek yok — ve kaynak IdP olmadığı için hiçbir
+yerde bir kayıt oluşmaz. Kök CA anahtarını kasaya alıp bunu 0600 bir dosyada bırakmak, ön kapıyı
+çelikle kaplayıp anahtarı paspasın altına koymaktı.
+
+Dördü de artık `secrets` koleksiyonunda, `idp/` ad alanı altında (`core/key-vault.js`). Geçiş
+açılışta bir kez, tek yönlü: dosya içeri alınır ve `.migrated` uzantısıyla yeniden adlandırılır —
+silinmez, çünkü geri dönülemeyen şey oturum imzalama anahtarıysa herkesin oturumu geçersizleşir.
+Kasada zaten bir kayıt varsa dosya **içeri alınmaz**, yalnızca emekliye ayrılır; üstüne yazmak,
+bir kez döndürülmüş anahtarın eski sürümüyle geri gelmesi olurdu.
+
+Kasa, CA deposuyla aynı gömülü veritabanında ve aynı gerekçeyle: uzak veritabanı IdP ona bir
+sunucu sertifikası verene kadar mühürlü bekler, oysa oturum imzalama anahtarı açılışın ilk
+adımlarında lazım.
+
 ### Neden birden fazla ara CA
 
 Kök yalnızca ara CA imzalar. Geri kalan her şeyi bir ara CA imzalar ve her **amaç** için ayrı bir
@@ -96,6 +123,36 @@ farklı zincirlere bağlanır ve birinin iptali nüfusun yarısını kapsar — 
 iki aday bulduğunda bir tanesini seçmez, hata verir.
 
 Admin panelinden yeni ara CA üretilebilir: `POST /admin/pki/authorities`.
+
+#### Her ara CA'nın kendi adresleri var
+
+Uç sertifikalara gömülen iki adres, onları **imzalayan** otoriteye göre kurulur:
+
+```
+AIA caIssuers   http://status.trust.fitfak.net/ca/<otorite>.crt
+CRL DP          http://status.trust.fitfak.net/crl/<otorite>
+```
+
+Önceden ikisi de sabitti (`/intermediate.crt` ve `/crl`) ve tek bir ara CA varken doğruydu. Beş
+tane olunca iki şey birden bozuldu, ve **ikisinin de belirtisi yokluktu**:
+
+- **Zincir kurulamıyor.** Eksik ara sertifikayı AIA'dan tamamlamaya çalışan bir doğrulayıcı
+  `/intermediate.crt`'yi çeker ve orada başka bir ara CA bulur; sertifikanın AKI'si onu
+  göstermediği için zincir kurulmaz. Zinciri zaten tam gönderen sunucularda hiçbir belirti
+  yoktur — sorun yalnızca eksik gönderen bir eşle konuşulduğunda çıkar.
+- **İptal sessizce etkisiz.** RFC 5280 §6.3.3: bir CRL yalnızca kendi yayıncısının verdiği
+  sertifikalar hakkında konuşur. E-posta CA'sının imzaladığı bir sertifikanın iptalini iş yükü
+  CA'sının listesinde aramak hiçbir şey bulmamaktır — ve doğrulayıcı bunu "iptal edilmemiş"
+  olarak okur. İptal kaydı üretilir, liste yayınlanır, HTTP 200 döner, hiçbir şey olmaz.
+
+Adresleri **kuran** taraf (`core/pki-issuer.js`) ile **çözen** taraf (`services/status-server.js`)
+artık aynı dosyayı kullanıyor: `core/pki-urls.js`. İki ayrı düzenli ifade elle karşılaştırılsaydı,
+ayrıştıkları gün sertifikalar çalışmayan bir adres taşımaya başlar ve bunu hiçbir şey söylemezdi.
+`test/crl-distribution-demo.js` tam olarak bunu sınıyor: gömülen her adres, sunulan bir yola
+çözülüyor mu.
+
+Eski adresler kaldırılmadı — düzeltmeden önce üretilmiş sertifikalar onları taşıyor ve geçerlilik
+süreleri dolana kadar dolaşımda kalacaklar.
 
 ### Neden CA uzak veritabanında değil
 

@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const { encodeFrame, decodeFrames, GRPC_STATUS } = require('./http-transport');
+const log = require('./logger').mk('bidi-bridge');
 
 // ============================================================================
 // DÜRÜSTLÜK NOTU (bkz. README "Kapsam ve sınırlamalar"): tarayıcılar JavaScript'ten
@@ -60,7 +61,7 @@ class BidiBridge {
 
     Promise.resolve(handler(call)).catch((e) => {
       // eslint-disable-next-line no-console
-      console.error('bidi-bridge: handler hatası', e);
+      log.error({ error: e.message, stack: e.stack, msg: 'bidi köprüsü işleyici hatası' });
       emitter.emit('_handlerError', e);
     });
 

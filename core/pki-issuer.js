@@ -4,7 +4,8 @@ const ssl = require('@fitfak/ssl');
 const { policyForProfile } = require('./pki-policy');
 const { AppError } = require('./errors');
 const spiffe = require('./spiffe');
-const { openCaVault, STATUS_BASE } = require('./ca-vault');
+const { openCaVault } = require('./ca-vault');
+const { OCSP_URL } = require('./pki-urls');
 const {
   PROFILE_MAP, PKI_PURPOSES, MIN_SHORT_LIVED_SECONDS, MAX_SHORT_LIVED_SECONDS, BACKDATE_SECONDS,
 } = require('./certificate-profiles');
@@ -28,9 +29,35 @@ const {
 //      Bu, CRL/OCSP'yi gereksiz kılmaz ama nadir kılar: normal işleyişte hiçbir
 //      şey iptal edilmez, yalnızca yenilenmez.
 
-const OCSP_URL = `${STATUS_BASE}/ocsp`;
-const CA_ISSUERS_URL = `${STATUS_BASE}/intermediate.crt`;
-const CRL_URL = `${STATUS_BASE}/crl`;
+
+// AIA caIssuers ve CRL dağıtım noktası, İMZALAYAN OTORİTEYE göre değişir.
+//
+// Bu, düzeltilmiş bir hatadır. Önceki hâlde iki sabit adres vardı:
+//
+//     const CA_ISSUERS_URL = `${STATUS_BASE}/intermediate.crt`;
+//     const CRL_URL        = `${STATUS_BASE}/crl`;
+//
+// ve her uç sertifikaya bunlar gömülüyordu. Tek bir ara CA varken doğruydu. Artık BEŞ tane var
+// (her amaç için ayrı, gerekçe core/ca-vault.js'de) ve iki sabit adres iki ayrı şeyi bozuyordu:
+//
+//   ZİNCİR KURULAMIYOR. Eksik ara sertifikayı AIA'dan tamamlamaya çalışan bir doğrulayıcı
+//   /intermediate.crt'yi çeker ve orada BAŞKA bir ara CA'yı bulur. Sertifikanın AKI'si onu
+//   göstermediği için zincir kurulmaz. Hata mesajı "unable to get local issuer certificate"
+//   olur ve doğru ara sertifikayı zaten gönderen sunucularda sorun GÖRÜNMEZ -- yalnızca
+//   zinciri eksik gönderen bir eşle konuşulduğunda ortaya çıkar.
+//
+//   İPTAL SESSİZCE ETKİSİZ. RFC 5280 §6.3.3: bir CRL yalnızca KENDİ yayıncısının verdiği
+//   sertifikalar hakkında konuşur. e-posta CA'sının imzaladığı bir sertifikanın iptalini
+//   iş yükü CA'sının imzaladığı bir listede aramak, hiçbir şey bulmamak demektir -- ve
+//   doğrulayıcı bunu "iptal edilmemiş" olarak okur. İptal kaydı üretilir, yayınlanır ve
+//   dikkate alınmaz.
+//
+// Adresler otoritenin KASADAKİ ADIYLA (workload-ca, email-ca, ...) kuruluyor. Parmak izi ya da
+// SKID de kullanılabilirdi; ad, bir operatörün bir sertifikanın içindeki adrese bakıp onu hangi
+// otoritenin verdiğini okuyabilmesini sağlıyor.
+// Kurucular core/pki-urls.js'de, onları ÇÖZEN durum sunucusuyla aynı dosyada. Burada ayrıca
+// tanımlamak, iki tarafın sessizce ayrışabildiği eski hâle geri dönmek olurdu.
+const { caIssuersUrlFor, crlUrlFor } = require('./pki-urls');
 
 class ProductionPkiIssuer {
   constructor({ vault, ctLog = null, trustDomain = spiffe.TRUST_DOMAIN }) {
@@ -102,6 +129,28 @@ class ProductionPkiIssuer {
 
   /** Yalnızca kök(ler): bir eşin sabitlediği ya da güven çıpası olarak kurduğu şey. */
   async getTrustAnchorsPem() { return this.vault.getTrustAnchorsPem(); }
+
+  /**
+   * Bir otoritenin sertifikası, ADIYLA.
+   *
+   * Durum sunucusu bunu AIA caIssuers adresine gelen istekleri karşılamak için kullanıyor.
+   * Özel anahtar YÜKLENMİYOR: yayınlanacak olan sertifikadır ve `loadSigner` çağırmak, yalnızca
+   * açık veri sunmak için kök ya da ara anahtarı belleğe çözmek olurdu.
+   */
+  async getAuthorityCertPem(name) {
+    const authority = await this.vault.getAuthority(name);
+    return authority ? authority.certPem : null;
+  }
+
+  /** Sertifikalara gömülen adreslerin üretildiği yer -- durum sunucusu aynı biçimi çözüyor. */
+  static caIssuersUrlFor(name) { return caIssuersUrlFor(name); }
+  static crlUrlFor(name) { return crlUrlFor(name); }
+
+  /** Uç sertifika imzalayan otoritelerin adları -- her birinin kendi iptal listesi var. */
+  async listIssuingAuthorityNames() {
+    const authorities = await this.vault.listAuthorities();
+    return authorities.filter((a) => a.name !== 'root').map((a) => a.name);
+  }
 
   async getRootPem() { return (await this.vault.getAuthority('root')).certPem; }
 
@@ -185,9 +234,10 @@ class ProductionPkiIssuer {
 
     const { notBefore, notAfter } = this._validityWindow({ mapping, validitySeconds });
     const serialNumberHex = ssl.newSerial();
-    const issuer = await this.vault.loadSigner(
-      (await this.vault.findIssuerForPurpose(mapping.purpose)).name,
-    );
+    // Adı ayrıca tutuluyor: sertifikaya gömülecek AIA ve CRL adresleri ondan kuruluyor ve
+    // çağırana da dönüyor, ki iptal kaydı hangi listeye ait olduğunu bilsin.
+    const issuerName = (await this.vault.findIssuerForPurpose(mapping.purpose)).name;
+    const issuer = await this.vault.loadSigner(issuerName);
 
     const baseOptions = {
       profile: mapping.sslProfile,
@@ -199,12 +249,12 @@ class ProductionPkiIssuer {
       notAfter,
       policies: policyForProfile(profile),
       ocspUrl: OCSP_URL,
-      caIssuersUrl: CA_ISSUERS_URL,
+      caIssuersUrl: caIssuersUrlFor(issuerName),
       // Hem OCSP hem CRL veriliyor. OCSP tazedir ama tek bir servise bağlıdır;
       // CRL bayattır ama önbelleklenebilir ve responder ulaşılamazken de çalışır.
       // Yalnızca birini vermek, o biri düştüğünde doğrulayıcıyı "iptal durumu
       // bilinmiyor" ile baş başa bırakır.
-      crlUrls: [CRL_URL],
+      crlUrls: [crlUrlFor(issuerName)],
     };
 
     const sctExtension = mapping.shortLived ? null : await this._maybeLogToCt(csr, issuer, baseOptions);
@@ -221,6 +271,10 @@ class ProductionPkiIssuer {
       chainPem: await this.getChainPem(mapping.purpose),
       serialNumberHex: typeof serialNumberHex === 'bigint' ? serialNumberHex.toString(16) : String(serialNumberHex),
       skidHex: Buffer.isBuffer(skid) ? skid.toString('hex') : String(skid),
+      // Kaydedilmesi gereken: bir iptal, ancak DOĞRU listeye düştüğünde etkilidir ve o liste
+      // sertifikayı kimin imzaladığına bağlıdır. Kayıtta durmazsa, iptal anında hangi CA'nın
+      // listesine yazılacağı tahmin edilmek zorunda kalınır.
+      issuerName,
       spiffeId: parsedSpiffeId ? parsedSpiffeId.uri : null,
       profile,
       shortLived: !!mapping.shortLived,
@@ -309,10 +363,15 @@ class ProductionPkiIssuer {
    * OCSP yanıtını imzalayan anahtar, sorulan sertifikanın YAYINCISI olmalıdır
    * (RFC 6960 §4.2.2.2), aksi halde istemci yanıtı "unauthorized" sayar.
    */
-  async generateOcspResponse({ ocspRequestDer, statusLookup, purpose = PKI_PURPOSES.TLS_CLIENT }) {
+  async generateOcspResponse({
+    ocspRequestDer, statusLookup, purpose = PKI_PURPOSES.TLS_CLIENT, authority = null,
+  }) {
     const pki = require('@fitfak/ssl/src/pki');
     const ocspRequest = pki.parseOcspRequest(ocspRequestDer);
-    const issuerName = (await this.vault.findIssuerForPurpose(purpose)).name;
+    // `authority` verildiğinde amaç aranmıyor. Sorgu bir sertifika HAKKINDA ve o sertifikayı
+    // hangi CA'nın imzaladığı kayıtta duruyor; amaçtan geriye türetmek, aynı amaca hizmet eden
+    // ikinci bir CA eklendiği gün yanlış cevabı vermeye başlardı.
+    const issuerName = authority || (await this.vault.findIssuerForPurpose(purpose)).name;
     const issuer = await this.vault.loadSigner(issuerName);
     const responderCertDer = ssl.certInfoFromPem(issuer.certPem).certDer;
 
@@ -334,11 +393,15 @@ class ProductionPkiIssuer {
    * yayıncısı olmadığı için doğrulayıcılar tarafından geçerli sayılmaz -- iptal
    * sessizce etkisiz kalır.
    */
-  async signCrl({ revokedCerts, scope = 'leaf', purpose = PKI_PURPOSES.TLS_CLIENT }) {
+  async signCrl({ revokedCerts, scope = 'leaf', purpose = PKI_PURPOSES.TLS_CLIENT, authority = null }) {
     const pki = require('@fitfak/ssl/src/pki');
-    const signerName = scope === 'root'
+    // Her ara CA'nın KENDİ listesi var, ve bu bir tercih değil bir gereklilik: RFC 5280 §6.3.3'e
+    // göre bir CRL yalnızca kendi yayıncısının verdiği sertifikalar hakkında konuşur. Tek bir
+    // "uç sertifikalar listesi" üretmek, o listeyi imzalayan CA'nın vermediği her sertifika için
+    // sessizce etkisiz kalırdı.
+    const signerName = authority || (scope === 'root'
       ? 'root'
-      : (await this.vault.findIssuerForPurpose(purpose)).name;
+      : (await this.vault.findIssuerForPurpose(purpose)).name);
     const signer = await this.vault.loadSigner(signerName);
 
     const revokedList = (revokedCerts || []).map((cert) => ({

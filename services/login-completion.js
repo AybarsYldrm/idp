@@ -1,6 +1,7 @@
 'use strict';
 
 const deviceBinding = require('../core/device-binding');
+const log = require('../core/logger').mk('login');
 
 // Bir girişin TAMAMLANMA anı -- parola/TOTP/WebAuthn hangi yoldan gelirse gelsin.
 //
@@ -44,7 +45,7 @@ async function completeLogin({
     await notifyNewDevice({ db, mailer, userId, ip, userAgent, method }).catch((e) => {
       // Bildirim gönderilemedi diye giriş İPTAL EDİLMEZ: kullanıcı meşruysa
       // onu dışarıda bırakmak zarar verir. Ama sessizce geçilmez.
-      console.error('[login] yeni cihaz bildirimi gönderilemedi:', e.message);
+      log.warn({ error: e.message, msg: 'yeni cihaz bildirimi gönderilemedi — giriş iptal edilmedi' });
     });
   }
 
@@ -91,7 +92,8 @@ FITFAK Kimlik
 
   if (!mailer) {
     // SMTP yapılandırılmamışsa bildirim kaybolmasın: en azından operatör görsün.
-    console.warn(`[login] YENİ CİHAZ (e-posta gönderilemedi, SMTP yok) user=${user.username} device=${label} ip=${ip}`);
+    // SMTP yoksa bildirim kaybolmasın: en azından operatör görsün.
+    log.warn({ user: user.username, device: label, ip, msg: 'YENİ CİHAZ — e-posta gönderilemedi, SMTP yapılandırılmamış' });
     return;
   }
   await mailer.sendMail({

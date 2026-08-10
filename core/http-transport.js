@@ -3,6 +3,7 @@
 const http = require('node:http');
 const http2 = require('node:http2');
 const { EventEmitter } = require('node:events');
+const log = require('./logger').mk('http');
 
 // ============================================================================
 // Standart gRPC durum kodları (bkz. grpc.io/docs/guides/status-codes)
@@ -196,7 +197,7 @@ class Server {
   }
 
   _onDispatchError(res, e) {
-    console.error('http-transport: yakalanmamış dispatch hatası', e);
+    log.error({ error: e.message, stack: e.stack, msg: 'yakalanmamış dispatch hatası' });
     if (!res.headersSent) { res.statusCode = 500; }
     res.end();
   }

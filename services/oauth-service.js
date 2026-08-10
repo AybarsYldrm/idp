@@ -481,7 +481,32 @@ class OAuthService {
     }
     const session = await this.sessionManager.store.getSessionById(payload.sid);
     if (!session || session.revoked) return { active: false };
-    return { active: true, sub: payload.sub, aud: payload.aud, scope: payload.scope, sid: payload.sid };
+
+    // Rol ve kullanıcı adı da dönüyor.
+    //
+    // Sebebi somut: veritabanının yönetim paneli bir OAuth istemcisidir ve "bu kişi yönetici mi"
+    // sorusunu birine sormak zorundadır. Kendi kullanıcı tablosunu tutması, tam olarak bu
+    // mimarinin ortadan kaldırdığı ikinci kimlik sistemi olurdu.
+    //
+    // Kapsamdan TÜRETİLMİYOR, ayrı dönüyor. Kapsam kullanıcının uygulamaya ne yapma izni
+    // verdiğini söyler; rol, sistemin o kullanıcıyı ne saydığını. Onay ekranı ikincisini
+    // veremez -- verebilseydi, herhangi bir kullanıcı bir uygulamaya yöneticilik onaylayarak
+    // yönetici olurdu.
+    //
+    // Bu uç zaten istemci kimlik bilgisi ile korunuyor: yanıtı yalnızca kayıtlı bir uygulamanın
+    // sunucusu görebilir, kullanıcının tarayıcısı değil.
+    const user = await this.db.collection('users').get(payload.sub);
+    if (!user) return { active: false };
+
+    return {
+      active: true,
+      sub: payload.sub,
+      aud: payload.aud,
+      scope: payload.scope,
+      sid: payload.sid,
+      username: user.username,
+      role: user.role || 'user',
+    };
   }
 }
 
