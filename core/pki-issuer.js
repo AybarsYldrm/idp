@@ -5,7 +5,7 @@ const { policyForProfile } = require('./pki-policy');
 const { AppError } = require('./errors');
 const spiffe = require('./spiffe');
 const { openCaVault } = require('./ca-vault');
-const { OCSP_URL } = require('./pki-urls');
+const { OCSP_URL, STATUS_BASE, caIssuersUrlFor, crlUrlFor } = require('./pki-urls');
 const {
   PROFILE_MAP, PKI_PURPOSES, MIN_SHORT_LIVED_SECONDS, MAX_SHORT_LIVED_SECONDS, BACKDATE_SECONDS,
 } = require('./certificate-profiles');
@@ -55,9 +55,8 @@ const {
 // Adresler otoritenin KASADAKİ ADIYLA (workload-ca, email-ca, ...) kuruluyor. Parmak izi ya da
 // SKID de kullanılabilirdi; ad, bir operatörün bir sertifikanın içindeki adrese bakıp onu hangi
 // otoritenin verdiğini okuyabilmesini sağlıyor.
-// Kurucular core/pki-urls.js'de, onları ÇÖZEN durum sunucusuyla aynı dosyada. Burada ayrıca
-// tanımlamak, iki tarafın sessizce ayrışabildiği eski hâle geri dönmek olurdu.
-const { caIssuersUrlFor, crlUrlFor } = require('./pki-urls');
+// Kurucular core/pki-urls.js'de, onları ÇÖZEN durum sunucusuyla aynı dosyada (dosyanın başındaki
+// require). Burada ayrıca tanımlamak, iki tarafın sessizce ayrışabildiği eski hâle dönmek olurdu.
 
 class ProductionPkiIssuer {
   constructor({ vault, ctLog = null, trustDomain = spiffe.TRUST_DOMAIN }) {
@@ -474,10 +473,14 @@ module.exports = {
   skidOfPublicKeyPem,
   PROFILE_MAP,
   PKI_PURPOSES,
+  // Adresler core/pki-urls.js'de ve buradan yeniden dışa veriliyor: onları bu modülden alan
+  // çağıranlar var ve tek başına taşımak, iki yerden farklı cevap alınabilen bir durum yaratırdı.
+  // CRL_URL ve CA_ISSUERS_URL artık SABİT DEĞİL -- imzalayan otoriteye göre değişiyorlar, o
+  // yüzden burada bir değer değil bir kurucu var.
   STATUS_BASE,
   OCSP_URL,
-  CRL_URL,
-  CA_ISSUERS_URL,
+  caIssuersUrlFor,
+  crlUrlFor,
   MIN_SHORT_LIVED_SECONDS,
   MAX_SHORT_LIVED_SECONDS,
   BACKDATE_SECONDS,

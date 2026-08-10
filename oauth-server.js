@@ -10,6 +10,7 @@ const crypto = require('node:crypto');
 
 const { loadOrCreateSigningKeyPair, publicKeyToJwks } = require('./core/keys');
 const { KeyVault } = require('./core/key-vault');
+const { assertSslCompatible } = require('./core/ssl-compat');
 const { SessionManager, ACCOUNTS_COOKIE_NAME } = require('./core/session-manager');
 const { WebAuthnService } = require('./core/webauthn');
 const { ProofOfWorkService } = require('./core/proof-of-work');
@@ -256,6 +257,15 @@ async function main() {
   let keyVault = null;
 
   if (!config.devMockDb) {
+    // İMZALAMA KÜTÜPHANESİ, HERHANGİ BİR SERTİFİKA ÜRETİLMEDEN ÖNCE.
+    //
+    // Eski bir @fitfak/ssl sürümü, CSR'deki özel anahtara AİT OLMAYAN sertifikalar üretir.
+    // Sertifika geçerli görünür, zinciri doğrulanır, ve yalnızca bir TLS el sıkışmasında
+    // patlar -- yani onu üreten koddan bir ağ hattı ötede, saatler sonra, başka bir serviste.
+    // Burada durmak, o teşhisi tek bir açılış mesajına indiriyor.
+    const ssl = assertSslCompatible();
+    log.info({ version: ssl.version, profiles: ssl.profiles.length, msg: '@fitfak/ssl doğrulandı' });
+
     const caDone = log.timer('sertifika otoritesi açılışı');
     const { openCaStore } = require('./core/db-bootstrap');
     ({ db: caStoreDb } = await openCaStore({ config, logger: log.child('ca') }));
