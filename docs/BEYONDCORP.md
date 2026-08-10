@@ -151,6 +151,14 @@ ayrıştıkları gün sertifikalar çalışmayan bir adres taşımaya başlar ve
 `test/crl-distribution-demo.js` tam olarak bunu sınıyor: gömülen her adres, sunulan bir yola
 çözülüyor mu.
 
+**OCSP'de de aynı kural.** RFC 6960 §4.2.2.2: bir yanıtı imzalayan anahtar, sorulan
+sertifikanın yayıncısı olmalıdır. Sabit bir imzalayıcı, beş ara CA'nın dördü için istemcinin
+yanıtı `unauthorized` sayması demektir — ve o noktada iptal kontrolü, cevap alınamadığı için
+tamamen atlanır. İstek yalnızca seriyi taşır, o yüzden yayıncı **kayıttan** okunuyor
+(`certificates.issuerName`). Bir istek birden fazla yayıncının sertifikasını sorarsa tek bir
+yanıt hepsi için yetkili olamaz: ilk bulunanın yayıncısı seçilir, geri kalanlar `unknown`
+yanıtlanır — bu, istemciyi doğru responder'a gönderen cevaptır.
+
 Eski adresler kaldırılmadı — düzeltmeden önce üretilmiş sertifikalar onları taşıyor ve geçerlilik
 süreleri dolana kadar dolaşımda kalacaklar.
 

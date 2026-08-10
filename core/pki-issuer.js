@@ -146,6 +146,20 @@ class ProductionPkiIssuer {
   static caIssuersUrlFor(name) { return caIssuersUrlFor(name); }
   static crlUrlFor(name) { return crlUrlFor(name); }
 
+  /**
+   * Bir otoritenin SKID'i, adıyla.
+   *
+   * OCSP yanıtı üretirken "bu ara CA'nın kendisi iptal edilmiş mi" sorusu buna dayanıyor: iptal
+   * kayıtları SKID ile bulunuyor ve doğru otoritenin SKID'ine bakmayan bir kontrol, iptal edilmiş
+   * BAŞKA bir ara CA yüzünden geçerli sertifikaları iptal ilan ederdi -- ya da tersi.
+   */
+  async getAuthoritySkidHex(name) {
+    const certPem = await this.getAuthorityCertPem(name);
+    if (!certPem) return null;
+    const skid = skidOf(certPem);
+    return Buffer.isBuffer(skid) ? skid.toString('hex') : String(skid || '');
+  }
+
   /** Uç sertifika imzalayan otoritelerin adları -- her birinin kendi iptal listesi var. */
   async listIssuingAuthorityNames() {
     const authorities = await this.vault.listAuthorities();

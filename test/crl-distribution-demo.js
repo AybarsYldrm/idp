@@ -59,6 +59,13 @@ function fakeIssuer() {
       signed.push({ scope, authority, serials: revokedCerts.map((c) => c.serialNumberHex) });
       return Buffer.from(JSON.stringify({ authority, serials: revokedCerts.map((c) => c.serialNumberHex) }));
     },
+    async getAuthoritySkidHex(name) { return `skid-${name}`; },
+    async generateOcspResponse({ statusLookup, authority }) {
+      const statuses = {};
+      for (const [serial, value] of statusLookup) statuses[serial] = value.status;
+      signed.push({ ocsp: true, authority, statuses });
+      return Buffer.from(JSON.stringify({ authority, statuses }));
+    },
   };
 }
 
@@ -245,6 +252,33 @@ async function main() {
     check('alansız kayıt varsayılan yayıncının listesinde', defaultList.serials.includes('ee01'));
     check('ve o liste varsayılan yayıncı tarafından imzalanıyor',
       issuer.signed.at(-1).authority === issuer.subCA.name);
+  }
+
+  console.log('\n8. OCSP yanıtını da SORULAN sertifikanın yayıncısı imzalıyor');
+
+  {
+    const { chooseResponder } = require('../services/ocsp-service');
+    // RFC 6960 §4.2.2.2: yanıtı imzalayan anahtar, sorulan sertifikanın YAYINCISI olmalı. Sabit
+    // bir imzalayıcı, beş ara CA'nın dördü için istemcinin yanıtı 'unauthorized' sayması demek --
+    // ve o noktada iptal kontrolü, cevap alınamadığı için tamamen atlanır.
+    const row = (authority) => ({ row: { serialNumberHex: 'x' }, authority });
+
+    check('yayıncı, sorulan sertifikanın kaydından geliyor',
+      chooseResponder([row('email-ca')], 'client-ca') === 'email-ca');
+    check('varsayılan değil — sabit imzalayıcı tam olarak düzeltilen hata',
+      chooseResponder([row('workload-ca')], 'client-ca') !== 'client-ca');
+
+    // Bilinmeyen bir seri sorulduğunda imzalayacak birinin yine de olması gerekir; yanıt
+    // 'unknown' olacak ama imzasız gönderilemez.
+    check('hiç kayıt yoksa varsayılana düşülüyor',
+      chooseResponder([{ row: null, authority: null }], 'client-ca') === 'client-ca');
+
+    // Bir istek birden fazla yayıncının sertifikasını sorabilir ve tek bir yanıt hepsi için
+    // yetkili olamaz. İlk bulunanın yayıncısı seçilir; handleOcspRequest geri kalanları
+    // 'unknown' yanıtlar, ki istemci doğru responder'a gitsin.
+    check('karışık istekte ilk bulunanın yayıncısı seçiliyor',
+      chooseResponder([{ row: null, authority: null }, row('signing-ca'), row('email-ca')], 'client-ca')
+        === 'signing-ca');
   }
 
   await new Promise((r) => server.close(r));
