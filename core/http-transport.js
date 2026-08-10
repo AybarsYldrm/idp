@@ -106,27 +106,67 @@ class Server {
     this._httpServers = [];    // Oluşturulan tüm HTTP sunucularını tutar
     this._http2Servers = [];   // Oluşturulan tüm HTTP/2 sunucularını tutar
     this._addReflectionHandler();
+    // Bu dağıtımın kendi yüzeyleri. Kayıtlı uygulamalarınki bu listede DEĞİL -- onlar
+    // `corsOriginResolver` ile geliyor, çünkü kayıtlı uygulamalar çalışma zamanında değişir ve
+    // burada sabit bir liste tutmak, her yeni uygulamada bu dosyayı düzenlemek demekti.
     this.corsOrigins = new Set([
       'https://session.fitfak.net',
-      'https://trust.fitfak.net'
+      'https://trust.fitfak.net',
+      'https://one.fitfak.net',
     ]);
+    this.corsOriginResolver = null;
+  }
+
+  /**
+   * Kayıtlı uygulamaların kaynaklarını çözen fonksiyon.
+   *
+   * EŞZAMANLI olmak zorunda: CORS başlıkları yanıt yazılmadan önce, istek işlenirken
+   * konuluyor ve buraya bir veritabanı sorgusu koymak her isteğe bir tur eklerdi. Çağıran
+   * (oauth-server.js) kayıtlı yönlendirme adreslerinden türetilmiş bir kümeyi önbellekte
+   * tutuyor ve bu fonksiyon ona bakıyor.
+   *
+   * @param {(origin: string) => boolean} resolver
+   */
+  setCorsOriginResolver(resolver) {
+    this.corsOriginResolver = typeof resolver === 'function' ? resolver : null;
+    return this;
+  }
+
+  _corsAllows(origin) {
+    if (this.corsOrigins.has(origin)) return true;
+    if (!this.corsOriginResolver) return false;
+    try { return !!this.corsOriginResolver(origin); } catch (_) { return false; }
   }
 
   _applyCors(req, res) {
     const origin = req.headers.origin;
-
     if (!origin) return;
 
-    if (this.corsOrigins.has(origin)) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Access-Control-Allow-Credentials', 'true');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.setHeader(
-        'Access-Control-Allow-Headers',
-        req.headers['access-control-request-headers'] || 'Content-Type, Authorization'
-      );
-      res.setHeader('Vary', 'Origin');
-    }
+    // Kaynak KAYITLI OLMAK ZORUNDA, ve gelen değeri aynen yansıtmak yeterli değil.
+    //
+    // `Access-Control-Allow-Origin: *` ile `Allow-Credentials: true` birlikte kullanılamaz --
+    // tarayıcı bunu reddeder. O yüzden kaynak yansıtılıyor, ve yansıtılan bir kaynak ancak
+    // önce doğrulandıysa güvenlidir: doğrulanmadan yansıtmak, HERHANGİ bir sayfanın
+    // kullanıcının çerezleriyle bu API'yi okuyabilmesi demektir.
+    //
+    // Doğrulama kaynağı kayıtlı yönlendirme adresleridir: bir uygulamanın hangi kaynakta
+    // çalıştığı zaten orada beyan edilmiş ve onaylanmış durumda. İkinci bir liste tutmak,
+    // ikisinin ayrışabileceği bir yer daha yaratırdı.
+    if (!this._corsAllows(origin)) return;
+
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      req.headers['access-control-request-headers'] || 'Content-Type, Authorization'
+    );
+    // Ön kontrol yanıtının önbelleklenmesi. Olmadan, her çapraz kaynak isteği önce bir OPTIONS
+    // turu atar ve bu, bir sayfadaki her çağrıyı ikiye katlar.
+    res.setHeader('Access-Control-Max-Age', '600');
+    // Yanıt kaynağa göre değiştiği için ŞART: olmadan bir ara önbellek, bir kaynağa verilen
+    // yanıtı başka bir kaynağa servis edebilir.
+    res.setHeader('Vary', 'Origin');
   }
 
   // YENİ: Artık servisleri belirli bir IP adresine kilitleyebilirsin (Örn: '127.0.0.1')

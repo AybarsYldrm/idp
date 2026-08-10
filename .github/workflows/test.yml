@@ -110,3 +110,10 @@ jobs:
       - name: Certificate distribution points
         working-directory: idp
         run: npm run test:crl-distribution
+
+      # A browser app could not read userinfo at all: the allowed-origin list was a hardcoded
+      # pair that never included the portal, and the endpoint only read a SameSite cookie the
+      # browser will not send cross-site.
+      - name: CORS origins and Bearer userinfo
+        working-directory: idp
+        run: npm run test:cors

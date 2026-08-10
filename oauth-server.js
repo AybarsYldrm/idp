@@ -10,6 +10,7 @@ const crypto = require('node:crypto');
 
 const { loadOrCreateSigningKeyPair, publicKeyToJwks } = require('./core/keys');
 const { KeyVault } = require('./core/key-vault');
+const { createCorsOriginSet } = require('./core/cors-origins');
 const { assertSslCompatible } = require('./core/ssl-compat');
 const { SessionManager, ACCOUNTS_COOKIE_NAME } = require('./core/session-manager');
 const { WebAuthnService } = require('./core/webauthn');
@@ -82,6 +83,9 @@ const RP_ID = config.rpId;
 const COOKIE_DOMAIN = config.cookieDomain;
 const TRUST_HOST = config.trustHost;
 const TRUST_ISSUER = process.env.FITFAK_IDP_TRUST_ISSUER || `https://${TRUST_HOST}`;
+// Yönetim yüzeyinin dış adresi. CORS listesinde ve panelin OAuth istemci kaydında kullanılıyor;
+// ikisinin aynı yerden gelmesi, birinin diğerinden habersiz değişmesini engelliyor.
+const ADMIN_ISSUER = process.env.FITFAK_IDP_ADMIN_ISSUER || `https://${config.adminHost}`;
 const KEY_DIR = config.keyDir;
 
 // Gerçek çift-yönlü (bidi) akış yalnızca gerçek HTTP/2 üzerinden mümkün; düz
@@ -208,6 +212,28 @@ function getIp(req) {
     if (isPlausibleIp(candidate)) return candidate;
   }
   return req.socket?.remoteAddress || 'unknown';
+}
+
+/**
+ * RFC 6750 §2.1 Bearer belirteci.
+ *
+ * Şema adı büyük/küçük harfe duyarsız (RFC 7235 §2.1) -- 'bearer' gönderen istemciler var ve
+ * onları reddetmek, standardın izin verdiği bir şeyi reddetmektir.
+ */
+function bearerToken(req) {
+  const header = req.headers.authorization || '';
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return match ? match[1].trim() : null;
+}
+
+/**
+ * IdP'nin kendi sayfaları için: belirteç HttpOnly bir çerezde ve sayfa betiği ona hiç
+ * dokunamaz. Aynı kaynakta çalışan bir arayüz için bu, belirteci JavaScript'te tutmaktan
+ * güvenlidir -- ama çapraz kaynakta hiç gönderilmez, o yüzden tek yol olamaz.
+ */
+function cookieToken(req) {
+  const match = /(?:^|;\s*)__Secure-fitfak_at=([^;]+)/.exec(req.headers.cookie || '');
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
 function sendJson(res, status, obj) {
@@ -430,6 +456,20 @@ async function main() {
       });
     }
   }
+
+  // Tarayıcıdan bu API'yi hangi kaynakların çağırabileceği.
+  //
+  // Liste kayıtlı yönlendirme adreslerinden türetiliyor, elle tutulmuyor. Gerekçe
+  // core/cors-origins.js'de; kısası, sabit listenin portal ve yönetim yüzeyini hiç içermemesi
+  // ve tarayıcı isteklerinin CORS'ta sessizce ölmesiydi.
+  const corsOrigins = createCorsOriginSet({
+    listClients: () => clientStore.listClients(),
+    always: [ISSUER, TRUST_ISSUER, ADMIN_ISSUER].filter(Boolean),
+    logger: log.child('cors'),
+  });
+  await corsOrigins.refresh();
+  server.setCorsOriginResolver((origin) => corsOrigins.allows(origin));
+  log.info({ ...corsOrigins.snapshot(), msg: 'CORS kaynakları kayıtlı uygulamalardan türetildi' });
 
   const oauthService = new OAuthService({
     sessionManager, clientStore, db, issuer: ISSUER,
@@ -1439,12 +1479,34 @@ async function main() {
     sendJson(res, 200, result);
   }), IDP_IP);
 
+  // OIDC UserInfo (OpenID Connect Core §5.3).
+  //
+  // Belirteç ÖNCE Authorization başlığından okunuyor, çerezden değil. Sebebi bir hata:
+  // yalnızca `__Secure-fitfak_at` çerezine bakılıyordu ve bu, ucu başka bir kaynaktan
+  // çağrılamaz kılıyordu.
+  //
+  //   * Çerez `__Secure-` önekli ve SameSite kısıtlı. Tarayıcı onu çapraz siteye GÖNDERMEZ --
+  //     `credentials: 'include'` yazılsa bile. Yani portal ya da bir uygulama bu ucu çağırdığında
+  //     çerez hiç ulaşmıyordu ve yanıt "Cookie içinde token eksik" oluyordu; hata mesajı da
+  //     CORS'u işaret etmediği için teşhis yanlış yere gidiyordu.
+  //   * Zaten standart olan da bu: RFC 6750 §2.1 Bearer belirtecinin Authorization başlığında
+  //     taşınmasını tanımlar ve her OIDC istemci kütüphanesi öyle gönderir.
+  //
+  // Çerez yolu kaldırılmadı: IdP'nin kendi sayfaları aynı kaynakta çalışıyor ve onlar için
+  // çerez, sayfa betiğinin hiç dokunamayacağı (HttpOnly) bir belirteçtir -- yani orada daha
+  // güvenli olan yol odur.
   server.addHttpHandler({ method: 'GET', path: '/oauth/userinfo' }, wrapHandler(async (req, res) => {
-    const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=').map(decodeURIComponent)));
-    const token = cookies['__Secure-fitfak_at'];
-    if (!token) throw new AppError('invalid_token', 'Cookie içinde token eksik', { httpStatus: 401 });
+    const token = bearerToken(req) || cookieToken(req);
+    if (!token) {
+      // RFC 6750 §3: 401 yanıtı, istemciye NASIL kimlik doğrulaması gerektiğini söyleyen bir
+      // WWW-Authenticate başlığı taşımalı. Onsuz istemci yalnızca "yetkisiz" görür ve neyi
+      // eksik gönderdiğini tahmin etmek zorunda kalır.
+      res.setHeader('WWW-Authenticate', 'Bearer realm="fitfak", error="invalid_token"');
+      throw new AppError('invalid_token',
+        'Erişim belirteci yok. Authorization: Bearer <token> gönderin.', { httpStatus: 401 });
+    }
     sendJson(res, 200, await oauthService.userinfo({ accessToken: token }));
-}), IDP_IP);
+  }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/oauth/introspect' }, wrapHandler(async (req, res) => {
     const client = await clientStore.getClient(req.headers['x-client-id']);
@@ -1514,19 +1576,28 @@ async function main() {
     if (!body.clientId || !Array.isArray(body.redirectUris) || body.redirectUris.length === 0) throw new AppError('invalid_argument', 'Eksik parametre', { httpStatus: 400 });
     const clientSecret = body.clientSecret || crypto.randomBytes(24).toString('base64url');
     const created = await clientStore.createClient({ clientId: body.clientId, clientSecret, name: body.name || body.clientId, redirectUris: body.redirectUris, allowedScopes: body.allowedScopes || ['openid', 'profile'] });
+    // Kaynak listesi hemen yenileniyor: yeni kaydedilmiş bir uygulamanın ilk tarayıcı isteğinin
+    // CORS'ta reddedilmesi, kaydın çalışmadığı izlenimi verir ve teşhis yanlış yerden başlar.
+    await corsOrigins.refresh();
     sendJson(res, 200, { ...created, clientSecret });
   }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/admin/oauth-clients/update' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
     const body = await readJsonBody(req);
-    sendJson(res, 200, await clientStore.updateClient(body.clientId, { name: body.name, redirectUris: body.redirectUris, allowedScopes: body.allowedScopes }));
+    const updated = await clientStore.updateClient(body.clientId, { name: body.name, redirectUris: body.redirectUris, allowedScopes: body.allowedScopes });
+    await corsOrigins.refresh();
+    sendJson(res, 200, updated);
   }), ADMIN_IP);
   
   server.addHttpHandler({ method: 'POST', path: '/admin/oauth-clients/delete' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
     const body = await readJsonBody(req);
-    sendJson(res, 200, await clientStore.deleteClient(body.clientId));
+    const deleted = await clientStore.deleteClient(body.clientId);
+    // Silmede de yenileniyor: kaldırılan bir uygulamanın kaynağının bir dakika daha izinli
+    // kalması, kaldırma işleminin yarısının yapılmamış olması demek.
+    await corsOrigins.refresh();
+    sendJson(res, 200, deleted);
   }), ADMIN_IP);
 
   // ---- yönlendirme adresleri: tek tek yönetilir ------------------------------
@@ -1554,6 +1625,7 @@ async function main() {
     // ve https olmayan şemalar burada reddedilir. Gerekçeleri
     // core/oauth-redirect.js'te tek tek yazılı.
     const redirect = await clientStore.addRedirectUri(body.clientId, body.redirectUri, body.label);
+    await corsOrigins.refresh();
     sendJson(res, 200, {
       redirect,
       // Uygulamanın yapılandırmasına yazacağı değer. `redirect_uri` göndermeye
@@ -1566,7 +1638,9 @@ async function main() {
   server.addHttpHandler({ method: 'POST', path: '/admin/oauth-clients/redirects/remove' }, wrapHandler(async (req, res) => {
     await requireAdmin(req);
     const body = await readJsonBody(req);
-    sendJson(res, 200, await clientStore.removeRedirectUri(body.clientId, body.handle));
+    const removed = await clientStore.removeRedirectUri(body.clientId, body.handle);
+    await corsOrigins.refresh();
+    sendJson(res, 200, removed);
   }), ADMIN_IP);
 
   // ---- kısa ömürlü kimlikler: istatistik --------------------------------------
