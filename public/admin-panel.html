@@ -51,6 +51,12 @@
   .brand span { color: var(--ink-3); font-weight: 400; }
   .nav-group { margin-bottom: 20px; }
   .nav-label { padding: 0 20px 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; color: #52525b; font-weight: 600; }
+  /* Bir kez gösterilen sırlar. Seçilebilir ve tek parça olması gerekiyor: operatör bunu
+     kopyalayacak ve yanlış kopyalanan bir sır, uygulamanın hiç bağlanamaması demek. */
+  .secret-box { background: var(--bg-subtle); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+  .secret-box .label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin-bottom: 4px; }
+  .secret-box code { font-size: 12.5px; word-break: break-all; user-select: all; }
+
   .nav-item { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--sidebar-ink); padding: 9px 20px; cursor: pointer; font-size: 13.5px; border-left: 2px solid transparent; }
   .nav-item:hover { background: var(--sidebar-hover); color: #fff; }
   .nav-item.active { background: var(--sidebar-hover); color: var(--sidebar-ink-active); border-left-color: #fff; font-weight: 600; }
@@ -166,7 +172,12 @@
   </div>
   <div class="nav-group">
     <div class="nav-label">Uygulamalar</div>
-    <button class="nav-item" data-view="apps">Kayıtlı uygulamalar</button>
+    <button class="nav-item" data-view="applications">Uygulamalar</button>
+    <button class="nav-item" data-view="apps">OAuth istemcileri</button>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Veritabanı</div>
+    <button class="nav-item" data-view="database">Durum ve servisler</button>
   </div>
   <div class="nav-group">
     <div class="nav-label">Zero Trust</div>
@@ -259,6 +270,87 @@
         <thead><tr><th>Uygulama</th><th>Yönlendirme adresleri</th><th>Kapsamlar</th><th></th></tr></thead>
         <tbody id="apps-body"><tr><td colspan="4" class="empty">yükleniyor…</td></tr></tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- ================= UYGULAMALAR (İKİ SİSTEM BİRDEN) ================= -->
+  <!--
+    Buradaki kayıt HEM IdP'de bir OAuth istemcisi HEM de veritabanında bir servis oluşturur ve
+    ikisinin adı ile SPIFFE kimliği tek bir addan türer. Ayrı ayrı yapıldığında sessizce yanlış
+    olabilen şey buydu: iki farklı ad, uygulamanın belirteç alıp veritabanına bağlanamaması
+    demek ve bu ancak ilk yazma denemesinde anlaşılıyor.
+  -->
+  <section class="view" id="view-applications">
+    <div class="page-head">
+      <div>
+        <h1>Uygulamalar</h1>
+        <p class="page-sub">Tünel, SMTP, DNS gibi servisler. Tek kayıt: OAuth istemcisi,
+          veritabanı servisi ve SPIFFE kimliği aynı addan üretilir.</p>
+      </div>
+      <button class="btn btn-primary" id="btn-new-application">Uygulama kaydet</button>
+    </div>
+
+    <div class="notice" id="application-db-warning" style="display:none">
+      <strong>Veritabanına ulaşılamıyor.</strong> Aşağıdaki liste yalnızca IdP tarafını gösteriyor;
+      hangi uygulamanın veritabanı kaydı olduğu şu an bilinmiyor. Yeni kayıt da yapılamaz —
+      yarım bir uygulama bırakmamak için veritabanı adımı ilk sırada denenir.
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-head"><h2>Kayıtlı uygulamalar</h2><span class="badge badge-neutral" id="application-count">0</span></div>
+      <table>
+        <thead><tr><th>Uygulama</th><th>SPIFFE / roller</th><th>OAuth</th><th>Durum</th><th></th></tr></thead>
+        <tbody id="applications-body"><tr><td colspan="5" class="empty">yükleniyor…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= VERİTABANI ================= -->
+  <!--
+    Veritabanının paneli 127.0.2.1'de duruyor ve orada kalıyor: düz HTTP konuşuyor ve tek
+    taşıma seviyesi koruması ağdan erişilemez olmak. Buradaki veriler IdP oturumu ile
+    doğrulanıp o adrese iletilerek geliyor (core/database-admin-proxy.js), yani veritabanına
+    bakmak için o makinede bir kabuk açmak gerekmiyor.
+  -->
+  <section class="view" id="view-database">
+    <div class="page-head">
+      <div>
+        <h1>Veritabanı</h1>
+        <p class="page-sub">127.0.2.1'deki yönetim API'sinden, IdP oturumunuzla. Anahtar
+          girmenize gerek yok — vekil makine kimlik bilgisiyle gidiyor.</p>
+      </div>
+      <button class="btn" id="btn-refresh-database">Yenile</button>
+    </div>
+
+    <div class="notice" id="database-offline" style="display:none"></div>
+
+    <div class="stats" id="database-stats"></div>
+
+    <div class="table-wrap">
+      <div class="table-head"><h2>Servisler</h2><span class="badge badge-neutral" id="database-service-count">0</span></div>
+      <table>
+        <thead><tr><th>Servis</th><th>Roller</th><th>Kayıt</th><th>Veri</th><th></th></tr></thead>
+        <tbody id="database-services-body"><tr><td colspan="5" class="empty">yükleniyor…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="table-wrap" style="margin-top:20px">
+      <div class="table-head"><h2>Açık bağlantılar</h2><span class="badge badge-neutral" id="database-conn-count">0</span></div>
+      <table>
+        <thead><tr><th>Eş</th><th>SPIFFE</th><th>Süre</th><th>Veri</th></tr></thead>
+        <tbody id="database-conn-body"><tr><td colspan="4" class="empty">yükleniyor…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="table-wrap" style="margin-top:20px">
+      <div class="table-head"><h2>Kabul (mühür)</h2></div>
+      <table><tbody id="database-admission"><tr><td colspan="2" class="empty">yükleniyor…</td></tr></tbody></table>
+      <div style="padding:14px 18px">
+        <button class="btn btn-danger" id="btn-seal-database">Veritabanını mühürle</button>
+        <p class="cell-sub" style="margin-top:8px">Mühürlemek her uygulamayı anında dışarıda
+          bırakır ve yalnızca kimlik sağlayıcısı yeniden sağladığında açılır. Ele geçirilmiş bir
+          veritabanını kapatmanın yolu budur.</p>
+      </div>
     </div>
   </section>
 
@@ -409,6 +501,8 @@
   var state = {
     users: [], apps: [], certs: [], orders: [], acmeAccounts: [],
     identity: null, authorities: [], purposes: [],
+    // Uygulamalar iki sistemin birleştirilmiş görüşü; veritabanı vekil üzerinden geliyor.
+    applications: null, database: null,
   };
 
   function showErr(m) { $('ok').classList.remove('show'); var e = $('err'); e.textContent = m; e.classList.add('show'); }
@@ -759,6 +853,261 @@
     } catch (e) { showErr(e.message); }
   }
 
+  // ---------- UYGULAMALAR (İKİ SİSTEM BİRDEN) ----------
+  function renderApplications() {
+    var data = state.applications || { applications: [], databaseReachable: false };
+    var rows = data.applications;
+    $('application-count').textContent = rows.length;
+    // Veritabanı kapalıyken kayıt yapılamaz ve düğmeyi tıklanabilir bırakmak, denendiğinde
+    // reddedilecek bir işi teklif etmek olurdu.
+    $('application-db-warning').style.display = data.databaseReachable ? 'none' : '';
+    $('btn-new-application').disabled = !data.databaseReachable;
+
+    var tb = $('applications-body');
+    if (!rows.length) {
+      tb.innerHTML = '<tr><td colspan="5" class="empty">Henüz uygulama kaydedilmemiş.</td></tr>';
+      return;
+    }
+    tb.innerHTML = '';
+    rows.forEach(function (app) {
+      var tr = document.createElement('tr');
+
+      // Tek taraflı bir kayıt ÇALIŞMAZ ve panelde öyle görünmeli. İki ayrı panele bakan biri
+      // bunu göremez; birleştirmenin asıl değeri burada.
+      var status;
+      if (app.missing === 'database') {
+        status = '<span class="badge badge-bad">veritabanı kaydı yok</span>'
+          + '<div class="cell-sub">OAuth belirteci alır, veritabanına bağlanamaz.</div>';
+      } else if (app.missing === 'oauth') {
+        status = '<span class="badge badge-bad">OAuth istemcisi yok</span>'
+          + '<div class="cell-sub">Veritabanına bağlanır, kullanıcı adına giriş alamaz.</div>';
+      } else if (app.database && app.database.enrolled) {
+        status = '<span class="badge badge-ok">kayıtlı ve bağlandı</span>';
+      } else if (app.database && app.database.credentialSpent) {
+        status = '<span class="badge badge-warn">kimlik bilgisi harcandı</span>'
+          + '<div class="cell-sub">Kayıt tamamlandı ama henüz bağlanmadı.</div>';
+      } else {
+        status = '<span class="badge badge-warn">kayıt bekleniyor</span>';
+      }
+
+      tr.innerHTML =
+        '<td><div class="cell-strong">' + esc(app.name) + '</div>'
+        + (app.description ? '<div class="cell-sub">' + esc(app.description) + '</div>' : '') + '</td>'
+        + '<td>' + (app.database
+          ? '<div class="cell-sub mono">' + esc(app.database.spiffeId || '—') + '</div>'
+            + (app.database.roles || []).map(function (r) { return '<span class="scope-chip">' + esc(r) + '</span>'; }).join('')
+          : '<span class="cell-sub">—</span>') + '</td>'
+        + '<td>' + (app.oauth
+          ? (app.oauth.redirects || []).map(function (u) { return '<div class="cell-sub mono">' + esc(u) + '</div>'; }).join('')
+            + (app.oauth.scopes || []).map(function (sc) { return '<span class="scope-chip">' + esc(sc) + '</span>'; }).join('')
+          : '<span class="cell-sub">—</span>') + '</td>'
+        + '<td>' + status + '</td>'
+        + '<td></td>';
+
+      var remove = document.createElement('button');
+      remove.className = 'btn btn-sm btn-danger';
+      remove.textContent = 'Kaldır';
+      remove.addEventListener('click', function () {
+        openModal('Uygulamayı kaldır',
+          '<p>“' + esc(app.name) + '” hem OAuth istemcisi hem de veritabanı servisi olarak '
+          + 'kaldırılacak. Uygulamanın mevcut sertifikası süresi dolana kadar çalışmaya devam '
+          + 'eder; yenileme yapamaz.</p>', function () {
+          return post('/admin/applications/remove', { name: app.name }).then(function (r) {
+            // Kısmi kaldırma AÇIKÇA söyleniyor: "silindi" deyip yarısını bırakmak, aynı adla
+            // ikinci bir kaydın anlaşılmaz bir çakışmayla reddedilmesi demek.
+            if (r.errors && r.errors.length) showErr('Kısmen kaldırıldı: ' + r.errors.join(' · '));
+            else showOk('Uygulama kaldırıldı.');
+            return loadApplications();
+          });
+        }, 'Kaldır');
+      });
+      tr.children[4].appendChild(remove);
+      tb.appendChild(tr);
+    });
+  }
+
+  async function loadApplications() {
+    try {
+      state.applications = await get('/admin/applications');
+      renderApplications();
+    } catch (e) { showErr(e.message); }
+  }
+
+  $('btn-new-application').addEventListener('click', function () {
+    openModal('Uygulama kaydet',
+      '<label for="new-app-name">Ad</label>'
+      + '<input type="text" id="new-app-name" placeholder="dns-resolver" autocapitalize="off" spellcheck="false">'
+      + '<p class="cell-sub">Bu ad üç yerde birden kullanılır: OAuth istemci kimliği, veritabanı '
+      + 'servis adı ve SPIFFE kimliği. Küçük harf, rakam ve tire.</p>'
+      + '<label for="new-app-desc">Açıklama</label>'
+      + '<input type="text" id="new-app-desc" placeholder="DNS çözücü">'
+      + '<label for="new-app-redirects">Yönlendirme adresleri (her satıra bir tane)</label>'
+      + '<textarea id="new-app-redirects" rows="3" placeholder="https://dns.fitfak.net/oauth/callback"></textarea>'
+      + '<label for="new-app-roles">Veritabanı rolleri</label>'
+      + '<select id="new-app-roles">'
+      + '<option value="reader">reader — yalnızca okuma</option>'
+      + '<option value="reader,writer" selected>reader, writer — okuma ve yazma</option>'
+      + '<option value="admin">admin — tam yetki</option></select>'
+      + '<div class="check-row" style="margin-top:12px"><input type="checkbox" id="new-app-oauth" checked>'
+      + '<label for="new-app-oauth">Kullanıcı adına giriş alacak (OAuth istemcisi)</label></div>'
+      + '<div class="check-row"><input type="checkbox" id="new-app-db" checked>'
+      + '<label for="new-app-db">Veritabanına bağlanacak (SPIFFE kimliği)</label></div>',
+      function () {
+        var needsOauth = $('new-app-oauth').checked;
+        var redirects = $('new-app-redirects').value.split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
+        return post('/admin/applications', {
+          name: $('new-app-name').value.trim(),
+          description: $('new-app-desc').value.trim(),
+          redirectUris: redirects,
+          roles: $('new-app-roles').value.split(','),
+          needsOauth: needsOauth,
+          needsDatabase: $('new-app-db').checked,
+        }).then(function (created) {
+          showCreatedApplication(created);
+          return loadApplications();
+        });
+      }, 'Kaydet');
+  });
+
+  /**
+   * Sırlar BİR KEZ gösterilir ve tekrar okunacak bir uç yoktur.
+   *
+   * İkisi birlikte gösteriliyor: ayrı ekranlarda gösterilselerdi operatör birini kaydedip
+   * diğerini kaçırırdı, ve kaçırılan kayıt sırrı uygulamanın hiç bağlanamaması demek.
+   */
+  function showCreatedApplication(created) {
+    var body = '<p><strong>' + esc(created.name) + '</strong> kaydedildi. Aşağıdaki değerler '
+      + '<strong>bir daha gösterilmeyecek</strong> — şimdi kopyalayın.</p>'
+      + '<div class="secret-box"><span class="label">SPIFFE kimliği</span>'
+      + '<code class="mono">' + esc(created.spiffeId) + '</code></div>';
+    if (created.oauth) {
+      body += '<div class="secret-box"><span class="label">OAuth istemci sırrı</span>'
+        + '<code class="mono">' + esc(created.oauth.clientSecret) + '</code></div>';
+    }
+    if (created.database) {
+      body += '<div class="secret-box"><span class="label">Veritabanı kayıt sırrı (tek kullanımlık)</span>'
+        + '<code class="mono">' + esc(created.database.enrolmentSecret) + '</code></div>';
+    }
+    body += '<label style="margin-top:14px">Uygulamanın ortamı</label>'
+      + '<textarea rows="8" readonly class="mono">' + esc(created.environment) + '</textarea>'
+      + '<p class="cell-sub">Adres ve güven çıpası burada yok: uygulama onları eşleştirme '
+      + 'dizininden kendisi buluyor.</p>';
+    openModal('Kimlik bilgileri — bir kez gösterilir', body, null);
+  }
+
+  // ---------- VERİTABANI ----------
+  function renderDatabase() {
+    var d = state.database;
+    if (!d || !d.overview) return;
+    var o = d.overview;
+    var summary = o.summary || {};
+    var gate = o.admission;
+
+    $('database-stats').innerHTML =
+      statCard('Taşınan veri', (summary.totalMegabytes || 0).toFixed(1) + ' MB', 'sıfırlamadan bu yana')
+      + statCard('Servisler', String((o.services || []).filter(function (x) { return !x.system; }).length), 'kayıtlı uygulama')
+      + statCard('Bağlantılar', String((d.connections || []).length), 'şu an açık')
+      + statCard('Kabul', gate ? (gate.state === 'open' ? 'AÇIK' : gate.state.toUpperCase()) : '—',
+        gate && gate.state === 'open' ? 'her yetkili eş girebilir' : 'yalnızca kimlik sağlayıcısı');
+
+    var tb = $('database-services-body');
+    var services = o.services || [];
+    $('database-service-count').textContent = services.length;
+    tb.innerHTML = services.length ? '' : '<tr><td colspan="5" class="empty">Kayıtlı servis yok.</td></tr>';
+    services.forEach(function (svc) {
+      var tr = document.createElement('tr');
+      // Kimlik sağlayıcısı bir uygulama değil; üzerinde işlem yapılabilirmiş gibi göstermek,
+      // hiçbir işe yaramayan düğmelere basmaya davet etmek olurdu.
+      var enrol = svc.system ? '<span class="badge badge-neutral">sistem</span>'
+        : (svc.credentialSpent ? '<span class="badge badge-ok">harcandı</span>'
+          : '<span class="badge badge-warn">kullanılmadı</span>');
+      tr.innerHTML =
+        '<td><div class="cell-strong">' + esc(svc.name) + (svc.system ? ' <span class="scope-chip">sistem servisi</span>' : '') + '</div>'
+        + '<div class="cell-sub mono">' + esc(svc.spiffeId || '—') + '</div></td>'
+        + '<td>' + (svc.roles || []).map(function (r) { return '<span class="scope-chip">' + esc(r) + '</span>'; }).join('') + '</td>'
+        + '<td>' + enrol + '</td>'
+        + '<td class="num">' + (svc.usage ? (svc.usage.megabytes || 0).toFixed(1) + ' MB' : '—') + '</td>'
+        + '<td></td>';
+      if (svc.usage && !svc.system) {
+        var reset = document.createElement('button');
+        reset.className = 'btn btn-sm';
+        reset.textContent = 'Sayacı sıfırla';
+        reset.addEventListener('click', function () {
+          post('/admin/database/metrics/reset', { principal: svc.name })
+            .then(function () { showOk(svc.name + ' sayacı sıfırlandı.'); return loadDatabase(); })
+            .catch(function (e) { showErr(e.message); });
+        });
+        tr.children[4].appendChild(reset);
+      }
+      tb.appendChild(tr);
+    });
+
+    var cb = $('database-conn-body');
+    var conns = d.connections || [];
+    $('database-conn-count').textContent = conns.length;
+    cb.innerHTML = conns.length ? '' : '<tr><td colspan="4" class="empty">Açık bağlantı yok.</td></tr>';
+    conns.forEach(function (c) {
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td><div class="cell-strong">' + esc(c.principal || 'kimliksiz') + '</div>'
+        + '<div class="cell-sub mono">' + esc(c.remoteAddress || '—') + '</div></td>'
+        + '<td><div class="cell-sub mono">' + esc(c.spiffeId || '—') + '</div></td>'
+        + '<td class="cell-sub">' + Math.round((c.ageMs || 0) / 1000) + ' sn</td>'
+        + '<td class="num">' + (c.megabytes || 0).toFixed(2) + ' MB</td>';
+      cb.appendChild(tr);
+    });
+
+    var ab = $('database-admission');
+    ab.innerHTML = gate
+      ? '<tr><td class="cell-sub">Durum</td><td><strong>' + esc(gate.state) + '</strong></td></tr>'
+        + '<tr><td class="cell-sub">Denetim eşi</td><td class="mono">' + esc(gate.controlPrincipal || '—') + '</td></tr>'
+        + '<tr><td class="cell-sub">SPIFFE</td><td class="mono">' + esc(gate.controlSpiffeId || '—') + '</td></tr>'
+        + '<tr><td class="cell-sub">Açıldığı an</td><td>' + fmtDate(gate.openedAt) + '</td></tr>'
+      : '<tr><td colspan="2" class="empty">Bu veritabanı kabul denetimi olmadan başlatılmış.</td></tr>';
+  }
+
+  function statCard(label, value, sub) {
+    return '<div class="stat"><div class="stat-label">' + esc(label) + '</div>'
+      + '<div class="stat-value">' + esc(value) + '</div>'
+      + '<div class="stat-sub">' + esc(sub) + '</div></div>';
+  }
+
+  async function loadDatabase() {
+    try {
+      var overview = await get('/admin/database/overview');
+      var connections = await get('/admin/database/connections');
+      state.database = { overview: overview, connections: connections.connections || [] };
+      $('database-offline').style.display = 'none';
+      renderDatabase();
+    } catch (e) {
+      // Veritabanının IdP'den SONRA açılması bu mimaride normal bir sıralama, bir arıza değil --
+      // ve mesajın bunu söylemesi, operatörün yanlış yerde hata aramasını engelliyor.
+      $('database-offline').style.display = '';
+      $('database-offline').innerHTML = '<strong>Veritabanına ulaşılamıyor.</strong> ' + esc(e.message);
+      $('database-stats').innerHTML = '';
+      $('database-services-body').innerHTML = '<tr><td colspan="5" class="empty">—</td></tr>';
+      $('database-conn-body').innerHTML = '<tr><td colspan="4" class="empty">—</td></tr>';
+      $('database-admission').innerHTML = '<tr><td colspan="2" class="empty">—</td></tr>';
+    }
+  }
+
+  $('btn-refresh-database').addEventListener('click', function () {
+    clearBanners();
+    loadDatabase().then(function () { showOk('Yenilendi.'); });
+  });
+
+  $('btn-seal-database').addEventListener('click', function () {
+    openModal('Veritabanını mühürle',
+      '<p>Mühürlenen veritabanı <strong>her uygulamayı anında dışarıda bırakır</strong> ve '
+      + 'yalnızca kimlik sağlayıcısı onu yeniden sağladığında açılır.</p>'
+      + '<p>Bu, ele geçirilmiş bir veritabanını kapatmanın yoludur; planlı bakım için değildir.</p>'
+      + '<label for="seal-reason">Gerekçe</label>'
+      + '<input type="text" id="seal-reason" placeholder="neden mühürlendiği">', function () {
+      return post('/admin/database/admission/seal', { reason: $('seal-reason').value || 'yönetim panelinden' })
+        .then(function () { showOk('Veritabanı mühürlendi.'); return loadDatabase(); });
+    }, 'Mühürle');
+  });
+
   // ---------- SERTİFİKALAR ----------
   function renderCerts() {
     $('cert-count').textContent = state.certs.length;
@@ -1086,7 +1435,8 @@
 
   // ---------- başlangıç ----------
   async function loadAll() {
-    await Promise.all([loadUsers(), loadApps(), loadCerts(), loadAcme(), loadIdentity(), loadAuthorities()]);
+    await Promise.all([loadUsers(), loadApps(), loadApplications(), loadDatabase(),
+      loadCerts(), loadAcme(), loadIdentity(), loadAuthorities()]);
   }
   $('btn-refresh-all').addEventListener('click', function () {
     clearBanners();
