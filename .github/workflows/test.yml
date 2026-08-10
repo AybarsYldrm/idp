@@ -117,3 +117,9 @@ jobs:
       - name: CORS origins and Bearer userinfo
         working-directory: idp
         run: npm run test:cors
+
+      # The identifier step must not ask the server anything: the obvious implementation of
+      # "email first" is an account-enumeration oracle.
+      - name: Staged login and second-factor selection
+        working-directory: idp
+        run: npm run test:login-steps

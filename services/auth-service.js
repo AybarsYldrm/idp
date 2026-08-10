@@ -821,6 +821,11 @@ module.exports = {
   beginTotpEnrollment,
   finishTotpEnrollment,
   markMfaMethodEnrolled,
+  // Sınama için açılıyor: hangi ikinci faktörlerin sunulduğu, arayüzün hangi yolu göstereceğini
+  // belirleyen karardır ve doğrudan sınanabilmeli. Adı `_test_` önekli, çünkü bir uç noktadan
+  // çağrılabilir hâle gelmesi bir hesap sayım aracı yaratır -- liste yalnızca parola
+  // doğrulandıktan sonra dönmelidir.
+  _test_availableSecondFactors: availableSecondFactors,
   logout,
   createSessionStoreAdapter,
   listAllUsers,
