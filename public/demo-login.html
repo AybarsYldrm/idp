@@ -380,16 +380,26 @@
 (function () {
   'use strict';
 
-  // return_to DOĞRUDAN kullanılamaz: bu değer adres çubuğundan gelir ve
-  // doğrulanmadan location.href'e yazılırsa açık yönlendirme olur -- kullanıcı
-  // gerçek alan adında giriş yapar, saldırganın sayfasına iner. safeRedirect
-  // yalnızca kendi origin'imizdeki yolları geçirir.
+  // Dönüş adresi artık bir YOL değil bir TUTAMAK: `?ru=fru.xxxx`.
+  //
+  // Yol taşımanın iki sorunu vardı. Doğrulanmadan kullanıldığında açık yönlendirme oluyordu --
+  // kullanıcı gerçek alan adında giriş yapar, saldırganın sayfasına iner -- ve doğrulansa bile
+  // hedef adres çubuğunda, tarayıcı geçmişinde ve ekran görüntüsünde görünür kalıyordu.
+  //
+  // Tutamak yalnızca sunucudaki kayıtlı listede varsa bir yere çözülür. Uydurulmuş bir değer
+  // hiçbir yere çözülmez, yani sayfanın doğrulayacağı bir şey de yok: sunucu `/auth/resolve-ru`
+  // ile ya kayıtlı bir yol döner ya da varsayılanı.
+  //
+  // Eski `return_to` hâlâ okunuyor: dışarıda paylaşılmış bağlantılar var ve onları bugün
+  // kırmanın bir faydası yok. safeRedirect'ten geçiyor, yani açık yönlendirme yüzeyi kapalı.
+  var params = new URLSearchParams(location.search);
+  var returnHandle = params.get('ru');
   var returnTo = FitfakSafeRedirect.safeRedirect(
-    new URLSearchParams(location.search).get('return_to'),
+    params.get('return_to'),
     { fallback: null, selfOrigin: location.origin });
-  var chooseAccount = new URLSearchParams(location.search).get('choose_account') === '1';
-  var deviceMode = new URLSearchParams(location.search).get('device') === '1';
-  var deviceUserCodeFromUrl = new URLSearchParams(location.search).get('user_code');
+  var chooseAccount = params.get('choose_account') === '1';
+  var deviceMode = params.get('device') === '1';
+  var deviceUserCodeFromUrl = params.get('user_code');
   var state = { setupToken: null, mfaChallengeToken: null, pendingUsername: null, awaitingDeviceConfirm: false, deviceUserCode: null };
 
   function $(id) { return document.getElementById(id); }
@@ -450,6 +460,15 @@
   function onAuthSuccess() {
     if (state.awaitingDeviceConfirm) { showDeviceConfirmFlow(); return; }
     if (returnTo) { location.href = returnTo; return; }
+    if (returnHandle) {
+      // Tutamak sunucuda çözülüyor. Sayfada çözmek, listenin sayfaya gömülmesi demek olurdu ve
+      // o liste, sistemin iç yapısını giriş yapmamış herkese açardı.
+      fetch('/auth/resolve-ru?ru=' + encodeURIComponent(returnHandle), { credentials: 'include' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) { location.href = d.destination || '/portal'; })
+        .catch(function () { location.href = '/portal'; });
+      return;
+    }
     loadSessions();
     showView('view-sessions');
   }

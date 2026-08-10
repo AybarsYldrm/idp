@@ -27,13 +27,14 @@
     "test:db": "node test/db-integration-demo.js",
     "test:redirects": "node test/oauth-redirect-demo.js",
     "test:workload": "node test/workload-identity-demo.js",
-    "test:zero-trust": "npm run test:ssl-compat && npm run test:redirects && npm run test:workload && npm run test:staging && npm run test:key-vault && npm run test:crl-distribution && npm run test:cors && npm run test:login-steps",
+    "test:zero-trust": "npm run test:ssl-compat && npm run test:redirects && npm run test:workload && npm run test:staging && npm run test:key-vault && npm run test:crl-distribution && npm run test:cors && npm run test:login-steps && npm run test:internal-redirects",
     "test:staging": "node test/staging-store-demo.js",
     "test:key-vault": "node test/key-vault-demo.js",
     "test:crl-distribution": "node test/crl-distribution-demo.js",
     "test:ssl-compat": "node test/ssl-compat-demo.js",
     "test:cors": "node test/cors-userinfo-demo.js",
-    "test:login-steps": "node test/login-steps-demo.js"
+    "test:login-steps": "node test/login-steps-demo.js",
+    "test:internal-redirects": "node test/internal-redirects-demo.js"
   },
   "notes": {
     "neden-sifir-bagimlilik": "WebAuthn/FIDO2, TOTP (RFC 6238), ES256 JWT, CBOR, base32/base64url, ve gRPC-Web tarzı çerçeveleme dahil HER ŞEY node:crypto ve diğer Node.js yerleşikleri üzerine sıfırdan yazıldı -- talep edilen kısıtlamaya uygun olarak harici kütüphane YOK.",

@@ -123,3 +123,9 @@ jobs:
       - name: Staged login and second-factor selection
         working-directory: idp
         run: npm run test:login-steps
+
+      # A handle that resolves only against a closed list makes open redirect inexpressible
+      # rather than merely blocked.
+      - name: Internal redirect handles
+        working-directory: idp
+        run: npm run test:internal-redirects

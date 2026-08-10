@@ -11,6 +11,7 @@ const crypto = require('node:crypto');
 const { loadOrCreateSigningKeyPair, publicKeyToJwks } = require('./core/keys');
 const { KeyVault } = require('./core/key-vault');
 const { createCorsOriginSet } = require('./core/cors-origins');
+const { createInternalRedirects } = require('./core/internal-redirects');
 const { assertSslCompatible } = require('./core/ssl-compat');
 const { SessionManager, ACCOUNTS_COOKIE_NAME } = require('./core/session-manager');
 const { WebAuthnService } = require('./core/webauthn');
@@ -462,6 +463,14 @@ async function main() {
   // Liste kayıtlı yönlendirme adreslerinden türetiliyor, elle tutulmuyor. Gerekçe
   // core/cors-origins.js'de; kısası, sabit listenin portal ve yönetim yüzeyini hiç içermemesi
   // ve tarayıcı isteklerinin CORS'ta sessizce ölmesiydi.
+  // Kendi sayfalarımız arasındaki dönüş adresleri.
+  //
+  // `?return_to=%2Fadmin` yerine `?ru=<tutamak>`. Fark yalnızca görsel değil: bir tutamak ancak
+  // kayıtlı listede varsa çözülür, yani açık yönlendirme engellenmesi gereken bir şey olmaktan
+  // çıkıp ifade edilemez bir şey haline geliyor. Gerekçenin tamamı core/internal-redirects.js'de.
+  const internalRedirects = createInternalRedirects({ secret: config.redirectHandleSecret });
+  log.info({ destinations: internalRedirects.list().length, msg: 'iç dönüş adresleri tutamaklara bağlandı' });
+
   const corsOrigins = createCorsOriginSet({
     listClients: () => clientStore.listClients(),
     always: [ISSUER, TRUST_ISSUER, ADMIN_ISSUER].filter(Boolean),
@@ -659,6 +668,36 @@ async function main() {
       subject_types_supported: ['public'], id_token_signing_alg_values_supported: ['ES256'],
     });
   }, IDP_IP);
+
+  // Sayfaların kendi dönüş tutamaklarını bilmesi için.
+  //
+  // Sunucuda üretiliyor, sayfaya gömülmüyor: tutamaklar sırdan türetiliyor ve o sır yalnızca
+  // sunucuda. Sayfada hesaplamak, sırrı tarayıcıya göndermek olurdu.
+  //
+  // `no-store`: bir sır döndürmesi durumunda (döndürmemeli ama olabilir) tutamaklar değişir ve
+  // önbellekte kalmış eski bir eşleme, her giriş sonrası kullanıcıyı varsayılana atardı.
+  server.addHttpHandler({ method: 'GET', path: '/static/redirect-handles.js' }, wrapHandler(async (req, res) => {
+    const map = {};
+    for (const entry of internalRedirects.list()) map[entry.name] = entry.handle;
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/javascript; charset=utf-8');
+    res.setHeader('cache-control', 'no-store');
+    res.setHeader('x-content-type-options', 'nosniff');
+    res.end(`window.FITFAK_RU = Object.freeze(${JSON.stringify(map)});\n`);
+  }), IDP_IP);
+
+  // Bir dönüş tutamağının gösterdiği yer.
+  //
+  // Oturum İSTEMEZ ve istememeli: giriş sayfası bunu giriş yapılmadan ÖNCE sorar, çünkü
+  // kullanıcıyı nereye götüreceğini bilmesi gerekiyor.
+  //
+  // Bir sayım aracı da değil: yanıt yalnızca bu dağıtımın kayıtlı iç sayfalarından biri ya da
+  // varsayılan. Uydurulmuş bir tutamak, geçerli bir tutamaktan ayırt edilemeyecek şekilde
+  // varsayılana düşer -- yani deneyerek öğrenilecek bir şey yok.
+  server.addHttpHandler({ method: 'GET', path: '/auth/resolve-ru' }, wrapHandler(async (req, res) => {
+    const handle = new URL(req.url, ISSUER).searchParams.get('ru');
+    sendJson(res, 200, { destination: internalRedirects.destinationFor(handle) });
+  }), IDP_IP);
 
   server.addHttpHandler({ method: 'POST', path: '/auth/pow-challenge' }, wrapHandler(async (req, res) => {
     const recommended = antiBot.rateLimiter.recommendedPowDifficultyBits({ ip: getIp(req) });
@@ -1045,7 +1084,9 @@ async function main() {
       }
       const back = authorizationUrl(params);
       res.statusCode = 302;
-      res.setHeader('location', `/login?return_to=${encodeURIComponent(safeRedirect(back, { fallback: '/portal', selfOrigin: ISSUER }))}&choose_account=1`);
+      // Yol değil TUTAMAK taşınıyor: `back` adres çubuğundan gelmiş olabilir ve tutamak
+      // üretimi kayıtlı olmayan hiçbir yola tutamak vermez -- doğrulanacak bir şey kalmıyor.
+      res.setHeader('location', internalRedirects.loginUrl(back, { choose_account: '1' }));
       return res.end();
     }
     const currentSession = accounts.length === 1
@@ -1075,7 +1116,7 @@ async function main() {
     if (result.requiresLogin) {
       const back = authorizationUrl(params);
       res.statusCode = 302;
-      res.setHeader('location', `/login?return_to=${encodeURIComponent(safeRedirect(back, { fallback: '/portal', selfOrigin: ISSUER }))}`);
+      res.setHeader('location', internalRedirects.loginUrl(back));
       return res.end();
     }
 
@@ -1530,7 +1571,7 @@ async function main() {
     const session = await resolveCurrentSession(req);
     if (!session) {
       res.statusCode = 302;
-      res.setHeader('location', `/login?return_to=${encodeURIComponent('/admin')}`);
+      res.setHeader('location', internalRedirects.loginUrl('/admin'));
       return res.end();
     }
     await requireAdmin(req);
@@ -2124,7 +2165,7 @@ async function main() {
         res.statusCode = 302;
         // Sorgu dizesi korunuyor: /consent?request=... girişten sonra o isteğe
         // geri dönmeli, yoksa kullanıcı onay ekranını hiç göremez.
-        res.setHeader('location', `/login?return_to=${encodeURIComponent(safeRedirect(req.url, { fallback: '/portal', selfOrigin: ISSUER }))}`);
+        res.setHeader('location', internalRedirects.loginUrl(req.url));
         return res.end();
       }
       servePage(res, file);
