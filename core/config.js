@@ -196,14 +196,56 @@ function load() {
   // hayatidir: o olmadan araya giren biri, IdP'nin veritabanı için ürettiği
   // ÖZEL ANAHTARI teslim alır.
   //
-  // Yalnızca uzak veritabanı modunda gerekli: gömülü motorda ağ yok, devir yok.
-  cfg.db.controlSecret = cfg.db.remoteTarget && !cfg.devMockDb
-    ? secret('FITFAK_IDP_DB_CONTROL_SECRET', {
-      hint: 'Veritabanının denetim düzlemi sırrı. db-server.js açılışta yazdırır. '
-          + 'Enrolment sırrından AYRI olmalı: bu sır, veritabanının sunucu anahtarını '
-          + 'değiştirme yetkisidir; enrolment sırrı yalnızca bir istemci sertifikası alma yetkisi.',
-    })
+  // ARTIK ZORUNLU DEĞİL ve bu bilinçli bir gevşetme. Veritabanı bu sırrı açılışta
+  // eşleştirme dizinine yazıyor (core/pairing.js) ve core/db-link.js onu oradan
+  // okuyor. Zorunlu tutmak, operatörün onu bir terminalden kopyalayıp bir ortam
+  // değişkenine yapıştırmasını gerektiriyordu -- yani bu iki projeyi bağlamayı
+  // fiilen imkânsız kılan şeyi. Verilirse yine kazanır; verilmezse aranır ve
+  // ikisi de yoksa hata AÇILIŞTA değil, bağlantı denemesinde çıkar (IdP'nin
+  // açılışı veritabanına bağlı olmamalı).
+  cfg.db.controlSecret = optional('FITFAK_IDP_DB_CONTROL_SECRET')
+    ? secret('FITFAK_IDP_DB_CONTROL_SECRET')
     : null;
+
+  // Eşleştirme dizini: iki sürecin birbirini bulduğu yer.
+  //
+  // Gerekçesi core/pairing.js'in başında. Özeti: elle yapılandırma beş değer, iki
+  // süreç ve yanlış yazıldığında anlaşılmaz bir TLS hatası demekti.
+  cfg.pairingDir = optional('FITFAK_PAIRING_DIR');
+  cfg.db.pairingDiscovery = bool('FITFAK_IDP_DB_PAIRING_DISCOVERY', true);
+
+  // Veritabanının kayıt otoritesi olarak IdP'ye başvururken kullandığı kimlik.
+  //
+  // IdP bunu üretir ve eşleştirme dizinine yazar; veritabanı oradan okur. Ortamdan
+  // verilirse o kazanır -- iki sürecin farklı makinelerde koştuğu bir dağıtımda
+  // dizin paylaşılamaz ve değerler elle girilir.
+  cfg.raClientId = optional('FITFAK_IDP_RA_CLIENT_ID', 'fitdb-registration-authority');
+  // Sırlar BURADA üretilmiyor.
+  //
+  // Üretilirse kalıcı olmak zorunda -- her açılışta yenisini üretmek, veritabanının sakladığı
+  // kopyayı her yeniden başlatmada geçersiz kılar ve kayıt otoritesi sessizce 401 almaya başlar,
+  // açılışta değil ilk enrolment denendiğinde. Kalıcılık artık şifreli kasada (core/key-vault.js):
+  // yapılandırma yüklemesi eşzamanlı ve kasa asenkron açılıyor, o yüzden değeri oauth-server.js
+  // kasayı açtıktan hemen sonra buraya yazıyor.
+  //
+  // Ortamdan verilmişse o kazanır ve kasaya hiç gidilmez: iki sürecin farklı makinelerde koştuğu
+  // bir dağıtımda eşleştirme dizini paylaşılamaz ve değerler elle girilir.
+  cfg.raClientSecret = optional('FITFAK_IDP_RA_CLIENT_SECRET') || null;
+
+  // Veritabanının YÖNETİM PANELİNİN giriş için kullandığı kimlik. Kayıt otoritesininkinden AYRI.
+  //
+  // İkisi farklı şeye yetkilidir: kayıt otoritesi "bu CSR şu kimlikle imzalansın" diyebilir,
+  // panel istemcisi yalnızca "şu kişi giriş yapıyor, kim ve yönetici mi" diye sorabilir. Tek bir
+  // istemciyi ikisine de vermek, panelin giriş sırrını ele geçiren birine sertifika imzalatma
+  // yetkisi vermek olurdu.
+  cfg.panelClientId = optional('FITFAK_IDP_DB_PANEL_CLIENT_ID', 'fitdb-admin-panel');
+  cfg.panelClientSecret = optional('FITFAK_IDP_DB_PANEL_CLIENT_SECRET') || null;
+  // Panelin geri döneceği adres. Veritabanının yönetim yüzeyi kendi yerel adresinde durur ve
+  // BURADA kayıtlı olmak zorundadır: kayıtlı olmayan bir adrese dönen bir yetkilendirme kodu,
+  // açık yönlendirme (open redirect) demektir ve OAuth'un en eski hatasıdır.
+  cfg.panelRedirectUri = optional('FITFAK_IDP_DB_PANEL_REDIRECT_URI', 'http://127.0.2.1/auth/callback');
+
+  cfg.trustIssuer = optional('FITFAK_IDP_TRUST_ISSUER', `https://${cfg.trustHost}`);
 
   // Yönlendirme tutamaklarının türetildiği sır.
   //

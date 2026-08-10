@@ -182,6 +182,13 @@ module.exports = {
       { no: 12, name: 'createdAt', type: 'uint64' },
       { no: 13, name: 'issuedVia', type: 'string' },
       { no: 14, name: 'skidHex', type: 'string', index: true },
+      // Bu sertifikayı KASADAKİ hangi otorite imzaladı.
+      //
+      // İndeksli, çünkü tek okuyucusu iptal listesi üretimi ve o üretim "şu CA'nın verdiği
+      // iptaller" diye soruyor. Alan olmadan bu soru cevaplanamıyordu ve sonuç, tek bir listenin
+      // tüm ara CA'lar adına konuşmaya çalışması oluyordu -- RFC 5280 §6.3.3 gereği hiçbir
+      // doğrulayıcının kabul etmediği bir liste.
+      { no: 15, name: 'issuerName', type: 'string', index: true },
     ],
   },
   // Kısa ömürlü (BeyondCorp) kimlikler.

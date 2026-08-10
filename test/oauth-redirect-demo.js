@@ -53,6 +53,23 @@ function main() {
 
   rejects('http (yerel olmayan) reddedilir', () => redirects.validateRedirectUri('http://dns.fitfak.net/cb'));
   rejects('yerel http varsayılan olarak reddedilir', () => redirects.validateRedirectUri('http://localhost:3000/cb'));
+
+  // RFC 8252 §8.3 tüm 127.0.0.0/8 bloğunu geri döngü sayar ve bu dağıtım onu kullanıyor:
+  // yönetim yüzeylerinin her biri ayrı bir geri döngü adresinde (veritabanı paneli 127.0.2.1).
+  // Yalnızca 127.0.0.1'i tanıyan bir kontrol, panelin kendi giriş adresini reddederdi.
+  check('sayısal geri döngü http adresi üretimde de kabul edilir',
+    !!redirects.validateRedirectUri('http://127.0.2.1/auth/callback'));
+  check('127.0.0.1 de öyle',
+    !!redirects.validateRedirectUri('http://127.0.0.1:8080/cb'));
+  check('::1 de öyle',
+    !!redirects.validateRedirectUri('http://[::1]:8080/cb'));
+
+  // 'localhost' bir AD ve bir ada çözülen şey ortama bağlıdır -- /etc/hosts, bir DNS sunucusu ya
+  // da bir DNS yeniden bağlama saldırısı onu başka bir yere götürebilir. Sayısal adres çözülmez.
+  rejects('ama localhost hâlâ geliştirmeye özel kalır',
+    () => redirects.validateRedirectUri('http://localhost/auth/callback'));
+  rejects('geri döngü GİBİ görünen bir alan adı geçmez',
+    () => redirects.validateRedirectUri('http://127.0.2.1.saldirgan.com/cb'));
   rejects('parça (#) reddedilir', () => redirects.validateRedirectUri('https://dns.fitfak.net/cb#tok'));
   rejects('joker karakter reddedilir', () => redirects.validateRedirectUri('https://*.fitfak.net/cb'));
   rejects('göreli adres reddedilir', () => redirects.validateRedirectUri('/callback'));

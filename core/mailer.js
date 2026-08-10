@@ -12,15 +12,11 @@ const crypto = require('node:crypto');
 // geri kalanıyla tutarlı olması için `./utils/logger` yerine basit bir
 // console tabanlı logger kullanılıyor.
 // ============================================================================
-function mk(component) {
-  const prefix = `[${component}]`;
-  return {
-    info: (...a) => console.log(prefix, ...a),
-    debug: (...a) => { if (process.env.FITFAK_IDP_SMTP_DEBUG === '1') console.log(prefix, ...a); },
-    error: (...a) => console.error(prefix, ...a),
-  };
-}
-const log = mk('SMTP');
+// Yapılandırılmış günlükleyici. Buradaki eski hâli kendi mini console sarmalayıcısını
+// kuruyordu ve sonucu şuydu: SMTP satırları başka bir biçimde, başka bir hedefe, sırları
+// maskelemeden yazılıyordu -- yani bir e-posta gönderimini hata ayıklarken SMTP parolası
+// terminale düşebiliyordu. Artık aynı akış, aynı maskeleme.
+const log = require('./logger').mk('smtp');
 
 class SMTPService {
   constructor(options) {

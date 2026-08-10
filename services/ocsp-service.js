@@ -41,12 +41,8 @@ function reasonCodeOf(value) {
   return REASON_CODES[String(value || '').trim()] ?? REASON_CODES.unspecified;
 }
 
-/**
- * Bir serinin OCSP durumunu üretir. Kayıt yoksa 'unknown' döner -- 'good'
- * DEĞİL: bu CA'nın hiç üretmediği bir seri için "iptal edilmemiş" demek,
- * uydurma seri taşıyan bir sertifikaya olumlu cevap vermektir.
- */
-async function statusForSerial(certs, serialHex, { issuerRevoked }) {
+/** Bulunmuş bir kaydın OCSP durumu. */
+async function statusForRow(row, { issuerRevoked }) {
   if (issuerRevoked) {
     return {
       status: 'revoked',
@@ -54,9 +50,6 @@ async function statusForSerial(certs, serialHex, { issuerRevoked }) {
       reason: CA_COMPROMISE,
     };
   }
-
-  const row = await certs.findOne('serialNumberHex', serialHex);
-  if (!row) return { status: 'unknown' };
 
   if (row.status === 'revoked') {
     return {
@@ -69,16 +62,79 @@ async function statusForSerial(certs, serialHex, { issuerRevoked }) {
 }
 
 /**
- * Ara CA'nın kendisi iptal edilmiş mi? Edilmişse altındaki HER sertifika
+ * Bu ara CA'nın kendisi iptal edilmiş mi? Edilmişse altındaki HER sertifika
  * geçersizdir ve tek tek sorulmalarına gerek kalmadan öyle yanıtlanır.
+ *
+ * SKID, SORULAN sertifikanın yayıncısından geliyor -- her zaman varsayılan ara CA'dan değil.
+ * Sabit bir yayıncıya bakmak, beş ara CA'nın olduğu bir kurulumda iki yönde birden yanılırdı:
+ * iptal edilmiş bir CA'nın altındaki sertifikalar 'good' görünür, ya da geçerli bir CA'nın
+ * altındakiler başka birinin iptali yüzünden 'revoked' ilan edilirdi.
  */
-async function findRevokedIssuer(certs, pkiIssuer) {
-  const skid = pkiIssuer.subCA?.skid;
-  if (!skid) return null;
-  const skidHex = Buffer.isBuffer(skid) ? skid.toString('hex') : String(skid);
+async function findRevokedIssuer(certs, pkiIssuer, authorityName) {
+  const skidHex = authorityName
+    ? await pkiIssuer.getAuthoritySkidHex(authorityName)
+    : (() => {
+      const skid = pkiIssuer.subCA?.skid;
+      return skid ? (Buffer.isBuffer(skid) ? skid.toString('hex') : String(skid)) : null;
+    })();
+  if (!skidHex) return null;
   const row = await certs.findOne('skidHex', skidHex);
   if (!row || row.status !== 'revoked') return null;
   return { revokedAt: new Date(Number(row.revokedAt) || Date.now()) };
+}
+
+/**
+ * Sorulan serilerin kayıtlarını, kanonik biçimleriyle birlikte bulur.
+ *
+ * Biçim denemesi burada toplandı, çünkü artık kayıt İKİ şey için gerekiyor: durumu ve
+ * yayıncısı. İki ayrı yerde aramak, ikisinin farklı kayıt bulabilmesi demek olurdu.
+ */
+/**
+ * Yanıtı hangi anahtarın imzalayacağı.
+ *
+ * RFC 6960 §4.2.2.2: bir OCSP yanıtını imzalayan anahtar, sorulan sertifikanın YAYINCISI
+ * olmalıdır. Beş ara CA varken sabit bir imzalayıcı, dördünün verdiği sertifikalar için
+ * istemcinin yanıtı 'unauthorized' sayması demektir -- ve o noktada iptal kontrolü cevap
+ * alınamadığı için tamamen atlanır.
+ *
+ * Yayıncı, sorulan sertifikanın KAYDINDAN geliyor: istek yalnızca seriyi taşır ve hangi CA'nın
+ * imzaladığını bilen tek yer kayıttır. Bir istek birden fazla yayıncının sertifikasını
+ * sorabilir (RFC bunu yasaklamaz) ve tek bir yanıt hepsi için yetkili olamaz -- o durumda ilk
+ * bulunanın yayıncısı seçilir ve geri kalanlar 'unknown' olarak yanıtlanır, ki istemci doğru
+ * responder'a gitsin.
+ *
+ * Ayrı bir fonksiyon, çünkü sınanması gereken karar bu ve @fitfak/ssl'e ihtiyaç duymadan
+ * sınanabilmeli.
+ */
+function chooseResponder(resolved, fallback) {
+  const found = resolved.find((entry) => entry.row && entry.authority);
+  return found ? found.authority : fallback;
+}
+
+async function resolveRequested(certs, requests, defaultAuthority = null) {
+  const out = [];
+  for (const entry of requests) {
+    // @fitfak/ssl haritada seriyi `BigInt#toString(16)` biçiminde arar: baştaki sıfırlar
+    // olmadan, küçük harf. Veritabanındaki değer başka bir biçimde yazılmış olabileceğinden
+    // aramayı kanonik biçim üzerinden yapıp haritaya da o biçimle koyuyoruz.
+    const canonical = entry.serialNumber.toString(16);
+    const candidates = [
+      canonical,
+      canonical.toUpperCase(),
+      canonical.padStart(canonical.length + (canonical.length % 2), '0'),
+    ];
+    let row = null;
+    for (const candidate of candidates) {
+      // eslint-disable-next-line no-await-in-loop
+      row = await certs.findOne('serialNumberHex', candidate);
+      if (row) break;
+    }
+    // Yayıncı adı burada çözülüyor: alan bu düzeltmeyle geldi, yani ondan önce yazılmış
+    // kayıtlarda boş. O kayıtlar tek bir ara CA varken üretildi, yani varsayılana koymak doğru
+    // -- ve onları düşürmek, alanın eklendiği güne kadarki her sertifikayı 'unknown' yapardı.
+    out.push({ canonical, row, authority: row ? (row.issuerName || defaultAuthority) : null });
+  }
+  return out;
 }
 
 async function handleOcspRequest({ db, pkiIssuer, ocspRequestDer }) {
@@ -104,32 +160,28 @@ async function handleOcspRequest({ db, pkiIssuer, ocspRequestDer }) {
     return pki.buildOcspErrorResponse('malformedRequest');
   }
 
-  const issuerRevoked = await findRevokedIssuer(certs, pkiIssuer);
+  const resolved = await resolveRequested(certs, request.requests, pkiIssuer.subCA?.name || null);
+
+  const authority = chooseResponder(resolved, pkiIssuer.subCA?.name || null);
+  const issuerRevoked = await findRevokedIssuer(certs, pkiIssuer, authority);
 
   const statusMap = new Map();
-  for (const entry of request.requests) {
-    // @fitfak/ssl haritada seriyi `BigInt#toString(16)` biçiminde arar:
-    // baştaki sıfırlar olmadan, küçük harf. Veritabanındaki değer başka bir
-    // biçimde yazılmış olabileceğinden, aramayı kanonik biçim üzerinden yapıp
-    // haritaya da o biçimle koyuyoruz -- önceki sürümdeki "her varyasyonu
-    // haritaya göm" yaklaşımı, biçimin hiçbir yerde sabitlenmemiş olmasının
-    // belirtisiydi.
-    const canonical = entry.serialNumber.toString(16);
-    const candidates = new Set([
-      canonical,
-      canonical.toUpperCase(),
-      canonical.padStart(canonical.length + (canonical.length % 2), '0'),
-    ]);
-
-    let resolved = { status: 'unknown' };
-    for (const candidate of candidates) {
-      const found = await statusForSerial(certs, candidate, { issuerRevoked });
-      if (found.status !== 'unknown') { resolved = found; break; }
+  for (const { canonical, row, authority: rowAuthority } of resolved) {
+    // Bu yanıt `authority` ile imzalanacak, yani BAŞKA bir CA'nın verdiği sertifikalar için
+    // yetkili değil. Onlara 'good' ya da 'revoked' demek, yetkisi olmadığı bir sertifika
+    // hakkında hüküm vermek olurdu; 'unknown' doğru cevaptır ve istemciyi doğru yayıncının
+    // responder'ına yönlendirir.
+    //
+    // Kayıt yoksa da 'unknown' -- 'good' DEĞİL: bu CA'nın hiç üretmediği bir seri için
+    // "iptal edilmemiş" demek, uydurma seri taşıyan bir sertifikaya olumlu cevap vermektir.
+    if (!row || (authority && rowAuthority !== authority)) {
+      statusMap.set(canonical, { status: 'unknown' });
+      continue;
     }
-    statusMap.set(canonical, resolved);
+    statusMap.set(canonical, await statusForRow(row, { issuerRevoked }));
   }
 
-  return pkiIssuer.generateOcspResponse({ ocspRequestDer, statusLookup: statusMap });
+  return pkiIssuer.generateOcspResponse({ ocspRequestDer, statusLookup: statusMap, authority });
 }
 
-module.exports = { handleOcspRequest, REASON_CODES, reasonCodeOf };
+module.exports = { handleOcspRequest, chooseResponder, REASON_CODES, reasonCodeOf };

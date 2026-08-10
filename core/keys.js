@@ -11,6 +11,16 @@ const path = require('node:path');
 // AYNI private key materyaline erişebilmeli (paylaşımlı secret store) -- ya da her
 // instance kendi anahtarını üretir ve JWKS'te `kid` ile ayrıştırılan BİRDEN FAZLA public
 // key yayınlarsınız (kademeli rotasyon modeli). `kid` alanı tam olarak bunun için var.
+// Bu dosya artık YALNIZCA testler ve dev-mock modu içindir.
+//
+// Üretimde oturum imzalama anahtarı şifreli kasada durur (core/key-vault.js) ve buradaki dosya
+// yolu ilk açılışta bir kereliğine oraya taşınır. Gerekçe uzun ama tek cümlesi şu: bu anahtar
+// her erişim ve yenileme belirtecini imzalar, yani bir kopyası herhangi bir kullanıcı için
+// herhangi bir belirteci üretebilme yetkisidir -- parolayı bilmeden, ikinci faktörü geçmeden,
+// IdP'ye hiç bağlanmadan ve hiçbir yerde iz bırakmadan.
+//
+// Kaldırılmadı çünkü kasanın olmadığı iki yol var: gömülü CA deposu açılmayan dev-mock modu, ve
+// kasayı hiç kurmayan testler.
 function loadOrCreateSigningKeyPair(keyDir) {
   fs.mkdirSync(keyDir, { recursive: true });
   const privPath = path.join(keyDir, 'es256-private.pem');

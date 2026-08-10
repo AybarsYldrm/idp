@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const ssl = require('@fitfak/ssl');
+const log = require('../core/logger').mk('ct-log');
 
 // RFC 6962 §4 — CT log'unun HTTP arayüzü.
 //
@@ -122,8 +123,15 @@ function loadOrCreateLogKey(dir) {
   return { privateKeyPem, publicKeyPem };
 }
 
-function createCtLog({ db, keyDir }) {
-  const { privateKeyPem, publicKeyPem } = loadOrCreateLogKey(keyDir);
+/**
+ * @param {object}  opts
+ * @param {object}  opts.db
+ * @param {object} [opts.keyPair]  { privateKeyPem, publicKeyPem } -- normalde şifreli kasadan
+ *                                 (core/key-vault.js) gelir
+ * @param {string} [opts.keyDir]   kasa yokken (dev-mock) dosyaya düşüş
+ */
+function createCtLog({ db, keyPair = null, keyDir = null }) {
+  const { privateKeyPem, publicKeyPem } = keyPair || loadOrCreateLogKey(keyDir);
   return new ssl.CertificateTransparencyLog({
     privateKeyPem, publicKeyPem, storage: createDbLogStorage(db),
   });
@@ -224,10 +232,13 @@ function createCtHandler({ ctLog, publicKeyPem }) {
 
       return sendJson(res, 404, { error_message: 'unknown endpoint' });
     } catch (err) {
-      console.error('[ct] hata:', err);
+      log.error({ error: err.message, stack: err.stack, msg: 'CT isteği başarısız' });
       return sendJson(res, 500, { error_message: 'internal error' });
     }
   };
 }
 
-module.exports = { createCtLog, createCtHandler, createDbLogStorage, loadOrCreateLogKey, CT_PATH_PREFIX };
+module.exports = {
+  // Kasa yokken kullanılan dosya yolu; oauth-server.js dev-mock modunda buna düşüyor.
+  loadOrCreateLogKey, createCtLog, createCtHandler, createDbLogStorage, CT_PATH_PREFIX,
+};

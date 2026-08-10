@@ -63,3 +63,81 @@ jobs:
       - name: Short-lived workload identities
         working-directory: idp
         run: npm run test:workload
+
+      # The identity provider resolves @fitfak/database as a package. The checkout above puts
+      # it beside this repository, so it has to be linked in before anything that opens the
+      # encrypted secret store can run.
+      # The signing library. It was pinned at ^1.0.2 while the library moved to 2.x, so the range
+      # never installed the new one and certificates came out not matching the CSR's private key
+      # -- a fault with no symptom until a TLS handshake somewhere else. Checked out here so the
+      # PKI suites run against the version the code actually declares.
+      - uses: actions/checkout@v4
+        with:
+          repository: AybarsYldrm/ssl
+          path: ssl
+
+      - name: Link @fitfak/database and @fitfak/ssl
+        working-directory: idp
+        run: |
+          mkdir -p node_modules/@fitfak
+          ln -sfn "$GITHUB_WORKSPACE/database" node_modules/@fitfak/database
+          ln -sfn "$GITHUB_WORKSPACE/ssl" node_modules/@fitfak/ssl
+
+      # The check that would have caught the version drift: an issued certificate must belong to
+      # the private key that asked for it.
+      - name: Signing library produces certificates that match their key
+        working-directory: idp
+        run: npm run test:ssl-compat
+
+      - name: Revocation reaches a validator (openssl)
+        working-directory: idp
+        run: npm run test:revocation
+
+      - name: Certificate Transparency issuance
+        working-directory: idp
+        run: npm run test:ct
+
+      - name: Startup buffer — work before the database exists
+        working-directory: idp
+        run: npm run test:staging
+
+      - name: Keys in the encrypted vault, not in .keys/
+        working-directory: idp
+        run: npm run test:key-vault
+
+      # The one that catches a class of bug with no symptom: a certificate carrying an address
+      # that does not answer. Chain building and revocation both fail silently when it happens.
+      - name: Certificate distribution points
+        working-directory: idp
+        run: npm run test:crl-distribution
+
+      # A browser app could not read userinfo at all: the allowed-origin list was a hardcoded
+      # pair that never included the portal, and the endpoint only read a SameSite cookie the
+      # browser will not send cross-site.
+      - name: CORS origins and Bearer userinfo
+        working-directory: idp
+        run: npm run test:cors
+
+      # The identifier step must not ask the server anything: the obvious implementation of
+      # "email first" is an account-enumeration oracle.
+      - name: Staged login and second-factor selection
+        working-directory: idp
+        run: npm run test:login-steps
+
+      # A handle that resolves only against a closed list makes open redirect inexpressible
+      # rather than merely blocked.
+      - name: Internal redirect handles
+        working-directory: idp
+        run: npm run test:internal-redirects
+
+      # Database operations from one.fitfak.net. The weight is on the allow-list: a proxy that
+      # forwarded whatever path it was given would carry endpoints nobody decided to expose.
+      - name: Database admin proxy
+        working-directory: idp
+        run: npm run test:db-admin-proxy
+
+      # Two processes with no distributed transaction between them: most of these checks are
+      # about what is left behind when one half fails.
+      - name: One-action application registration
+        working-directory: idp
+        run: npm run test:applications

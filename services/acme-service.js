@@ -6,6 +6,7 @@ const dns = require('node:dns').promises;
 const net = require('node:net');
 const { AppError } = require('../core/errors');
 const { verifyJws, jwkThumbprint, parseJws } = require('../core/acme-jws');
+const log = require('../core/logger').mk('acme');
 
 const ORDER_TTL_MS = 24 * 60 * 60 * 1000; // RFC 8555 önerisi: sipariş birkaç saat/gün içinde tamamlanmalı
 const AUTHZ_TTL_MS = ORDER_TTL_MS;
@@ -73,7 +74,11 @@ async function resolveAndValidateHost(domain) {
   if (blocked) {
     if (ALLOW_PRIVATE_IPS_FOR_TESTING) {
       // eslint-disable-next-line no-console
-      console.warn(`[fitfak-idp] UYARI: FITFAK_IDP_ACME_ALLOW_PRIVATE_IPS=1 ile SSRF koruması BİLEREK atlatıldı (${blocked.address}) -- SADECE yerel test için, ÜRETİMDE ASLA kullanmayın.`);
+      log.warn({
+        address: blocked.address,
+        msg: 'FITFAK_IDP_ACME_ALLOW_PRIVATE_IPS=1 ile SSRF koruması BİLEREK atlatıldı — '
+          + 'yalnızca yerel test için, ÜRETİMDE ASLA',
+      });
     } else {
       throw new Error(`SSRF koruması: '${domain}' özel/yerel/rezerve bir IP'ye (${blocked.address}) çözümleniyor -- http-01 doğrulaması reddedildi`);
     }
@@ -330,7 +335,7 @@ class AcmeService {
 
     // 🛡️ MÜKEMMEL GÜVENLİK (PERFECT FORWARD SECRECY) KONTROLÜ
     const {
-      certPem, serialNumberHex, skidHex, notBefore, notAfter,
+      certPem, serialNumberHex, skidHex, notBefore, notAfter, issuerName,
     } = await this.pkiIssuer.signCertificateFromCsr({
       csrPem, 
       profile: 'server-auth', 
@@ -357,6 +362,7 @@ class AcmeService {
       revocationReason: '',
       createdAt: BigInt(Date.now()),
       issuedVia: 'acme',
+      issuerName: issuerName || '',
     });
 
     await this.db.collection('acme_orders').update(orderRow._id, { status: 'valid', certificateSerial: serialNumberHex });

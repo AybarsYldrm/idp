@@ -113,8 +113,13 @@ async function main() {
   // ---------------------------------------------------------------------
   const loginStep1 = await authService.loginWithPassword({ db, username: 'abuzer', passwordPlain: 'CorrectHorseBatteryStaple1!', antiBot });
   assert.ok(loginStep1.requiresSecondFactor && loginStep1.mfaChallengeToken);
-  assert.deepStrictEqual(loginStep1.availableMethods, ['totp']);
-  console.log('full-flow: parola doğru -- 2. faktör (TOTP) isteniyor, tam oturum HENÜZ verilmedi');
+  // E-posta kodu HER ZAMAN listede: doğrulanmış bir e-postası olan her hesap onu kullanabilir.
+  //
+  // Bu bir kolaylık değil bir kilit açma. WebAuthn ya da TOTP anahtarı BAŞKA bir cihazda kalan
+  // biri, o cihaz olmadan hesabına giremezdi -- ve "yeni telefonumdan giremiyorum" durumu, ikinci
+  // faktörü tamamen kapatan destek taleplerinin en yaygın sebebidir.
+  assert.deepStrictEqual(loginStep1.availableMethods, ['totp', 'email_otp']);
+  console.log('full-flow: parola doğru -- 2. faktör isteniyor (TOTP veya e-posta kodu), tam oturum HENÜZ verilmedi');
 
   await assert.rejects(() => authService.completeLoginWithTotp({ db, sessionManager, mfaChallengeToken: loginStep1.mfaChallengeToken, code: '111111', ip, userAgent, antiBot }));
   // NOT: enrollment kodu (validSetupCode) ve bu login kodu aynı 30s adımında üretilirse
@@ -231,6 +236,28 @@ async function main() {
 
   const introspectBefore = await oauthService.introspect({ token: rpTokens.accessToken });
   assert.strictEqual(introspectBefore.active, true);
+
+  // Rol ve kullanıcı adı da dönüyor, ve bunun somut bir müşterisi var: veritabanının yönetim
+  // paneli bir OAuth istemcisi ve "bu kişi yönetici mi" sorusunu buraya soruyor. Kendi kullanıcı
+  // tablosunu tutması, tam olarak bu mimarinin ortadan kaldırdığı ikinci kimlik sistemi olurdu.
+  //
+  // Kapsamdan TÜRETİLMİYOR, ayrı dönüyor: kapsam kullanıcının uygulamaya ne yapma izni verdiğini
+  // söyler, rol sistemin o kullanıcıyı ne saydığını. Onay ekranı ikincisini veremez -- verebilseydi
+  // herhangi bir kullanıcı, bir uygulamaya yöneticilik onaylayarak yönetici olurdu.
+  assert.strictEqual(introspectBefore.username, 'abuzer');
+  assert.strictEqual(introspectBefore.role, 'user');
+  console.log('full-flow: introspect kullanıcı adını ve ROLÜ döndürdü (rol kapsamdan türetilmiyor)');
+
+  // Kullanıcı silinmişse belirteç imzası hâlâ geçerli olsa bile 'active' olmamalı: kimliği
+  // olmayan birine ait bir belirteç, hiçbir yetkilendirme sorusunun cevabı değildir. Kullanıcıyı
+  // gerçekten silip soruyoruz -- sahte bir 'sub' üretmek, imzanın da sahte olması demek olurdu ve
+  // o zaten ilk adımda reddedilirdi, yani sınanan şey başka bir kontrol olurdu.
+  const userRow = await db.collection('users').findOne('username', 'abuzer');
+  await db.collection('users').delete(userRow._id);
+  const ghost = await oauthService.introspect({ token: rpTokens.accessToken });
+  assert.strictEqual(ghost.active, false);
+  console.log('full-flow: silinmiş kullanıcıya ait belirteç, imzası geçerliyken bile inactive görüldü');
+  await db.collection('users').insert({ ...userRow, _id: undefined });
 
   // ---------------------------------------------------------------------
   // 10) REFRESH (rotasyon) -- OAuthService üzerinden

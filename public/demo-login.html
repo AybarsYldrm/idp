@@ -96,6 +96,21 @@
   .tile-title { font-weight: 600; font-size: 13.5px; }
   .tile-desc { font-size: 11.5px; color: var(--ink-2); margin-top: 2px; }
 
+  /* Hangi hesapla devam edildiğini gösteren rozet.
+     Parola adımında adresi göstermek biçimsel bir tercih değil: adres görünmüyorsa
+     kullanıcı yanlış hesabın parolasını girer, reddedilir ve parolasını unuttuğunu sanır. */
+  .identity-chip {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    border: 1px solid var(--line); border-radius: 999px; padding: 7px 8px 7px 14px;
+    margin-bottom: 18px; font-size: 13.5px;
+  }
+  .identity-mail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .identity-change {
+    flex: none; background: var(--bg-subtle); border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 10px; font-size: 12px; cursor: pointer; color: var(--ink-2); font-family: inherit;
+  }
+  .identity-change:hover { color: var(--ink); }
+
   .step-indicator { display: flex; gap: 6px; margin-bottom: 20px; }
   .step-dot { flex: 1; height: 4px; border-radius: 2px; background: var(--line); }
   .step-dot.done { background: var(--ink); }
@@ -162,18 +177,39 @@
       <button class="tab" data-tab="register">Hesap oluştur</button>
     </div>
 
+    <!-- ---- 1. ADIM: KİMLİK ----
+         E-posta önce sorulur, parola sonra. Bunun UI'dan başka bir sebebi var:
+         adres bilindiğinde tarayıcıya doğru parolayı önerebileceğini söyleyebiliriz ve
+         cihazda kayıtlı bir geçiş anahtarı varsa onu parolayı hiç sormadan kullanabiliriz.
+
+         BU ADIM SUNUCUYA HİÇBİR ŞEY SORMAZ. Sorsaydı, "bu hesap var mı" ve "hangi ikinci
+         faktörü kullanıyor" sorularının cevabı, parolayı bilmeyen birine de açılmış olurdu --
+         yani bir hesap sayım (enumeration) aracı. Ne sunulacağına dair her karar parola
+         doğrulandıktan SONRA, sunucunun döndürdüğü listeye göre veriliyor. -->
     <div class="view active" id="view-login">
       <label for="login-username">E-Posta Adresi</label>
-      <input type="email" id="login-username" autocomplete="username">
-      
+      <input type="email" id="login-username" autocomplete="username" inputmode="email"
+             autocapitalize="off" spellcheck="false">
+
+      <button class="btn btn-primary" id="btn-identify">Devam et</button>
+
+      <div class="divider">veya</div>
+      <button class="btn btn-secondary" id="btn-login-passkey">Cihaz anahtarı ile giriş yap</button>
+    </div>
+
+    <!-- ---- 2. ADIM: PAROLA ---- -->
+    <div class="view" id="view-password">
+      <div class="identity-chip" id="identity-chip">
+        <span class="identity-mail" id="identity-mail">—</span>
+        <button class="identity-change" id="btn-change-identity" type="button">değiştir</button>
+      </div>
+
       <label for="login-password">Parola</label>
       <input type="password" id="login-password" autocomplete="current-password">
-      
+
       <button class="btn btn-primary" id="btn-login-password">Giriş yap</button>
       <button class="btn btn-danger-text" id="btn-forgot"
               style="margin-top:12px;display:block;text-align:center;width:100%">Şifremi unuttum</button>
-      <div class="divider">veya</div>
-      <button class="btn btn-secondary" id="btn-login-passkey">Cihaz anahtarı ile giriş yap</button>
     </div>
 
     <div class="view" id="view-register">
@@ -344,16 +380,26 @@
 (function () {
   'use strict';
 
-  // return_to DOĞRUDAN kullanılamaz: bu değer adres çubuğundan gelir ve
-  // doğrulanmadan location.href'e yazılırsa açık yönlendirme olur -- kullanıcı
-  // gerçek alan adında giriş yapar, saldırganın sayfasına iner. safeRedirect
-  // yalnızca kendi origin'imizdeki yolları geçirir.
+  // Dönüş adresi artık bir YOL değil bir TUTAMAK: `?ru=fru.xxxx`.
+  //
+  // Yol taşımanın iki sorunu vardı. Doğrulanmadan kullanıldığında açık yönlendirme oluyordu --
+  // kullanıcı gerçek alan adında giriş yapar, saldırganın sayfasına iner -- ve doğrulansa bile
+  // hedef adres çubuğunda, tarayıcı geçmişinde ve ekran görüntüsünde görünür kalıyordu.
+  //
+  // Tutamak yalnızca sunucudaki kayıtlı listede varsa bir yere çözülür. Uydurulmuş bir değer
+  // hiçbir yere çözülmez, yani sayfanın doğrulayacağı bir şey de yok: sunucu `/auth/resolve-ru`
+  // ile ya kayıtlı bir yol döner ya da varsayılanı.
+  //
+  // Eski `return_to` hâlâ okunuyor: dışarıda paylaşılmış bağlantılar var ve onları bugün
+  // kırmanın bir faydası yok. safeRedirect'ten geçiyor, yani açık yönlendirme yüzeyi kapalı.
+  var params = new URLSearchParams(location.search);
+  var returnHandle = params.get('ru');
   var returnTo = FitfakSafeRedirect.safeRedirect(
-    new URLSearchParams(location.search).get('return_to'),
+    params.get('return_to'),
     { fallback: null, selfOrigin: location.origin });
-  var chooseAccount = new URLSearchParams(location.search).get('choose_account') === '1';
-  var deviceMode = new URLSearchParams(location.search).get('device') === '1';
-  var deviceUserCodeFromUrl = new URLSearchParams(location.search).get('user_code');
+  var chooseAccount = params.get('choose_account') === '1';
+  var deviceMode = params.get('device') === '1';
+  var deviceUserCodeFromUrl = params.get('user_code');
   var state = { setupToken: null, mfaChallengeToken: null, pendingUsername: null, awaitingDeviceConfirm: false, deviceUserCode: null };
 
   function $(id) { return document.getElementById(id); }
@@ -414,6 +460,15 @@
   function onAuthSuccess() {
     if (state.awaitingDeviceConfirm) { showDeviceConfirmFlow(); return; }
     if (returnTo) { location.href = returnTo; return; }
+    if (returnHandle) {
+      // Tutamak sunucuda çözülüyor. Sayfada çözmek, listenin sayfaya gömülmesi demek olurdu ve
+      // o liste, sistemin iç yapısını giriş yapmamış herkese açardı.
+      fetch('/auth/resolve-ru?ru=' + encodeURIComponent(returnHandle), { credentials: 'include' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) { location.href = d.destination || '/portal'; })
+        .catch(function () { location.href = '/portal'; });
+      return;
+    }
     loadSessions();
     showView('view-sessions');
   }
@@ -612,10 +667,39 @@
     showInfo('Hesap güvenliğiniz yapılandırıldı. Sisteme giriş yapabilirsiniz.');
   }
 
-  // ---- PAROLA İLE GİRİŞ ----
+  // ---- 1. ADIM: KİMLİK ----
+  //
+  // Sunucuya gitmez. Gitseydi, "bu hesap var mı" sorusunun cevabı parolayı bilmeyen birine de
+  // açılırdı -- bir hesap sayım aracı. Burada yapılan tek şey adresi alıp parola adımına
+  // geçmek; hesabın var olup olmadığı parola denendiğinde, tek ve aynı hata mesajıyla anlaşılır.
+  function goToPasswordStep() {
+    var username = $('login-username').value.trim();
+    if (!username) { showError('E-posta adresi gerekli.'); return; }
+    state.pendingUsername = username;
+    $('identity-mail').textContent = username;
+    showView('view-password');
+    // Odak parolaya: adresi yazan biri sıradaki alanın parola olmasını bekler ve tekrar
+    // tıklamak zorunda kalmak, iki adımlı akışın tek gerçek maliyetidir.
+    setTimeout(function () { $('login-password').focus(); }, 30);
+  }
+
+  $('btn-identify').addEventListener('click', goToPasswordStep);
+  $('login-username').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); goToPasswordStep(); }
+  });
+  $('btn-change-identity').addEventListener('click', function () {
+    $('login-password').value = '';
+    showView('view-login');
+    setTimeout(function () { $('login-username').focus(); }, 30);
+  });
+  $('login-password').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); $('btn-login-password').click(); }
+  });
+
+  // ---- 2. ADIM: PAROLA ----
   $('btn-login-password').addEventListener('click', function () {
     withBusyButton(this, async function () {
-      var username = $('login-username').value.trim();
+      var username = ($('login-username').value || state.pendingUsername || '').trim();
       var password = $('login-password').value;
       if (!username || !password) { showError('Kimlik bilgileri eksik.'); return; }
       var anti = await antiBotFields();
@@ -632,10 +716,62 @@
         return;
       }
       if (result.requiresMfaSetup) { state.setupToken = result.setupToken; showView('view-mfa-choice'); return; }
-      if (result.requiresSecondFactor) { state.mfaChallengeToken = result.mfaChallengeToken; showView('view-2fa'); return; }
+      if (result.requiresSecondFactor) { startSecondFactor(result); return; }
       onAuthSuccess();
     });
   });
+
+  // ---- 3. ADIM: HESABIN GERÇEKTEN SAHİP OLDUĞU İKİNCİ FAKTÖR ----
+  //
+  // Hangi yöntemin sunulacağına SUNUCU karar veriyor: `availableMethods`, parola doğrulandıktan
+  // sonra dönüyor. Bu sıralama önemli -- listeyi daha erken vermek, parolayı bilmeyen birine
+  // "bu hesap hangi ikinci faktörü kullanıyor" sorusunun cevabını vermek olurdu.
+  //
+  // Kullanıcıya "hangisini kullanmak istersiniz" diye SORULMUYOR. Hesabında yalnızca TOTP olan
+  // birine geçiş anahtarı seçeneği göstermek, seçilebilen ama çalışmayan bir yol sunmaktır; ve
+  // ikisi de varsa geçiş anahtarı öne çıkar, çünkü kimlik avına karşı dayanıklı olan odur
+  // (kaynak bağlama) ve altı haneli bir kod değildir.
+  function startSecondFactor(result) {
+    state.mfaChallengeToken = result.mfaChallengeToken;
+    var methods = result.availableMethods || [];
+    state.mfaMethods = methods;
+
+    var hasPasskey = methods.indexOf('webauthn') >= 0;
+    var hasTotp = methods.indexOf('totp') >= 0;
+    // E-posta kodu her zaman listede olabilir ama BİRİNCİL olarak seçilmez: en zayıf yöntemdir
+    // ve varsayılan yapmak, güçlü bir faktör kurmuş kullanıcıyı da ona alıştırırdı.
+    var hasEmail = methods.indexOf('email_otp') >= 0;
+
+    // Yalnızca gerçekten kullanılabilir olanlar görünür.
+    $('btn-confirm-2fa-passkey').style.display = hasPasskey ? '' : 'none';
+    $('twofa-code').parentNode.querySelector('label[for="twofa-code"]').style.display = hasTotp ? '' : 'none';
+    $('twofa-code').style.display = hasTotp ? '' : 'none';
+    $('btn-confirm-2fa-totp').style.display = hasTotp ? '' : 'none';
+    var divider = $('view-2fa').querySelector('.divider');
+    if (divider) divider.style.display = (hasPasskey && hasTotp) ? '' : 'none';
+    $('btn-2fa-email-fallback').style.display = hasEmail ? '' : 'none';
+
+    if (hasPasskey && !hasTotp) {
+      $('btn-2fa-email-fallback').textContent = 'Cihaz anahtarıma ulaşamıyorum';
+    } else if (hasEmail) {
+      $('btn-2fa-email-fallback').textContent = 'Başka bir yolla doğrula';
+    }
+
+    // Hiçbir güçlü faktör yoksa doğrudan e-posta koduna geç: gösterilecek başka bir şey yok ve
+    // boş bir ekranda "başka bir yolla doğrula" bağlantısı aramak zorunda bırakmak anlamsız.
+    if (!hasPasskey && !hasTotp && hasEmail) { $('btn-2fa-email-fallback').click(); return; }
+
+    showView('view-2fa');
+
+    if (hasPasskey) {
+      // Geçiş anahtarı varsa doğrudan başlat: kullanıcı zaten parolasını girdi ve sıradaki
+      // adım bir düğmeye basmak değil, cihaza dokunmak. Kullanıcı iptal ederse ekran duruyor
+      // ve TOTP ya da yedek yol elinin altında -- o yüzden hata gösterilmiyor.
+      $('btn-confirm-2fa-passkey').click();
+    } else if (hasTotp) {
+      setTimeout(function () { $('twofa-code').focus(); }, 30);
+    }
+  }
 
   // ---- PAROLASIZ (PASSKEY) GİRİŞ ----
   $('btn-login-passkey').addEventListener('click', function () {
@@ -644,7 +780,7 @@
       var begin = await FitfakOAuth.beginWebauthnLogin({ username: username, purpose: 'primary' });
       var result = await FitfakWebAuthn.authenticate(begin);
       var finishResult = await FitfakOAuth.finishWebauthnLogin(result);
-      if (finishResult.requiresSecondFactor) { state.mfaChallengeToken = finishResult.mfaChallengeToken; showView('view-2fa'); return; }
+      if (finishResult.requiresSecondFactor) { startSecondFactor(finishResult); return; }
       onAuthSuccess();
     });
   });

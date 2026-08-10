@@ -333,7 +333,23 @@ Alt seviye çerçeveleme/trailer mekaniği, gerçek bir HTTP/2 + native trailer 
 
 - **Device-code kimlikli mTLS sertifikası**: `POST /device/certificate` -- giriş yapmış bir kullanıcı CSR'ını gönderir, RBAC'a göre (`users.certProfiles`, varsayılan sadece `client-auth` herkese açık) izin verilen bir profil ile sertifika alır.
 - **ACME (RFC 8555)**: `/acme/directory`, `/acme/new-nonce`, `/acme/new-account`, `/acme/new-order`, `/acme/authz/:id`, `/acme/challenge/:id` (GERÇEK http-01 doğrulaması -- sunucu identifier'a gerçek bir HTTP isteği atar), `/acme/order/:id/finalize`, `/acme/cert/:serial`. JWS doğrulaması `core/acme-jws.js`'te Node'un YERLEŞİK JWK desteğiyle (ES256/P-256, IEEE-P1363) yapılıyor -- elle DER dönüşümü YOK.
-- **OCSP (RFC 6960)** ve **CRL (RFC 5280)**: `/ocsp`, `/crl` -- durum sorgusu paylaşılan `certificates` koleksiyonundan (yani birden fazla instance ARDINDA bile tutarlı), uygun `Cache-Control` header'larıyla.
+- **OCSP (RFC 6960)** ve **CRL (RFC 5280)**: `/ocsp`, `/crl/<otorite>` -- durum sorgusu paylaşılan `certificates` koleksiyonundan (yani birden fazla instance ARDINDA bile tutarlı), uygun `Cache-Control` header'larıyla.
+
+  **Her yayıncının kendi listesi var.** RFC 5280 §6.3.3'e göre bir CRL yalnızca kendi
+  yayıncısının verdiği sertifikalar hakkında konuşur, ve bu dağıtımda beş ara CA var (her
+  amaç için ayrı). Uç sertifikalara gömülen adresler onları İMZALAYAN otoriteye göre
+  kuruluyor:
+
+  ```
+  AIA caIssuers   http://status.trust.fitfak.net/ca/<otorite>.crt
+  CRL DP          http://status.trust.fitfak.net/crl/<otorite>
+  ```
+
+  Sabit bir `/intermediate.crt` ve `/crl` çifti bunu iki şekilde bozuyordu ve ikisinin de
+  belirtisi YOKLUKTU: zinciri eksik gönderen bir eşle karşılaşan doğrulayıcı yanlış ara
+  sertifikayı çekip zinciri kuramıyor, ve bir iptal başka bir yayıncının listesinde
+  aranıp bulunamadığı için "iptal edilmemiş" olarak okunuyordu. Adresleri kuran ve çözen
+  taraf artık aynı dosyada (`core/pki-urls.js`), ki sessizce ayrışamasınlar.
 - **Yönetici paneli**: sertifika listesi + iptal (`/admin/certificates`).
 
 **KRİTİK DÜRÜSTLÜK NOTU:** Gerçek X.509 imzalama (CSR→sertifika, OCSP yanıtı imzalama, CRL imzalama) BİLEREK sıfırdan yazılmadı -- `core/pki-issuer.js`'teki `PkiIssuer` arayüzü, bunları SİZİN `@fitfak/ssl` altyapınıza (root/sub-CA'nız dahil) bağlamanız için var. Şu an sadece protokol/akışı test eden bir `createDevMockIssuer()` var (GERÇEK sertifika ÜRETMEZ, ASLA üretimde kullanmayın). `test/pki-acme-demo.js` tüm protokolü (gerçek EC anahtarı + gerçek JWS imzası + gerçek http-01 HTTP isteği ile) bu sahte issuer'la uçtan uca doğruluyor -- ama gerçek sertifika geçerliliğini/tarayıcı güvenini DOĞRULAMIYOR. Üretime almadan önce `core/pki-issuer.js`'in üç fonksiyonunu (`signCertificateFromCsr`, `generateOcspResponse`, `signCrl`) kendi imzalama çağrılarınızla doldurun.

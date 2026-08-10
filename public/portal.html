@@ -870,9 +870,9 @@
 
   // --- ÜST MENÜ ---
   $('btn-logout').addEventListener('click', function () { busy(this, function () { return post('/auth/logout').then(function () { location.href = '/login'; }); }); });
-  $('btn-switch').addEventListener('click', function () { location.href = '/login?choose_account=1&return_to=' + encodeURIComponent('/portal'); });
+  $('btn-switch').addEventListener('click', function () { location.href = '/login?choose_account=1&ru=' + encodeURIComponent(FITFAK_RU.portal); });
 
-  function onLoadError(e) { if (String(e.message).indexOf('401') >= 0 || /unauth/i.test(e.message)) { location.href = '/login?return_to=' + encodeURIComponent('/portal'); return true; } return false; }
+  function onLoadError(e) { if (String(e.message).indexOf('401') >= 0 || /unauth/i.test(e.message)) { location.href = '/login?ru=' + encodeURIComponent(FITFAK_RU.portal); return true; } return false; }
 
   // --- İLK YÜKLEME ZİNCİRİ (TAMAMI BURADA) ---
   loadMe().then(function() {
@@ -899,6 +899,7 @@
 }());
 </script>
 
+<script src="/static/redirect-handles.js"></script>
 <script src="/static/cookie-banner.js"></script>
 </body>
 </html>
