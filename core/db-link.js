@@ -3,6 +3,9 @@
 const { EventEmitter } = require('node:events');
 
 const { StagingStore } = require('./staging-store');
+// Zincir kurma kuralları veritabanı paketinde: iki taraf da AYNI kuralı kullanmalı,
+// yoksa biri gönderirken diğeri beklerken ayrışır.
+const chainUtil = require('@fitfak/database/src/provisioning/chain');
 const pairing = require('./pairing');
 const spiffe = require('./spiffe');
 
@@ -369,7 +372,11 @@ class DatabaseLink extends EventEmitter {
         });
         await this.identity.client.upgrade({
           key: renewed.clientKeyPem,
-          cert: [renewed.clientCertPem, ...renewed.chainPem.slice(0, -1)].join(''),
+          // Sunulacak zincir, son elemanı ATARAK değil sertifikaları OKUYARAK kuruluyor.
+          // Konumsal sürüm, zincir yalnızca ara CA'yı içerdiğinde onu düşürüyordu ve karşı taraf
+          // yayıncısını hiç görmediği bir uç sertifikayla kalıyordu. Gerekçe
+          // @fitfak/database'in src/provisioning/chain.js dosyasında.
+          cert: chainUtil.presentationChain(renewed.clientCertPem, renewed.chainPem),
           ca: renewed.chainPem.join(''),
           rejectUnauthorized: true,
         });
