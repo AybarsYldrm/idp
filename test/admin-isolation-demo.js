@@ -94,9 +94,23 @@ async function main() {
   }
 
   console.log('\n[3] Yönetim paneli oturumsuz kullanıcıyı girişe yolluyor');
+  //
+  // ADRES MUTLAK OLMALI ve bu kontrolün tamamı bunun için var. Yönetim yüzeyi
+  // one.fitfak.net'te, giriş sayfası session.fitfak.net'te. Göreli bir `/login`, tarayıcı
+  // tarafından BULUNULAN kökene göre çözülür -- yani yönetici one.fitfak.net/login'e gider ve
+  // orada giriş sayfası yoktur. Yüzeylerin ayrı adreslerde olmasının bedeli bu; ayrımın
+  // kendisi [1] ve [2]'de sınanıyor.
+  //
+  // Bu kontrol ayrıca eskimiş bir beklentiyi taşıyordu (`?return_to=/admin`). Dönüş adresi
+  // uzun süredir bir TUTAMAK ve test o geçişten beri kırıktı, yani yönetici girişinin
+  // çalışıp çalışmadığını gerçekte hiçbir şey doğrulamıyordu.
   const panel = await request('127.0.0.3', portOf('127.0.0.3'), '/admin');
   check('302 dönüyor', panel.status === 302);
-  check('/login\'e, dönüş adresiyle', panel.location === `/login?return_to=${encodeURIComponent('/admin')}`);
+  const loginTarget = new URL(panel.location);
+  check('giriş yüzeyine MUTLAK adresle yolluyor',
+    loginTarget.origin === (process.env.FITFAK_IDP_ISSUER || 'https://session.fitfak.net')
+    && loginTarget.pathname === '/login');
+  check('dönüş tutamağını taşıyor', /^fru\./.test(loginTarget.searchParams.get('ru') || ''));
 
   console.log('\n[4] Giriş yüzeyi hâlâ çalışıyor');
   const login = await request('127.0.0.1', port, '/login');

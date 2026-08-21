@@ -120,9 +120,29 @@ class ProductionPkiIssuer {
   async getChainPem(purpose = PKI_PURPOSES.TLS_CLIENT) {
     if (this._chains.has(purpose)) return this._chains.get(purpose);
     const issuer = await this.vault.findIssuerForPurpose(purpose);
-    const chain = (await this.vault.getChainPem(issuer.name)).map((pem) => pem.trim()).join('\n');
-    const value = `${chain}\n`;
+    const value = await this.getChainPemForAuthority(issuer.name);
     this._chains.set(purpose, value);
+    return value;
+  }
+
+  /**
+   * Bir otoritenin zinciri, ADIYLA -- amaçtan geçmeden.
+   *
+   * `/chain.pem` bunu kullanıyor. Önceden o adres HER ZAMAN varsayılan istemci zincirini
+   * döndürüyordu: bir TLS sunucusunun eksik halkasını arayan doğrulayıcı, adresi takip edip
+   * `client-ca`'yı alıyor ve zinciri yine kuramıyordu. Yanlış ara sertifikayı 200 ile
+   * döndürmek, hiç döndürmemekten daha kötüdür -- doğrulayıcı aradığını bulduğunu sanır.
+   *
+   * Bilinmeyen otorite için `null`: çağıran 404 döndürebilsin, uydurma bir ada varsayılan
+   * zinciri servis etmek yerine.
+   */
+  async getChainPemForAuthority(name) {
+    const cacheKey = `authority:${name}`;
+    if (this._chains.has(cacheKey)) return this._chains.get(cacheKey);
+    if (!(await this.vault.getAuthority(name))) return null;
+    const chain = (await this.vault.getChainPem(name)).map((pem) => pem.trim()).join('\n');
+    const value = `${chain}\n`;
+    this._chains.set(cacheKey, value);
     return value;
   }
 
@@ -220,8 +240,23 @@ class ProductionPkiIssuer {
     // SKID, CSR'nin açık anahtarından imzalamadan ÖNCE hesaplanabilir -- zaten
     // sertifikaya da oradan yazılır -- yani kontrolün burada olması için bir
     // engel yoktu.
+    //
+    // AMA KONTROL, ETKİNLEŞTİRİLDİĞİ GÜN HER İSTEĞİ REDDEDİYORDU. Aday SKID şöyle
+    // hesaplanıyordu:
+    //
+    //     skidOfPublicKeyPem(csr.publicKeyPem || ssl.parseCSR(csrPem).publicKeyPem)
+    //
+    // `parseCSR` `publicKeyPem` DİYE BİR ALAN DÖNDÜRMÜYOR. İkinci ayrıştırma da aynı
+    // `undefined`'ı veriyor, ve `skidOfPublicKeyPem` onu "CSR'nin açık anahtarı okunamadı"
+    // diye 400'e çeviriyordu. Bu geri dönüşü yalnızca ACME kullanıyor (tek `checkKeyUniqueness`
+    // geçiren yol), yani GEÇERLİ bir CSR ile yapılan her ACME sertifika talebi, CSR'nin
+    // okunamadığını söyleyen bir hatayla düşüyordu -- CSR'de bir sorun olmadığı hâlde.
+    //
+    // Artık SKID, ayrıştırılmış CSR'nin açık anahtarından, @fitfak/ssl'in sertifikaya YAZARKEN
+    // kullandığı yolun aynısıyla hesaplanıyor. Aynı kaynaktan gelmesi şart: kontrolün baktığı
+    // değer ile sertifikada duran değer ayrışırsa, tekillik kaydı hiçbir zaman eşleşmez.
     if (typeof checkKeyUniqueness === 'function') {
-      const candidateSkid = skidOfPublicKeyPem(csr.publicKeyPem || ssl.parseCSR(csrPem).publicKeyPem);
+      const candidateSkid = skidOfCsr(csr);
       if (await checkKeyUniqueness(candidateSkid.toString('hex'))) {
         throw new AppError('key_already_certified',
           'Bu açık anahtar için zaten bir sertifika üretilmiş. Yeni bir anahtar çifti ve CSR oluşturun.',
@@ -230,20 +265,22 @@ class ProductionPkiIssuer {
     }
 
     const email = subjectOverride.email || null;
-    const commonName = subjectOverride.cn || email || 'FITFAK Unified Endpoint';
-
-    const subject = { C: 'TR', O: 'FITFAK Global Trust Network', CN: commonName };
-    if (email) subject.emailAddress = email;
+    const requestedCn = subjectOverride.cn || email || 'FITFAK Unified Endpoint';
 
     // SAN: kimliğin GERÇEKTEN taşındığı yer.
     //
     // CSR'nin kendi SAN'ları BİLEREK taşınmıyor -- taşınsaydı başvuran, kendi
     // seçtiği bir alan adını ya da kendi seçtiği bir SPIFFE kimliğini sertifikaya
     // yazdırabilirdi ve bu tam olarak kaçınmak istediğimiz şey.
-    const sans = [];
-    if (parsedSpiffeId) sans.push(spiffe.toSanEntry(parsedSpiffeId));
-    if (email) sans.push({ type: 'email', value: email });
-    for (const extra of subjectOverride.sans || []) sans.push(extra);
+    //
+    // CN'i de buradan alıyoruz: bir TLS sunucu sertifikasında CN, SAN'lardan biri olmalı ve
+    // hangisi olacağına SAN listesini kuran taraf karar verebilir.
+    const { sans, commonName } = this._buildSans({
+      mapping, profile, parsedSpiffeId, email, commonName: requestedCn, subjectOverride,
+    });
+
+    const subject = { C: 'TR', O: 'FITFAK Global Trust Network', CN: commonName };
+    if (email) subject.emailAddress = email;
 
     const { notBefore, notAfter } = this._validityWindow({ mapping, validitySeconds });
     const serialNumberHex = ssl.newSerial();
@@ -294,6 +331,77 @@ class ProductionPkiIssuer {
       notBefore,
       notAfter,
     };
+  }
+
+  /**
+   * Sertifikaya yazılacak SAN listesi -- ve bir TLS SUNUCU sertifikasının onsuz üretilemeyeceği
+   * kural.
+   *
+   * BU BİR DÜZELTME VE DÜZELTTİĞİ ŞEY SESSİZDİ. Uç sertifika üretimi `includeCsrSans: false`
+   * ile çalışıyor (doğru: başvuran kendi alan adını yazdıramamalı) ve SAN'lar yalnızca
+   * `subjectOverride.sans`'tan geliyor. `server-auth` profilini kullanan İKİ çağıran onu
+   * hiç geçirmiyordu:
+   *
+   *   * ACME finalize -- doğrulanmış alan adlarını `subjectOverride.cn`'e koyuyor, SAN'a değil
+   *   * certificate-service -- kullanıcı adını CN yapıyor, SAN olarak yalnızca e-posta koyuyor
+   *
+   * Çıkan şey, dNSName TAŞIMAYAN bir TLS sunucu sertifikasıydı. RFC 6125 §6.4.4'ten beri
+   * hiçbir modern istemci CN'e bakmaz: Chrome, Firefox, Windows schannel ve Go'nun crypto/tls'i
+   * SAN'ı olmayan bir sunucu sertifikasını doğrudan reddeder. Sertifika üretilir, PEM olarak
+   * döner, zinciri doğrulanır ve yalnızca bir TLS el sıkışmasında -- onu üreten koddan bir ağ
+   * hattı ötede -- işe yaramadığı anlaşılır. ACME ile alınan bir sertifikanın öyle çıkması,
+   * tam olarak "CSR gönderiyorum, saçma bir şey geliyor" demektir.
+   *
+   * Kural: bir TLS sunucu sertifikası, kapsadığı adları AÇIKÇA verilmiş SAN'lardan alır ve
+   * hiçbiri yoksa ÜRETİLMEZ.
+   *
+   * CN'den TÜRETİLMİYOR ve bu bilinçli. Türetmek ilk bakışta yardımcı görünüyor -- ACME
+   * kimliği zaten CN'e yazılıyor -- ama CN'e yazılan şey her çağrı yerinde alan adı değil.
+   * certificate-service.js oraya KULLANICI ADINI koyuyordu; türetme olsaydı `DNS:alice` diye
+   * bir SAN üretilir ve ortaya "geçerli görünen, hiçbir sunucuyu adlandırmayan" bir sertifika
+   * çıkardı. Yani düzeltilmeye çalışılan saçmalığın biraz daha ikna edici bir hâli.
+   *
+   * Adı doğrulayan taraf onu SAN olarak da geçirir: ACME sipariş kimliklerinden (http-01 ile
+   * doğrulanmış), certificate-service istekteki `dnsNames`'ten, db-bootstrap yapılandırmadaki
+   * sunucu adlarından. Üçü de artık öyle yapıyor.
+   */
+  _buildSans({ mapping, profile, parsedSpiffeId, email, commonName, subjectOverride }) {
+    const sans = [];
+    const seen = new Set();
+    const push = (entry) => {
+      const normalized = normalizeSanEntry(entry, profile);
+      if (!normalized) return;
+      const key = `${normalized.type}:${String(normalized.value).toLowerCase()}`;
+      // Aynı ad iki kez yazılırsa sertifika hâlâ geçerlidir ama bazı denetleyiciler bunu
+      // bulgu olarak işaretler; ayrıca CN'i SAN'a eklemenin doğal sonucu tam olarak budur.
+      if (seen.has(key)) return;
+      seen.add(key);
+      sans.push(normalized);
+    };
+
+    if (parsedSpiffeId) push(spiffe.toSanEntry(parsedSpiffeId));
+    if (email) push({ type: 'email', value: email });
+    for (const extra of subjectOverride.sans || []) push(extra);
+
+    if (mapping.sslProfile === 'tls-server') {
+      const serverNames = sans.filter((s) => s.type === 'dns' || s.type === 'ip');
+      if (serverNames.length === 0) {
+        throw new AppError('server_san_required',
+          `'${profile}' bir TLS sunucu sertifikasıdır ve doğrulayıcılar sunucu adını yalnızca `
+          + "SAN'da arar (RFC 6125 §6.4.4 -- CN on yıldır kimlik olarak okunmuyor). Bu istekte "
+          + 'hiçbir dNSName ya da iPAddress yok, yani üretilecek sertifika hiçbir TLS el '
+          + "sıkışmasında kabul edilmezdi. `subjectOverride.sans` içinde en az bir "
+          + "{ type: 'dns', value: ... } girdisi verin.",
+          { httpStatus: 400 });
+      }
+      // CN, SAN'lardan biri olmalı. İkisinin farklı şeyler söylediği bir sertifika teknik
+      // olarak geçerlidir ama okuyan insanı yanıltır ve bir denetim kaydında hangisinin
+      // "gerçek" olduğu sorusunu doğurur. Doğrulayıcının baktığı SAN'dır, o yüzden CN ona uyar.
+      const cnMatchesSan = commonName && sans.some((s) => s.value === commonName);
+      return { sans, commonName: cnMatchesSan ? commonName : serverNames[0].value };
+    }
+
+    return { sans, commonName };
   }
 
   _resolveSpiffeId({ mapping, profile, spiffeId }) {
@@ -433,6 +541,63 @@ class ProductionPkiIssuer {
   }
 }
 
+// RFC 1123 ana makine adı, isteğe bağlı joker etiketle. Tek etiketli adlar (`localhost`) de
+// geçerli: bu dağıtımın veritabanı sunucu adları arasında var ve bir SAN olarak yazılması
+// gereken şey ne yazıyorsa odur, ne yazması gerektiğini düşündüğümüz şey değil.
+const DNS_LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
+const DNS_NAME_RE = new RegExp(`^(?:\\*\\.)?${DNS_LABEL}(?:\\.${DNS_LABEL})*$`, 'i');
+const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+
+function isDnsName(value) {
+  const text = String(value || '');
+  return text.length > 0 && text.length <= 253 && DNS_NAME_RE.test(text) && !IPV4_RE.test(text);
+}
+
+function isIpAddress(value) {
+  const text = String(value || '');
+  // IPv6 burada yalnızca kabaca tanınıyor: SAN'a yazan taraf @fitfak/ssl ve iPAddress
+  // kodlaması IPv4 için tanımlı. Tanımak, IPv6'yı sessizce bir dNSName'e çevirmemek için.
+  return IPV4_RE.test(text) || (text.includes(':') && /^[0-9a-f:.]+$/i.test(text));
+}
+
+/**
+ * Bir SAN girdisini kanonik `{ type, value }` biçimine indirir.
+ *
+ * Düz dize de kabul ediliyor ve TÜRÜ ÇIKARSANIYOR. Çağıranların bir kısmı zaten öyle
+ * geçiriyordu (`altNames: serverNames`) ve tür alanı olmayan bir girdinin sessizce düşmesi,
+ * SAN'sız sertifikayı üreten hatanın ta kendisiydi -- düşen bir SAN hiçbir yerde hata vermez,
+ * yalnızca sertifikada olmaz.
+ */
+function normalizeSanEntry(entry, profile) {
+  if (!entry) return null;
+
+  if (typeof entry === 'string') {
+    const value = entry.trim();
+    if (!value) return null;
+    if (value.startsWith('spiffe://') || value.includes('://')) return { type: 'uri', value };
+    if (value.includes('@')) return { type: 'email', value };
+    if (isIpAddress(value)) return { type: 'ip', value };
+    if (isDnsName(value)) return { type: 'dns', value };
+    return null;
+  }
+
+  const type = String(entry.type || '').toLowerCase();
+  const value = typeof entry.value === 'string' ? entry.value.trim() : '';
+  if (!value) return null;
+  if (!['dns', 'ip', 'email', 'uri'].includes(type)) {
+    // @fitfak/ssl bilinmeyen bir türde `SAN: bilinmeyen tür` diye fırlatır ve o hata
+    // imzalamanın ortasından gelir. Burada yakalamak, arayana ne yollamış olduğunu söyler.
+    throw new AppError('invalid_san',
+      `'${profile}' isteğinde tanınmayan SAN türü '${entry.type}'; dns, ip, email ya da uri olmalı`,
+      { httpStatus: 400 });
+  }
+  if (type === 'dns' && !isDnsName(value)) {
+    throw new AppError('invalid_san',
+      `'${value}' geçerli bir alan adı değil; dNSName olarak yazılamaz`, { httpStatus: 400 });
+  }
+  return { type, value };
+}
+
 /**
  * Bir sertifikanın Subject Key Identifier'ı.
  *
@@ -447,6 +612,25 @@ class ProductionPkiIssuer {
 function skidOf(certPem) {
   return skidFromJwk(new (require('node:crypto').X509Certificate)(certPem)
     .publicKey.export({ format: 'jwk' }));
+}
+
+/**
+ * Bir CSR'nin açık anahtarının SKID'i -- @fitfak/ssl sertifikaya yazarken ne hesaplıyorsa o.
+ *
+ * RSA ve EC ayrı hesaplanır (RFC 5280 §4.2.1.2 yöntem 1 ikisinde de subjectPublicKey BIT
+ * STRING'inin SHA-1'i, ama o baytlar anahtar türüne göre farklı kurulur). Yalnızca EC'yi
+ * hesaplamak, bir RSA CSR'sinde sessizce yanlış bir değer üretirdi -- ve o değer hiçbir yerde
+ * hata vermez, yalnızca tekillik kaydının hiçbir zaman eşleşmemesine yol açar.
+ */
+function skidOfCsr(csr) {
+  const key = csr && csr.publicKey;
+  if (!key) {
+    throw new AppError('invalid_csr',
+      "CSR'nin açık anahtarı okunamadı; anahtar tekilliği kontrol edilemez", { httpStatus: 400 });
+  }
+  return key.keyType === 'rsa'
+    ? ssl.asn1.computeRsaSKID(key.n, key.e)
+    : ssl.asn1.computeEcSKID(key.publicKeyBuf);
 }
 
 /** Aynı hesap, bir sertifika yerine bir açık anahtar PEM'inden. */
@@ -470,6 +654,7 @@ function skidFromJwk(jwk) {
 module.exports = {
   ProductionPkiIssuer,
   skidOf,
+  skidOfCsr,
   skidOfPublicKeyPem,
   PROFILE_MAP,
   PKI_PURPOSES,

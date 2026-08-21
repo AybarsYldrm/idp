@@ -47,16 +47,41 @@ const HANDLE_PREFIX = 'fru';
  * Liste KAPALI ve öyle kalmalı. Bir yolun buraya eklenmesi, "giriş sonrası kullanıcı buraya
  * gönderilebilir" demektir; açık bırakılan bir liste ise açık yönlendirmenin kendisidir.
  */
+// Her hedef bir YOL ve bir YÜZEY taşır. Yüzey, o sayfanın hangi mantıksal host üzerinde
+// dinlediğidir -- ve bu bilgi olmadan yönlendirme sessizce kırılıyordu.
+//
+// KIRILAN ŞEY ŞUYDU. `/admin` yalnızca one.fitfak.net'te (ADMIN_IP) bağlı. Oturumsuz bir
+// kullanıcı oraya girdiğinde sunucu GÖRELİ bir adres yolluyordu:
+//
+//     location: /login?ru=fru.xxxx
+//
+// Tarayıcı göreli adresi BULUNDUĞU kökene göre çözer, yani kullanıcı
+// one.fitfak.net/login'e gidiyordu -- ve `/login` yalnızca session.fitfak.net'te bağlı.
+// Yönetici giriş yapamıyordu. Ters yönde de aynısı: giriş sayfası tutamağı çözüp
+// `location.href = '/admin'` dediğinde, o an session.fitfak.net'te olduğu için
+// session.fitfak.net/admin'e gidiyordu ve orada da /admin yok.
+//
+// Yani yönetim paneline giriş, her iki yönde de 404 ile bitiyordu ve hiçbir şey bunu
+// söylemiyordu: iki adres de tek başına doğru görünüyor.
+//
+// Çözüm, yüzeyler arası her yönlendirmeyi MUTLAK adres yapmak. Aynı yüzey içindeki
+// yönlendirmeler göreli kalıyor -- oraya mutlak adres koymak, yerel bir kurulumu
+// yapılandırmadaki dış hostname'e göndermek olurdu.
+const SURFACES = Object.freeze({ IDP: 'idp', ADMIN: 'admin', TRUST: 'trust' });
+
 const DESTINATIONS = Object.freeze({
-  portal: '/portal',
-  profile: '/profile',
-  admin: '/admin',
-  consent: '/consent',
-  cookies: '/cookies',
-  device: '/device',
+  portal: { path: '/portal', surface: SURFACES.IDP },
+  profile: { path: '/profile', surface: SURFACES.IDP },
+  consent: { path: '/consent', surface: SURFACES.IDP },
+  cookies: { path: '/cookies', surface: SURFACES.IDP },
+  device: { path: '/device', surface: SURFACES.IDP },
+  admin: { path: '/admin', surface: SURFACES.ADMIN },
 });
 
 const DEFAULT_DESTINATION = '/portal';
+
+/** Giriş sayfası HER ZAMAN kimlik yüzeyindedir; yönlendirmelerin mutlak olup olmayacağı buna bağlı. */
+const LOGIN_SURFACE = SURFACES.IDP;
 
 class InternalRedirects {
   /**
@@ -64,18 +89,41 @@ class InternalRedirects {
    * @param {Buffer|string} opts.secret       tutamakların türetildiği sır
    * @param {object} [opts.destinations]      ad -> yol
    */
-  constructor({ secret, destinations = DESTINATIONS }) {
+  constructor({ secret, destinations = DESTINATIONS, origins = {} }) {
     if (!secret) throw new Error('[internal-redirects] tutamakları türetmek için bir sır gerekli');
     this.secret = secret;
-    this.byName = new Map(Object.entries(destinations));
+    // Yüzey -> dış köken. Verilmeyen bir yüzey için köken YOK ve o yüzeye giden adres göreli
+    // kalıyor: yapılandırılmamış bir hostname uydurmak, yerel bir kurulumu üretim adresine
+    // göndermek olurdu.
+    this.origins = { ...origins };
+    this.byName = new Map();
     this.byPath = new Map();
     this.byHandle = new Map();
 
-    for (const [name, target] of this.byName) {
-      const handle = this._derive(target);
-      this.byPath.set(target, handle);
-      this.byHandle.set(handle, { name, path: target });
+    for (const [name, value] of Object.entries(destinations)) {
+      // Düz dize de kabul: eski çağrı yerleri ve testler `{ portal: '/portal' }` veriyor.
+      const entry = typeof value === 'string'
+        ? { path: value, surface: SURFACES.IDP }
+        : { path: value.path, surface: value.surface || SURFACES.IDP };
+      const handle = this._derive(entry.path);
+      this.byName.set(name, entry);
+      this.byPath.set(entry.path, handle);
+      this.byHandle.set(handle, { name, path: entry.path, surface: entry.surface });
     }
+  }
+
+  /**
+   * Bir yolu, üzerinde bulunulan yüzeyden BAKILDIĞINDA doğru olan adrese çevirir.
+   *
+   * Aynı yüzeydeyse göreli, farklı yüzeydeyse mutlak. Bu ayrım tek bir yerde olmalı: her
+   * çağrı yerinde "bu hangi hostta?" diye düşünmek, o sorulardan birinin bir gün yanlış
+   * cevaplanması demektir -- ve yanlış cevap 404 olarak, giriş yapmaya çalışan bir yöneticinin
+   * ekranında ortaya çıkıyor.
+   */
+  _addressFor(path, surface, fromSurface) {
+    if (!surface || surface === fromSurface) return path;
+    const origin = this.origins[surface];
+    return origin ? `${String(origin).replace(/\/+$/, '')}${path}` : path;
   }
 
   _derive(target) {
@@ -102,8 +150,16 @@ class InternalRedirects {
 
   /** Adıyla: `redirects.handleForName('admin')`. */
   handleForName(name) {
-    const target = this.byName.get(name);
-    return target ? this.byPath.get(target) : null;
+    const entry = this.byName.get(name);
+    return entry ? this.byPath.get(entry.path) : null;
+  }
+
+  /** Bir yolun hangi yüzeye ait olduğu; bilinmiyorsa null. */
+  surfaceOf(target) {
+    if (!target) return null;
+    const path = String(target).split('?')[0].split('#')[0];
+    for (const entry of this.byName.values()) if (entry.path === path) return entry.surface;
+    return null;
   }
 
   /**
@@ -126,10 +182,21 @@ class InternalRedirects {
    * o iki satırdan birinin bir yerde unutulacağı anlamına gelir.
    */
   destinationFor(handle, fallback = DEFAULT_DESTINATION) {
-    return this.resolve(handle) || fallback;
+    const found = this.byHandle.get(String(handle || ''));
+    if (!found) return fallback;
+    // Bu, GİRİŞ SAYFASININ çözdüğü adres ve giriş sayfası her zaman kimlik yüzeyinde çalışır.
+    // `/admin` için göreli bir yol döndürmek, tarayıcıyı session.fitfak.net/admin'e gönderirdi
+    // -- orada /admin yok, çünkü yönetim yüzeyi one.fitfak.net'te.
+    return this._addressFor(found.path, found.surface, LOGIN_SURFACE);
   }
 
-  /** Bir sayfaya, dönüş tutamağı ekli bağlantı. */
+  /**
+   * Bir sayfaya, dönüş tutamağı ekli giriş bağlantısı.
+   *
+   * Giriş sayfası kimlik yüzeyinde. Hedef BAŞKA bir yüzeydeyse -- yani istek one.fitfak.net'e
+   * gelmişse -- göreli bir `/login` adresi tarayıcıyı one.fitfak.net/login'e gönderir ve orada
+   * giriş sayfası yoktur. O yüzden bağlantı mutlak oluyor.
+   */
   loginUrl(target, extra = {}) {
     const params = new URLSearchParams();
     const handle = this.handleFor(target);
@@ -138,7 +205,9 @@ class InternalRedirects {
       if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
     }
     const query = params.toString();
-    return query ? `/login?${query}` : '/login';
+    const path = query ? `/login?${query}` : '/login';
+    // `fromSurface` hedefin yüzeyi: giriş oraya DÖNECEK, yani kullanıcı şu an oradadır.
+    return this._addressFor(path, LOGIN_SURFACE, this.surfaceOf(target) || LOGIN_SURFACE);
   }
 
   /** Panel/teşhis için. Sırrı ya da türetme yolunu AÇMAZ, yalnızca eşlemeyi. */
@@ -151,5 +220,5 @@ function createInternalRedirects(options) { return new InternalRedirects(options
 
 module.exports = {
   InternalRedirects, createInternalRedirects,
-  DESTINATIONS, DEFAULT_DESTINATION, HANDLE_PREFIX,
+  DESTINATIONS, DEFAULT_DESTINATION, HANDLE_PREFIX, SURFACES, LOGIN_SURFACE,
 };

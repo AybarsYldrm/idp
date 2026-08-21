@@ -377,7 +377,14 @@ class DatabaseLink extends EventEmitter {
           // yayıncısını hiç görmediği bir uç sertifikayla kalıyordu. Gerekçe
           // @fitfak/database'in src/provisioning/chain.js dosyasında.
           cert: chainUtil.presentationChain(renewed.clientCertPem, renewed.chainPem),
-          ca: renewed.chainPem.join(''),
+          // GÜVEN DEPOSU YALNIZCA ÇIPALARDAN kurulur -- demetin tamamından değil. `ca`
+          // Node'un güven deposudur ve oraya konan bir ARA CA'nın kendisi bir güven çıpası
+          // olur: yol kurulumu orada biter ve kökün o ara CA hakkındaki görüşüne hiç
+          // bakılmaz. IdP, ara CA iptallerini tam da bu yüzden KÖKÜN listesinde yayınlıyor
+          // (services/crl-service.js, scope 'root'); ara CA'yı çıpa olarak sabitlemek, o
+          // yayının bu bağlantıya ulaşamaması demek -- iptal üretilir, sunulur, dikkate
+          // alınmaz.
+          ca: requireAnchors(renewed.chainPem),
           rejectUnauthorized: true,
         });
         done({ notAfter: new Date(renewed.notAfter).toISOString() });
@@ -390,6 +397,24 @@ class DatabaseLink extends EventEmitter {
     }, everyMs);
     if (typeof this._renewalTimer.unref === 'function') this._renewalTimer.unref();
   }
+}
+
+/**
+ * Zincirdeki güven çıpaları -- ve hiç yoksa bir hata.
+ *
+ * Boş bir `ca` ile `rejectUnauthorized: true` kapalı DEĞİL açık davranır: Node kendi gömülü
+ * KAMUSAL kök listesine düşer. Yani çıpasız bir demet, bu özel PKI'yı sessizce internetin
+ * sertifika otoritelerine karşı doğrulamaya başlar -- ve bu, çalışıyormuş gibi görünür.
+ */
+function requireAnchors(chainPem) {
+  const anchors = chainUtil.trustAnchors(chainPem);
+  if (!anchors) {
+    throw new Error(
+      '[db-link] yenilenen zincirde öz-imzalı bir sertifika yok, yani güvenin bağlanacağı bir '
+      + 'çıpa da yok. Boş bir ca, doğrulamayı Node\'un kamusal kök listesine düşürürdü.',
+    );
+  }
+  return anchors;
 }
 
 function createDatabaseLink(options) { return new DatabaseLink(options); }

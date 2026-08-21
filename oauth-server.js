@@ -44,6 +44,9 @@ const { AcmeService } = require('./services/acme-service');
 const ocspService = require('./services/ocsp-service');
 const crlService = require('./services/crl-service');
 const { createStatusHandler, createPolicyHandler } = require('./services/status-server');
+// Durum servisinin adres SÖZLEŞMESİ. Bağlama eşleştiricisi de, sertifikaya gömülen adresler
+// de buradan geliyor -- ikisinin ayrı listeler taşıdığı hâl üretimde 404'e yol açtı.
+const pkiUrls = require('./core/pki-urls');
 const { createCtLog, createCtHandler, CT_PATH_PREFIX } = require('./services/ct-log-service');
 const { safeRedirect } = require('./core/safe-redirect');
 const deviceBinding = require('./core/device-binding');
@@ -481,7 +484,15 @@ async function main() {
   // `?return_to=%2Fadmin` yerine `?ru=<tutamak>`. Fark yalnızca görsel değil: bir tutamak ancak
   // kayıtlı listede varsa çözülür, yani açık yönlendirme engellenmesi gereken bir şey olmaktan
   // çıkıp ifade edilemez bir şey haline geliyor. Gerekçenin tamamı core/internal-redirects.js'de.
-  const internalRedirects = createInternalRedirects({ secret: config.redirectHandleSecret });
+  //
+  // Kökenler geçiliyor, çünkü hedefler TEK bir host üzerinde değil: `/admin` one.fitfak.net'te,
+  // geri kalanı session.fitfak.net'te. Yüzeyler arası bir yönlendirmeyi göreli bırakmak,
+  // tarayıcının onu BULUNDUĞU kökene göre çözmesi demek -- yönetici one.fitfak.net/login'e
+  // gidiyordu ve orada giriş sayfası yok. Ayrıntı core/internal-redirects.js'de.
+  const internalRedirects = createInternalRedirects({
+    secret: config.redirectHandleSecret,
+    origins: { idp: ISSUER, admin: ADMIN_ISSUER, trust: TRUST_ISSUER },
+  });
 
   // Veritabanının yönetim API'sine giden vekil. Adres ve kimlik bilgisi eşleştirme dizininden
   // okunuyor; veritabanı henüz açılmamışsa uçlar 503 döner ve sebebini söyler.
@@ -1893,7 +1904,13 @@ async function main() {
     if (!session) throw new AppError('unauthenticated', 'Giriş yapılmamış', { httpStatus: 401 });
     await requireUserQuota(session.userId, 'certificate');
     const body = await readJsonBody(req);
-    const result = await certificateService.requestCertificate({ db, pkiIssuer, userId: session.userId, csrPem: body.csrPem, profile: body.profile || 'client-auth' });
+    // `dnsNames` server-auth için ZORUNLU ve buradan geçiyor: bir TLS sunucu sertifikası
+    // hangi adı kapsadığını SAN'da taşımak zorunda ve CSR'nin kendi SAN'ları bilinçli olarak
+    // taşınmıyor. Ayrıntı services/certificate-service.js'de.
+    const result = await certificateService.requestCertificate({
+      db, pkiIssuer, userId: session.userId, csrPem: body.csrPem,
+      profile: body.profile || 'client-auth', dnsNames: body.dnsNames || [],
+    });
     sendJson(res, 200, result);
   }), PKI_IP);
   
@@ -2084,13 +2101,20 @@ async function main() {
   const statusHandler = createStatusHandler({
     db, pkiIssuer, cacheStore: new PrefixedEphemeralStore(sharedEphemeralStore, 'crlcache:'),
   });
-  server.addHttpHandler(
-    (req) => ['/ocsp', '/crl', '/crl/root', '/intermediate.crt', '/root.crt', '/chain.pem', '/']
-      .includes(req.url.split('?')[0].replace(/\/+$/, '') || '/')
-      || req.url.startsWith('/ocsp/'),
-    statusHandler,
-    STATUS_IP,
-  );
+  // Eşleştirici ELLE YAZILMIYOR ve yazılmamalı. Burada şu liste duruyordu:
+  //
+  //     ['/ocsp', '/crl', '/crl/root', '/intermediate.crt', '/root.crt', '/chain.pem', '/']
+  //
+  // İçinde `/ca/<otorite>.crt` ve `/crl/<otorite>` YOKTU -- yani her uç sertifikanın taşıdığı
+  // AIA caIssuers ve CRL dağıtım noktası adresi, beş ara CA'nın hepsi için, durum işleyicisine
+  // VARMADAN 404 alıyordu. İşleyici o yolları doğru karşılıyordu; istek ona hiç ulaşmıyordu.
+  // Windows tarafındaki iki şikâyet buydu: zincir tamamlanamıyor (Missing Issuer) ve iptal
+  // sorgulanamıyor (CERT_E_REVOCATION_OFFLINE).
+  //
+  // Artık bağlayan ile çözen AYNI fonksiyonu çağırıyor (core/pki-urls.js): eşleştiricinin
+  // geçirdiği her yolu işleyici tanır, tanımadığı hiçbir yolu geçirmez. İkisinin sessizce
+  // ayrışabildiği hâl yapısal olarak ortadan kalktı.
+  server.addHttpHandler(pkiUrls.matchesStatusRequest, statusHandler, STATUS_IP);
 
   // Certificate Transparency log'u -- trust.fitfak.net/ct/v1/*
   const ctHandler = createCtHandler({ ctLog, publicKeyPem: ctPublicKeyPem });
@@ -2110,14 +2134,19 @@ async function main() {
 
   // CA sertifikaları trust.fitfak.net üzerinden de erişilebilir kalsın: eski
   // sertifikalardaki AIA adresleri buraya işaret ediyor olabilir.
-  server.addHttpHandler({ method: 'GET', path: '/intermediate.crt' }, (req, res) => {
-    res.setHeader('content-type', 'application/pkix-cert');
-    res.end(pkiIssuer.subCA.certPem);
-  }, PKI_IP);
-  server.addHttpHandler({ method: 'GET', path: '/root.crt' }, (req, res) => {
-    res.setHeader('content-type', 'application/pkix-cert');
-    res.end(pkiIssuer.rootCA.certPem);
-  }, PKI_IP);
+  //
+  // Aynı işleyici, aynı sözleşme. Bu iki rota ELLE yazılmış birer kopyaydı ve ikisi de
+  // `application/pkix-cert` başlığıyla PEM gönderiyordu -- yani DER bekleyen bir doğrulayıcı
+  // için, adresin hiç cevap vermemesiyle aynı sonuç. Durum işleyicisini buraya da bağlamak,
+  // biçimi ikinci bir yerde doğru yapmak zorunda kalmamak demek.
+  server.addHttpHandler(
+    (req) => {
+      const route = pkiUrls.resolveStatusRoute(req.url, req.method);
+      return !!route && ['ca', 'legacy-ca', 'root-ca', 'chain'].includes(route.kind);
+    },
+    statusHandler,
+    PKI_IP,
+  );
 
   // ACME ROTALARI (PKI - 127.0.0.2)
   server.addHttpHandler({ method: 'GET', path: '/acme/directory' }, (req, res) => { sendJson(res, 200, acmeService.directory()); }, PKI_IP);

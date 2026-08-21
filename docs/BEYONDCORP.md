@@ -146,10 +146,43 @@ tane olunca iki şey birden bozuldu, ve **ikisinin de belirtisi yokluktu**:
   olarak okur. İptal kaydı üretilir, liste yayınlanır, HTTP 200 döner, hiçbir şey olmaz.
 
 Adresleri **kuran** taraf (`core/pki-issuer.js`) ile **çözen** taraf (`services/status-server.js`)
-artık aynı dosyayı kullanıyor: `core/pki-urls.js`. İki ayrı düzenli ifade elle karşılaştırılsaydı,
-ayrıştıkları gün sertifikalar çalışmayan bir adres taşımaya başlar ve bunu hiçbir şey söylemezdi.
-`test/crl-distribution-demo.js` tam olarak bunu sınıyor: gömülen her adres, sunulan bir yola
-çözülüyor mu.
+aynı dosyayı kullanıyor: `core/pki-urls.js`.
+
+**Ama ÜÇÜNCÜ bir kopya vardı ve kimse bakmadı.** `oauth-server.js`, durum sunucusunu elle
+yazılmış bir listenin arkasına bağlıyordu:
+
+```js
+['/ocsp', '/crl', '/crl/root', '/intermediate.crt', '/root.crt', '/chain.pem', '/']
+```
+
+Listede `/ca/<otorite>.crt` ve `/crl/<otorite>` **yok**. Yani yukarıdaki iki adres — her uç
+sertifikanın taşıdığı, beş ara CA'nın hepsi için — durum işleyicisine **varmadan** 404 alıyordu.
+İşleyici o yolları doğru karşılıyordu; istek ona hiç ulaşmıyordu. Windows tarafındaki iki şikâyet
+tam olarak buydu: `Incomplete certificate chain / Missing Issuer` ve `CERT_E_REVOCATION_OFFLINE`.
+
+Artık elle yazılmış liste yok. `core/pki-urls.js` tek bir `resolveStatusRoute()` taşıyor:
+**bağlayan** taraf ona "bu istek durum servisine mi ait" diye, **çözen** taraf "bu istek ne" diye
+soruyor. Aynı fonksiyon olduğu için ayrışamıyorlar.
+
+#### Biçim de sözleşmenin parçası
+
+`application/pkix-cert` **tek ve DER kodlanmış** bir sertifika demektir (RFC 2585 §4.1). Bu uçlar
+PEM gönderiyordu. Yalnızca rotayı düzeltmek Windows'u 404 yerine 200'e taşır ve **aynı hatayı**
+verir: `CryptRetrieveObjectByUrl` AIA'dan gelen baytı DER olarak çözer, `-----BEGIN CERTIFICATE-----`
+ile başlayan bir ASCII zarfı çözemez, ara sertifika alınamaz. Dönüşüm adreslerle aynı dosyada:
+adres ile biçim aynı sözleşmenin iki yarısı.
+
+Biçimi doğru olan ama kasada bulunmayan bir otorite adı (`/crl/hayali-ca`) artık **404** dönüyor,
+500 değil. Doğrulayıcılar 500'ü geçici arıza sayar, yeniden dener ve bir noktada iptal kontrolünü
+tamamen atlar — yani bir yazım hatası, iptal altyapısını devre dışı bırakabiliyordu.
+
+#### Neden testler bunu görmedi
+
+Hepsi `createStatusHandler`'ı **doğrudan** bir `http.createServer`'a veriyor ve üretimdeki bağlama
+eşleştiricisini hiç çalıştırmıyordu. `test/status-routing-demo.js` o boşluk için var: her profil
+için bir uç sertifika üretiyor, adresleri **imzalanmış DER'in içinden** okuyor (kendi
+kurucularımızdan değil — o, iki tarafın da aynı biçimde yanlış olabildiği dairesel bir kontrol
+olurdu) ve her birinin üretimdeki eşleştiriciyi geçip doğru biçimde cevaplandığını istiyor.
 
 **OCSP'de de aynı kural.** RFC 6960 §4.2.2.2: bir yanıtı imzalayan anahtar, sorulan
 sertifikanın yayıncısı olmalıdır. Sabit bir imzalayıcı, beş ara CA'nın dördü için istemcinin
@@ -604,6 +637,77 @@ anahtar da okunamaz.
 Eski ara CA'ya kasaya girerken **hiçbir amaç atanmaz**: hâlâ geçerli olan sertifikalar
 doğrulanabilir kalsın diye zincirde durur, ama yeni talepler amaca göre ayrılmış yeni ara CA'lara
 gider. Ona eski geniş yetkisini vermek, ayrımı ilk günden anlamsız kılardı.
+
+---
+
+## Bir uygulamayı yığına bağlamak
+
+Bir uygulama iki sisteme birden bağlanır: veritabanına **mTLS ile** (SPIFFE kimliği sertifikanın
+URI SAN'ında) ve IdP'ye **OAuth istemcisi olarak**. İkisinde de aynı ad kullanılır ve bu bir
+kural, bir alışkanlık değil — `core/application-registry.js` uygulamayı **tek** bir adla kaydedip
+üç kimliği de ondan türetiyor:
+
+```
+ad = "dns-resolver"
+  -> OAuth client_id      dns-resolver
+  -> veritabanı servisi   dns-resolver
+  -> SPIFFE               spiffe://fitfak.net/service/dns-resolver
+```
+
+### Tek çağrı
+
+```js
+const { joinFitfakWhenReady } = require('@fitfak/idp/client/join-fitfak');
+
+const app = await joinFitfakWhenReady({ name: 'dns-resolver', roles: ['reader', 'writer'] });
+
+app.spiffeId                                   // spiffe://fitfak.net/service/dns-resolver
+await app.db.collection('records').insert({ /* ... */ });      // mTLS üzerinden
+await app.identity.introspectToken(accessToken);               // IdP'ye canlı iptal sorgusu
+await app.close();
+```
+
+Çalışan örnek: `examples/join-the-stack.js`.
+
+Altında olan biten, elle yazıldığında **atlanabilen** adımlar:
+
+| adım | atlanırsa |
+|---|---|
+| sertifikayı sakla | her yeniden başlatma yeniden kaydolur, tek kullanımlık sır kalıcı bir arka kapıya döner |
+| yenilemeyi başlat | saatlerce çalışır, sonra süre dolduğunu hiç söylemeyen bir TLS hatasıyla durur |
+| **kökü** sabitle, ucu değil | veritabanının sunucu sertifikası her açılışta yenilendiği için günlük kırılır |
+| mühürlü hâli bekle | veritabanı IdP onu açana kadar herkesi reddeder; bu normal açılış sıralaması, arıza değil |
+
+### Keşfedilen ve keşfedilmeyen
+
+Adresler, kök sertifika ve güven alanı **eşleştirme dizininden** okunur (`core/pairing.js`) — bir
+operatörün beş değeri terminalden kopyalayıp iki yere girmesi, bu iki projeyi bağlamayı fiilen
+imkânsız kılan şeydi.
+
+**Sırlar okunmaz.** Kayıt sırrı ile OAuth istemci sırrı bu uygulamanın kendi kimlik bilgileridir
+ve panelde bir kez gösterilir. Paylaşılan bir dizinden okunabilen bir sır, o makinedeki her
+sürecin sırrıdır ve kimlik modelinin tamamı "bu dizini okuyabiliyor musun" sorusuna indirgenir.
+
+### Tek adın bozulduğu yer
+
+Kayıt tek adla yapılıyordu ama uygulama tarafı, `joinAsService` içinde adın `-service` ekini
+**kırpıyordu** (`serviceName.replace(/-service$/, '')`). Yani `smtp-service` adlı bir uygulama
+için:
+
+```
+IdP verir      spiffe://fitfak.net/service/smtp-service
+uygulama ister spiffe://fitfak.net/service/smtp        -> kayıt REDDEDİLİR
+```
+
+Kayıt servisi, verilenden başka bir kimlik istenmesini kabul etmiyor — doğru olarak. Ama hata
+mesajı bir SPIFFE uyuşmazlığından bahsettiği için bir politika kararı gibi okunuyor, tek bir
+düzenli ifadenin el sıkışmanın bir tarafında adı sessizce değiştirdiği anlaşılmıyordu.
+`@fitfak/database`'in `examples/app-client.js` dosyası varsayılan olarak `smtp-service`
+kullanıyor, yani **dağıtılan örnek, çalışamayan durumdu**.
+
+Ad artık iki tarafta da olduğu gibi kullanılıyor. `joinFitfak` ayrıca iki tarafın vardığı kimliği
+karşılaştırıyor ve ayrıştıklarında **hangi sürümün** sorunlu olduğunu söyleyerek duruyor: kayıt
+reddedilmesini beklemek, hatayı bir ağ hattı ötede göstermek olurdu.
 
 ---
 

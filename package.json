@@ -27,7 +27,7 @@
     "test:db": "node test/db-integration-demo.js",
     "test:redirects": "node test/oauth-redirect-demo.js",
     "test:workload": "node test/workload-identity-demo.js",
-    "test:zero-trust": "npm run test:ssl-compat && npm run test:redirects && npm run test:workload && npm run test:staging && npm run test:key-vault && npm run test:crl-distribution && npm run test:cors && npm run test:login-steps && npm run test:internal-redirects && npm run test:db-admin-proxy && npm run test:applications && npm run test:panel-views",
+    "test:zero-trust": "npm run test:ssl-compat && npm run test:redirects && npm run test:workload && npm run test:staging && npm run test:key-vault && npm run test:crl-distribution && npm run test:cors && npm run test:login-steps && npm run test:internal-redirects && npm run test:db-admin-proxy && npm run test:applications && npm run test:panel-views && npm run test:status-routing && npm run test:csr && npm run test:join",
     "test:staging": "node test/staging-store-demo.js",
     "test:key-vault": "node test/key-vault-demo.js",
     "test:crl-distribution": "node test/crl-distribution-demo.js",
@@ -37,14 +37,18 @@
     "test:internal-redirects": "node test/internal-redirects-demo.js",
     "test:db-admin-proxy": "node test/db-admin-proxy-demo.js",
     "test:applications": "node test/application-registry-demo.js",
-    "test:panel-views": "node test/admin-panel-views-demo.js"
+    "test:panel-views": "node test/admin-panel-views-demo.js",
+    "test:status-routing": "node test/status-routing-demo.js",
+    "test:csr": "node test/csr-issuance-demo.js",
+    "test:join": "node test/join-fitfak-demo.js"
   },
   "notes": {
     "neden-sifir-bagimlilik": "WebAuthn/FIDO2, TOTP (RFC 6238), ES256 JWT, CBOR, base32/base64url, ve gRPC-Web tarzı çerçeveleme dahil HER ŞEY node:crypto ve diğer Node.js yerleşikleri üzerine sıfırdan yazıldı -- talep edilen kısıtlamaya uygun olarak harici kütüphane YOK.",
+    "fitfak-database-nicin-2x": "core/ca-vault.js `PkiVault` ve `PKI_PURPOSES`, core/spiffe.js ise `spiffe` dISa aktarImlarInI kullanIyor. Bunlar @fitfak/database 2.0.0 ile geldi; 1.x onlarI hic tanImIyor. Aralik ^1.0.0 iken kurulum 1.0.0 cozuyordu ve `PkiVault.open(...)` acIlIsta TypeError ile dusuyordu -- yani kok/ara/uc zincirinin tamamI hic uretilemiyordu.",
     "fitfak-database-nicin-peer-dependency": "Gerçek üretim veritabanı (@fitfak/database) bu paketin İÇİNDE değil, sizin monorepo'nuzda/ortamınızda zaten mevcut olduğu için 'peerDependency' + optional olarak işaretlendi. FITFAK_IDP_DEV_DB=1 ile çalıştırıldığında (sadece geliştirme/demo) hiç gerekmez -- test/mock-db.js kullanılır."
   },
   "dependencies": {
-    "@fitfak/database": "^1.0.0",
+    "@fitfak/database": "^2.0.0",
     "@fitfak/ssl": "^2.1.0"
   }
 }

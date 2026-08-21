@@ -41,20 +41,31 @@ const AUTHORITIES = ['workload-ca', 'client-ca', 'server-ca', 'email-ca', 'signi
  * görmek yetmez, o listenin DOĞRU ANAHTARLA imzalanmış olması gerekir. İmzalayanı kaydetmeyen
  * bir sahte, hepsini kökle imzalayan bir uygulamayı da geçirirdi.
  */
+// Sahte sertifikaların gövdesi GERÇEKTEN base64: PEM zarfının içindeki metin çözüldüğünde
+// `cert:<otorite-adı>` çıkıyor. Böylece "hangi sertifika döndü" sorusu, sunucunun PEM'i DER'e
+// ÇEVİRDİĞİNİ de kanıtlayan tek bir kontrolle sorulabiliyor -- @fitfak/ssl yüklemeden.
+//
+// Biçim önemli, çünkü `application/pkix-cert` DER demektir (RFC 2585 §4.1) ve buraya PEM
+// koymak, rota doğruyken bile Windows'ta AYNI hatayı verir: CryptRetrieveObjectByUrl AIA'dan
+// gelen ASCII zarfı çözemez ve ara sertifika alınamaz.
+const fakeCertPem = (name) => `-----BEGIN CERTIFICATE-----\n${
+  Buffer.from(`cert:${name}`).toString('base64')}\n-----END CERTIFICATE-----\n`;
+
 function fakeIssuer() {
   const signed = [];
   return {
     signed,
-    subCA: { name: 'client-ca', certPem: '-----BEGIN CERTIFICATE-----\nclient-ca\n-----END CERTIFICATE-----\n', skid: 'aabb' },
-    rootCA: { name: 'root', certPem: '-----BEGIN CERTIFICATE-----\nroot\n-----END CERTIFICATE-----\n' },
+    subCA: { name: 'client-ca', certPem: fakeCertPem('client-ca'), skid: 'aabb' },
+    rootCA: { name: 'root', certPem: fakeCertPem('root') },
     async getAuthorityCertPem(name) {
       if (name === 'root') return this.rootCA.certPem;
-      return AUTHORITIES.includes(name)
-        ? `-----BEGIN CERTIFICATE-----\n${name}\n-----END CERTIFICATE-----\n`
-        : null;
+      return AUTHORITIES.includes(name) ? fakeCertPem(name) : null;
     },
     async listIssuingAuthorityNames() { return AUTHORITIES.slice(); },
     async getChainPem() { return this.subCA.certPem + this.rootCA.certPem; },
+    async getChainPemForAuthority(name) {
+      return AUTHORITIES.includes(name) ? fakeCertPem(name) + this.rootCA.certPem : null;
+    },
     async signCrl({ revokedCerts, scope, authority }) {
       signed.push({ scope, authority, serials: revokedCerts.map((c) => c.serialNumberHex) });
       return Buffer.from(JSON.stringify({ authority, serials: revokedCerts.map((c) => c.serialNumberHex) }));
@@ -138,8 +149,12 @@ async function main() {
       check(`${name}: AIA adresi 200 dönüyor`, res.status === 200);
       // Asıl kontrol: DOĞRU sertifika mı. Beş adresin de aynı sertifikayı döndürmesi,
       // düzeltmeden önceki davranıştı ve zinciri kurulamaz kılıyordu.
-      check(`${name}: ve kendi sertifikasını döndürüyor`, res.body.toString().includes(name));
+      check(`${name}: ve kendi sertifikasını döndürüyor`, res.body.toString() === `cert:${name}`);
       check(`${name}: pkix-cert olarak`, res.headers['content-type'] === 'application/pkix-cert');
+      // DER, PEM DEĞİL. Gövdenin `-----BEGIN` ile başlaması, `application/pkix-cert`
+      // sözleşmesinin ihlalidir ve Windows tarafında rota 404 dönüyormuş gibi sonuçlanır.
+      check(`${name}: gövde DER (PEM zarfı yok)`,
+        !res.body.toString('latin1').includes('-----BEGIN'));
     }
 
     const unknown = await get(port, '/ca/hayali-ca.crt');
@@ -149,6 +164,22 @@ async function main() {
     // Düzeltmeden önce üretilmiş sertifikalar bu adresi taşıyor ve süreleri dolana kadar
     // dolaşımda kalacaklar. Kaldırmak, onların zincir tamamlamasını bugün kırardı.
     check('eski adres hâlâ cevap veriyor', legacy.status === 200);
+    check('eski adres de DER veriyor', legacy.body.toString() === 'cert:client-ca');
+
+    const root = await get(port, '/root.crt');
+    check('/root.crt DER veriyor',
+      root.status === 200 && root.body.toString() === 'cert:root'
+      && root.headers['content-type'] === 'application/pkix-cert');
+
+    // Zincir AMACA göre seçilebilmeli. Sabit varsayılan, bir TLS sunucusunun eksik halkasını
+    // arayan doğrulayıcıya İSTEMCİ ara CA'sını veriyordu: yanlış sertifikayı 200 ile döndürmek,
+    // hiç döndürmemekten daha kötüdür -- doğrulayıcı aradığını bulduğunu sanar.
+    const serverChain = await get(port, '/chain.pem?authority=server-ca');
+    check('/chain.pem?authority= o otoritenin zincirini veriyor',
+      serverChain.status === 200 && serverChain.body.toString().includes(
+        Buffer.from('cert:server-ca').toString('base64')));
+    const unknownChain = await get(port, '/chain.pem?authority=hayali-ca');
+    check('bilinmeyen otorite için zincir 404', unknownChain.status === 404);
   }
 
   console.log('\n4. Her liste YALNIZCA kendi yayıncısının iptallerini taşıyor');

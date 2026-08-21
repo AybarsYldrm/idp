@@ -5,9 +5,10 @@ const http = require('node:http');
 const ocspService = require('./ocsp-service');
 const crlService = require('./crl-service');
 const { policyDirectory, POLICIES } = require('../core/pki-policy');
-// Yolları ÇÖZEN taraf. Kuran taraf (core/pki-issuer.js) aynı dosyayı kullanıyor: iki ayrı
-// düzenli ifade elle karşılaştırılsaydı, ayrıştıkları gün sertifikalar çalışmayan bir adres
-// taşımaya başlar ve bunu hiçbir şey söylemezdi.
+// Yolları ÇÖZEN taraf. Kuran taraf (core/pki-issuer.js) ve BAĞLAYAN taraf (oauth-server.js)
+// aynı dosyayı kullanıyor. Üçüncüsü eksikti: oauth-server.js kendi elle yazdığı listeyle
+// bağlıyordu ve o listede `/ca/<otorite>.crt` ile `/crl/<otorite>` yoktu -- yani her uç
+// sertifikanın AIA ve CDP adresi, buradaki işleyiciye VARMADAN 404 alıyordu.
 const pkiUrls = require('../core/pki-urls');
 const log = require('../core/logger').mk('status');
 
@@ -22,12 +23,24 @@ const log = require('../core/logger').mk('status');
 //
 // time.trust.fitfak.net (RFC 3161 TSA) AYNI IP üzerinde, ayrı hostname olarak
 // çalışır ve aynı sebeple düz HTTP'dir -- bkz. @fitfak/ssl examples/timestamp-server.js
+//
+//
+// NEDEN DER, NEDEN PEM DEĞİL
+//
+// Sertifika yayınlayan uçlar `application/pkix-cert` ile DER gönderir (RFC 2585 §4.1).
+// Burada PEM gönderiliyordu ve bu, rota 200 dönerken bile Windows'ta AYNI hatayı üretir:
+// CryptRetrieveObjectByUrl AIA'dan gelen baytı DER olarak çözer, `-----BEGIN CERTIFICATE-----`
+// ile başlayan bir ASCII zarfı çözemez, ara sertifika alınamaz, zincir kurulamaz.
+// Dönüşüm core/pki-urls.js'de: adres ile biçim aynı sözleşmenin iki yarısı.
 
 const NO_STORE = { 'cache-control': 'no-store' };
 
 function send(res, status, headers, body) {
-  res.writeHead(status, { ...headers, 'content-length': Buffer.byteLength(body) });
-  res.end(body);
+  const buffer = Buffer.isBuffer(body) ? body : Buffer.from(String(body));
+  res.writeHead(status, { ...headers, 'content-length': buffer.length });
+  // HEAD'e gövde yazılmaz ama content-length YAZILIR: iptal listesinin boyutunu
+  // önden soran bir istemci, cevabı oradan okur.
+  res.end(res.req && res.req.method === 'HEAD' ? undefined : buffer);
 }
 
 function readBody(req, maxBytes = 64 * 1024) {
@@ -46,106 +59,15 @@ function readBody(req, maxBytes = 64 * 1024) {
   });
 }
 
-/**
- * @param {object} opts
- * @param {object} opts.db
- * @param {object} opts.pkiIssuer
- * @param {object} opts.cacheStore  paylaşılan ephemeral store (CRL önbelleği)
- */
-function createStatusHandler({ db, pkiIssuer, cacheStore }) {
-  return async function handle(req, res) {
-    const url = new URL(req.url, 'http://status.trust.fitfak.net');
-    const pathname = url.pathname.replace(/\/+$/, '') || '/';
+/** Bir sertifikayı AIA/CDP uçlarının sözleşmesine uygun biçimde yollar. */
+function sendCertificate(res, certPem, { maxAge }) {
+  return send(res, 200, {
+    'content-type': pkiUrls.CERT_CONTENT_TYPE,
+    'cache-control': `max-age=${maxAge}`,
+  }, pkiUrls.pemToDer(certPem));
+}
 
-    try {
-      // ---- OCSP ------------------------------------------------------------
-      if (pathname === '/ocsp' && req.method === 'POST') {
-        const der = await readBody(req);
-        const responseDer = await ocspService.handleOcspRequest({ db, pkiIssuer, ocspRequestDer: der });
-        // OCSP yanıtı kendi nextUpdate'ini taşır; HTTP önbelleğinin ondan uzun
-        // yaşaması, iptal edilmiş bir sertifikanın 'good' cevabının ağda takılı
-        // kalması demektir.
-        return send(res, 200, {
-          'content-type': 'application/ocsp-response',
-          'cache-control': 'max-age=3600',
-        }, responseDer);
-      }
-
-      // RFC 6960 Ek A.1: GET /ocsp/<base64url(DER)>
-      if (pathname.startsWith('/ocsp/') && req.method === 'GET') {
-        const encoded = decodeURIComponent(pathname.slice('/ocsp/'.length));
-        const der = Buffer.from(encoded, 'base64');
-        const responseDer = await ocspService.handleOcspRequest({ db, pkiIssuer, ocspRequestDer: der });
-        return send(res, 200, {
-          'content-type': 'application/ocsp-response',
-          'cache-control': 'max-age=3600',
-        }, responseDer);
-      }
-
-      // ---- CRL -------------------------------------------------------------
-      //
-      // HER YAYINCININ KENDİ LİSTESİ VAR ve bu bir gereklilik: RFC 5280 §6.3.3'e göre bir CRL
-      // yalnızca kendi yayıncısının verdiği sertifikalar hakkında konuşur. Beş ara CA varken
-      // (her amaç için ayrı) tek bir "uç sertifikalar listesi", o beşten dördünün verdiği her
-      // sertifika için sessizce etkisiz kalırdı.
-      //
-      //   /crl/root          kök imzalar, ARA CA'ların iptallerini taşır
-      //   /crl/<otorite>     o ara CA imzalar, yalnızca onun verdiği uçları
-      //   /crl               varsayılan yayıncının listesi -- düzeltmeden önce üretilmiş
-      //                      sertifikalar bu adrese işaret ediyor ve hâlâ dolaşımdalar
-      const crl = pkiUrls.parseCrlPath(pathname);
-      if (crl && (req.method === 'GET' || req.method === 'HEAD')) {
-        const { scope, authority } = crl;
-        const crlDer = await crlService.generateCrl({ db, pkiIssuer, cacheStore, scope, authority });
-        return send(res, 200, {
-          'content-type': 'application/pkix-crl',
-          'cache-control': `max-age=${Math.floor(crlService.CACHE_TTL_MS / 1000)}`,
-        }, req.method === 'HEAD' ? Buffer.alloc(0) : crlDer);
-      }
-
-      // ---- CA yayını -------------------------------------------------------
-      //
-      // AIA caIssuers burayı gösterir: zinciri eksik gönderen bir sunucuyla karşılaşan istemci
-      // ara sertifikayı buradan tamamlar. Adres, uç sertifikayı İMZALAYAN otoritenin adını
-      // taşır -- sabit bir /intermediate.crt, hangi ara CA'nın imzaladığından bağımsız olarak
-      // hep aynı sertifikayı döndürür ve doğrulayıcı zinciri kuramaz.
-      const ca = pkiUrls.parseCaPath(pathname);
-      if (ca && !ca.legacy && req.method === 'GET') {
-        const certPem = await pkiIssuer.getAuthorityCertPem(ca.authority);
-        if (!certPem) {
-          return send(res, 404, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE },
-            'bilinmeyen otorite\n');
-        }
-        return send(res, 200, {
-          'content-type': 'application/pkix-cert',
-          // Bir CA sertifikası yıllarca değişmez. Uzun önbellek, AIA'yı takip eden her
-          // doğrulamanın bir tur atmasını engeller.
-          'cache-control': 'max-age=86400',
-        }, Buffer.from(certPem));
-      }
-
-      // Eski adres. Düzeltmeden önce üretilmiş sertifikalar buna işaret ediyor ve geçerlilik
-      // süreleri dolana kadar dolaşımda kalacaklar; kaldırmak, onların zincir tamamlamasını
-      // bugün kırardı.
-      if (pathname === '/intermediate.crt' && req.method === 'GET') {
-        return send(res, 200, { 'content-type': 'application/pkix-cert' },
-          Buffer.from(pkiIssuer.subCA.certPem));
-      }
-      if (pathname === '/root.crt' && req.method === 'GET') {
-        return send(res, 200, { 'content-type': 'application/pkix-cert' },
-          Buffer.from(pkiIssuer.rootCA.certPem));
-      }
-      if (pathname === '/chain.pem' && req.method === 'GET') {
-        // Zincir artık kasadan geliyor ve amaca göre farklı olabilir (her amacın
-        // kendi ara CA'sı var). Burada yayınlanan, uç istemci sertifikalarının
-        // zinciri: bu adresi AIA'dan takip eden bir doğrulayıcının eksik olan
-        // halkası odur.
-        return send(res, 200, { 'content-type': 'application/x-pem-file' },
-          Buffer.from(await pkiIssuer.getChainPem()));
-      }
-
-      if (pathname === '/' && (req.method === 'GET' || req.method === 'HEAD')) {
-        const body = `FITFAK Certificate Status Service
+const INDEX_BODY = `FITFAK Certificate Status Service
 
 POST /ocsp                  RFC 6960 OCSP
 GET  /ocsp/<base64url-der>  RFC 6960 Annex A.1
@@ -153,7 +75,9 @@ GET  /crl/<otorite>         o ara CA'nin verdigi uc sertifikalarin iptal listesi
 GET  /crl/root              ara CA iptal listesi (kok imzali)
 GET  /ca/<otorite>.crt      o ara CA'nin sertifikasi (AIA caIssuers buraya bakar)
 GET  /root.crt              kok CA sertifikasi
-GET  /chain.pem             varsayilan ara + kok
+GET  /chain.pem             varsayilan ara + kok  (?purpose= ya da ?authority= ile secilir)
+
+Sertifika yayinlayan uclar DER doner (application/pkix-cert, RFC 2585 4.1).
 
 Her uc sertifika KENDI yayincisinin adresini tasir: bir CRL yalnizca kendi
 yayincisinin verdigi sertifikalar hakkinda konusur (RFC 5280 6.3.3).
@@ -163,12 +87,155 @@ GET  /intermediate.crt      varsayilan ara CA sertifikasi   (eski adres)
 
 Contact: network@fitfak.net
 `;
-        return send(res, 200, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE }, body);
+
+/**
+ * @param {object} opts
+ * @param {object} opts.db
+ * @param {object} opts.pkiIssuer
+ * @param {object} opts.cacheStore  paylaşılan ephemeral store (CRL önbelleği)
+ */
+function createStatusHandler({ db, pkiIssuer, cacheStore }) {
+  return async function handle(req, res) {
+    // `res.req` HEAD kontrolü için gerekiyor ve her taşımada dolu gelmiyor.
+    if (!res.req) res.req = req;
+
+    const url = new URL(req.url, pkiUrls.STATUS_BASE);
+    // Yolun ne olduğuna karar veren TEK yer. oauth-server.js bağlama eşleştiricisi olarak
+    // aynı fonksiyonu çağırıyor, yani "bağlandı ama tanınmadı" (ya da tersi) yapısal olarak
+    // mümkün değil -- iki ayrı listenin sessizce ayrışması tam olarak düzeltilen hataydı.
+    const route = pkiUrls.resolveStatusRoute(req.url, req.method);
+
+    try {
+      if (!route) {
+        return send(res, 404, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE }, 'not found\n');
       }
 
-      return send(res, 404, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE }, 'not found\n');
+      switch (route.kind) {
+        // ---- OCSP ----------------------------------------------------------
+        case 'ocsp-post': {
+          const der = await readBody(req);
+          const responseDer = await ocspService.handleOcspRequest({ db, pkiIssuer, ocspRequestDer: der });
+          // OCSP yanıtı kendi nextUpdate'ini taşır; HTTP önbelleğinin ondan uzun
+          // yaşaması, iptal edilmiş bir sertifikanın 'good' cevabının ağda takılı
+          // kalması demektir.
+          return send(res, 200, {
+            'content-type': pkiUrls.OCSP_CONTENT_TYPE,
+            'cache-control': 'max-age=3600',
+          }, responseDer);
+        }
+
+        case 'ocsp-get': {
+          // RFC 6960 Ek A.1: GET /ocsp/<base64url(DER)>
+          let der;
+          try {
+            der = Buffer.from(decodeURIComponent(route.encoded), 'base64');
+          } catch (_) {
+            der = Buffer.alloc(0);
+          }
+          const responseDer = await ocspService.handleOcspRequest({ db, pkiIssuer, ocspRequestDer: der });
+          return send(res, 200, {
+            'content-type': pkiUrls.OCSP_CONTENT_TYPE,
+            'cache-control': 'max-age=3600',
+          }, responseDer);
+        }
+
+        case 'ocsp-hint':
+          // GET /ocsp -- adres doğru, yöntem değil. 405 bunu söyler; 404 "burada bir şey yok"
+          // derdi ve adresi elle deneyen bir operatörü yanlış yere bakmaya gönderirdi.
+          return send(res, 405, {
+            'content-type': 'text/plain; charset=utf-8', allow: 'POST', ...NO_STORE,
+          }, 'OCSP istekleri POST ile gonderilir (RFC 6960); GET icin /ocsp/<base64-der>\n');
+
+        // ---- CRL -----------------------------------------------------------
+        //
+        // HER YAYINCININ KENDİ LİSTESİ VAR ve bu bir gereklilik: RFC 5280 §6.3.3'e göre bir
+        // CRL yalnızca kendi yayıncısının verdiği sertifikalar hakkında konuşur. Beş ara CA
+        // varken (her amaç için ayrı) tek bir "uç sertifikalar listesi", o beşten dördünün
+        // verdiği her sertifika için sessizce etkisiz kalırdı.
+        //
+        //   /crl/root          kök imzalar, ARA CA'ların iptallerini taşır
+        //   /crl/<otorite>     o ara CA imzalar, yalnızca onun verdiği uçları
+        //   /crl               varsayılan yayıncının listesi -- düzeltmeden önce üretilmiş
+        //                      sertifikalar bu adrese işaret ediyor ve hâlâ dolaşımdalar
+        case 'crl': {
+          // Bilinmeyen ama biçimi doğru bir otorite adı -- `/crl/hayali-ca` -- 404 almalı.
+          // Eşleştirici kasadaki adları BİLMEZ ve bilmemeli (ona bir depo bağımlılığı vermek
+          // olurdu), yani buraya ulaşan bir istek var olmayan bir yayıncıyı sorabilir. Bu
+          // durumda imzalayıcı yüklenmeye çalışılıyor ve fırlatan hata 500'e dönüşüyordu:
+          // "sunucu bozuk" demek, oysa sorulan şey yoktu. Doğrulayıcılar 500'ü geçici arıza
+          // sayıp yeniden dener ve bir noktada iptal kontrolünü tamamen atlar.
+          if (route.authority && !(await pkiIssuer.getAuthorityCertPem(route.authority))) {
+            return send(res, 404, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE },
+              'bilinmeyen otorite\n');
+          }
+          const crlDer = await crlService.generateCrl({
+            db, pkiIssuer, cacheStore, scope: route.scope, authority: route.authority,
+          });
+          return send(res, 200, {
+            'content-type': pkiUrls.CRL_CONTENT_TYPE,
+            'cache-control': `max-age=${Math.floor(crlService.CACHE_TTL_MS / 1000)}`,
+          }, crlDer);
+        }
+
+        // ---- CA yayını -----------------------------------------------------
+        //
+        // AIA caIssuers burayı gösterir: zinciri eksik gönderen bir sunucuyla karşılaşan
+        // istemci ara sertifikayı buradan tamamlar. Adres, uç sertifikayı İMZALAYAN otoritenin
+        // adını taşır -- sabit bir /intermediate.crt, hangi ara CA'nın imzaladığından bağımsız
+        // olarak hep aynı sertifikayı döndürür ve doğrulayıcı zinciri kuramaz.
+        case 'ca': {
+          const certPem = await pkiIssuer.getAuthorityCertPem(route.authority);
+          if (!certPem) {
+            return send(res, 404, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE },
+              'bilinmeyen otorite\n');
+          }
+          // Bir CA sertifikası yıllarca değişmez. Uzun önbellek, AIA'yı takip eden her
+          // doğrulamanın bir tur atmasını engeller.
+          return sendCertificate(res, certPem, { maxAge: 86400 });
+        }
+
+        // Eski adres. Düzeltmeden önce üretilmiş sertifikalar buna işaret ediyor ve geçerlilik
+        // süreleri dolana kadar dolaşımda kalacaklar; kaldırmak, onların zincir tamamlamasını
+        // bugün kırardı.
+        case 'legacy-ca':
+          return sendCertificate(res, pkiIssuer.subCA.certPem, { maxAge: 86400 });
+
+        case 'root-ca':
+          return sendCertificate(res, pkiIssuer.rootCA.certPem, { maxAge: 86400 });
+
+        case 'chain': {
+          // Zincir kasadan geliyor ve AMACA GÖRE farklı (her amacın kendi ara CA'sı var).
+          // Varsayılan istemci zinciriydi ve öyle kalıyor; ama bir TLS sunucusunun zincirini
+          // isteyen birine istemci ara CA'sını vermek, adresi izleyen doğrulayıcı için
+          // eksik halkanın YANLIŞ olanını göndermek demekti.
+          const purpose = url.searchParams.get('purpose');
+          const authority = url.searchParams.get('authority');
+          let chainPem;
+          if (authority) {
+            chainPem = await pkiIssuer.getChainPemForAuthority(authority);
+            if (!chainPem) {
+              return send(res, 404, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE },
+                'bilinmeyen otorite\n');
+            }
+          } else {
+            chainPem = await pkiIssuer.getChainPem(purpose || undefined);
+          }
+          return send(res, 200, {
+            'content-type': pkiUrls.CHAIN_CONTENT_TYPE, 'cache-control': 'max-age=3600',
+          }, Buffer.from(chainPem));
+        }
+
+        case 'index':
+          return send(res, 200, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE }, INDEX_BODY);
+
+        default:
+          return send(res, 404, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE }, 'not found\n');
+      }
     } catch (err) {
-      log.error({ error: err.message, stack: err.stack, msg: 'durum isteği başarısız' });
+      log.error({
+        error: err.message, stack: err.stack, route: route ? route.kind : null,
+        path: pkiUrls.normalizePath(req.url), msg: 'durum isteği başarısız',
+      });
       return send(res, 500, { 'content-type': 'text/plain; charset=utf-8', ...NO_STORE }, 'internal error\n');
     }
   };
@@ -184,6 +251,7 @@ Contact: network@fitfak.net
  */
 function createPolicyHandler() {
   return function handle(req, res) {
+    if (!res.req) res.req = req;
     const url = new URL(req.url, 'https://trust.fitfak.net');
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
 
@@ -218,12 +286,15 @@ ${policy.notice}
 
 Iptal durumu OCSP ve CRL uzerinden yayinlanir:
 
-  OCSP : http://status.trust.fitfak.net/ocsp
-  CRL  : http://status.trust.fitfak.net/crl
+  OCSP : ${pkiUrls.OCSP_URL}
+  CRL  : ${pkiUrls.STATUS_BASE}/crl/<yayinci>
+
+Her uc sertifika KENDI yayincisinin listesini gosterir; bir CRL yalnizca kendi
+yayincisinin verdigi sertifikalar hakkinda konusur (RFC 5280 6.3.3).
 
 Ara CA'lar icin ayri bir liste vardir (kok tarafindan imzali):
 
-  CRL  : http://status.trust.fitfak.net/crl/root
+  CRL  : ${pkiUrls.ROOT_CRL_URL}
 
 Bir ara CA iptal edildiginde altindaki tum sertifikalar gecersizdir.
 

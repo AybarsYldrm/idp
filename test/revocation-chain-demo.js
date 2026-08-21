@@ -32,6 +32,15 @@ function check(name, condition) {
   console.log(`  ok ${name}`);
 }
 
+/** Baytlar GERÇEKTEN DER kodlanmış bir sertifika mı -- bağımsız bir uygulamaya göre. */
+function opensslReadsDerCert(file) {
+  try {
+    execFileSync('openssl', ['x509', '-inform', 'DER', '-in', file, '-noout', '-subject'],
+      { stdio: ['pipe', 'pipe', 'pipe'] });
+    return true;
+  } catch (_) { return false; }
+}
+
 /** `openssl crl -CAfile` sonucu stderr'e yazar; exit kodu asıl cevaptır. */
 function opensslVerifyCrl(crlPath, caPath) {
   try {
@@ -228,8 +237,23 @@ async function main() {
   }
 
   console.log('\n[8] CA yayını ve politika dağıtımı');
+  // DER, PEM DEĞİL: `application/pkix-cert` tek ve DER kodlanmış bir sertifika demektir
+  // (RFC 2585 §4.1). Buraya PEM koymak, adres 200 dönerken bile Windows'ta zincirin
+  // kurulamaması demek -- CryptRetrieveObjectByUrl ASCII zarfı çözmez. Kontrolü openssl
+  // yapıyor: kendi ürettiğimiz baytı yine kendi kodumuzla okumak bir şey kanıtlamaz.
   const inter = await get(port, '/intermediate.crt');
-  check('/intermediate.crt sunuluyor', inter.status === 200 && inter.body.includes('BEGIN CERTIFICATE'));
+  fs.writeFileSync(path.join(dir, 'aia.der'), inter.body);
+  check('/intermediate.crt sunuluyor',
+    inter.status === 200 && inter.headers['content-type'] === 'application/pkix-cert');
+  check('/intermediate.crt DER veriyor (PEM değil)', opensslReadsDerCert(path.join(dir, 'aia.der')));
+
+  // AIA adresinin AYNI şeyi vermesi: uç sertifikanın taşıdığı adres bu ve zinciri eksik
+  // gönderen bir eşle karşılaşan doğrulayıcının tamamlayacağı halka orada.
+  const aiaPath = new URL(ProductionPkiIssuer.caIssuersUrlFor(alice.issuerName)).pathname;
+  const aia = await get(port, aiaPath);
+  fs.writeFileSync(path.join(dir, 'aia-named.der'), aia.body);
+  check(`AIA adresi (${aiaPath}) DER sertifika veriyor`,
+    aia.status === 200 && opensslReadsDerCert(path.join(dir, 'aia-named.der')));
 
   const policyServer = http.createServer(createPolicyHandler());
   await new Promise((r) => policyServer.listen(0, '127.0.0.1', r));

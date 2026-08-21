@@ -53,9 +53,12 @@ class IdentityClient {
    * @param {string} opts.clientId - fitfak-idp'ye kayıtlı client ID'niz (örn. 'dns-fitfak-net')
    * @param {string} opts.clientSecret - o client'a ait SIR (asla tarayıcıya göndermeyin)
    * @param {number} [opts.timeoutMs=10000]
+   * @param {string|Buffer|Array} [opts.ca]  IdP'yi doğrulamak için güven ÇIPASI (kök sertifika).
+   *   Bu dağıtımın kökü Node'un kamusal listesinde yoktur; verilmezse HTTPS çağrıları
+   *   sertifika hatasıyla düşer. Ara sertifika DEĞİL, kök verilmelidir.
    */
   constructor({
-    baseUrl, http2Url, clientId, clientSecret, timeoutMs = 10_000,
+    baseUrl, http2Url, clientId, clientSecret, timeoutMs = 10_000, ca = null,
   }) {
     if (!baseUrl) throw new Error('IdentityClient: baseUrl gerekli (örn. https://session.fitfak.net)');
     if (!clientId || !clientSecret) throw new Error('IdentityClient: clientId ve clientSecret gerekli');
@@ -64,6 +67,15 @@ class IdentityClient {
     this.clientId = clientId;
     this.clientSecret = clientSecret;
     this.timeoutMs = timeoutMs;
+    // IdP'nin sertifikası bu dağıtımın KENDİ kökünden çıkıyorsa, Node'un gömülü kamusal kök
+    // listesi onu tanımaz ve her çağrı bir sertifika hatasıyla düşer. `ca` verildiğinde güven
+    // deposu odur.
+    //
+    // ÇIPA verilmeli, zincirin tamamı değil. `ca` Node'un güven deposudur: oraya konan bir ARA
+    // CA'nın kendisi bir güven çıpası olur, yol kurulumu orada biter ve kökün o ara CA
+    // hakkındaki iptaline hiç bakılmaz -- IdP ara CA iptallerini tam da bu yüzden kökün
+    // listesinde yayınlıyor.
+    this.ca = ca;
   }
 
   // --------------------------------------------------------------------------
@@ -92,6 +104,9 @@ class IdentityClient {
           'content-length': body.length,
         },
         timeout: this.timeoutMs,
+        // Yalnızca HTTPS'te anlamlı; düz HTTP'de yok sayılır. Verilmediğinde Node'un
+        // varsayılan (kamusal) kök listesi geçerli.
+        ...(this.ca && url.protocol === 'https:' ? { ca: this.ca } : {}),
       }, (res) => {
         const chunks = [];
         res.on('data', (c) => chunks.push(c));

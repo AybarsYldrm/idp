@@ -66,8 +66,10 @@ async function main() {
   const portal = await request(port, '/portal');
   check('302 dönüyor', portal.status === 302);
   check('/login\'e gidiyor', portal.location.startsWith('/login'));
-  check('return_to=/portal taşınıyor',
-    decodeURIComponent(portal.location).includes('return_to=/portal'));
+  // Dönüş adresi bir YOL değil bir TUTAMAK (`ru=fru.xxxx`). Bu test hâlâ eski `return_to=`
+  // biçimini arıyordu ve geçiş yapıldığından beri kırıktı -- yani taşınıp taşınmadığını
+  // gerçekte kimse doğrulamıyordu. Gerekçe core/internal-redirects.js'de.
+  check('dönüş tutamağı taşınıyor', /[?&]ru=fru\./.test(portal.location));
 
   console.log('\n[3] Kök yol oturum durumuna göre yönleniyor');
   const root = await request(port, '/');
