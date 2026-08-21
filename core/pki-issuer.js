@@ -240,8 +240,23 @@ class ProductionPkiIssuer {
     // SKID, CSR'nin açık anahtarından imzalamadan ÖNCE hesaplanabilir -- zaten
     // sertifikaya da oradan yazılır -- yani kontrolün burada olması için bir
     // engel yoktu.
+    //
+    // AMA KONTROL, ETKİNLEŞTİRİLDİĞİ GÜN HER İSTEĞİ REDDEDİYORDU. Aday SKID şöyle
+    // hesaplanıyordu:
+    //
+    //     skidOfPublicKeyPem(csr.publicKeyPem || ssl.parseCSR(csrPem).publicKeyPem)
+    //
+    // `parseCSR` `publicKeyPem` DİYE BİR ALAN DÖNDÜRMÜYOR. İkinci ayrıştırma da aynı
+    // `undefined`'ı veriyor, ve `skidOfPublicKeyPem` onu "CSR'nin açık anahtarı okunamadı"
+    // diye 400'e çeviriyordu. Bu geri dönüşü yalnızca ACME kullanıyor (tek `checkKeyUniqueness`
+    // geçiren yol), yani GEÇERLİ bir CSR ile yapılan her ACME sertifika talebi, CSR'nin
+    // okunamadığını söyleyen bir hatayla düşüyordu -- CSR'de bir sorun olmadığı hâlde.
+    //
+    // Artık SKID, ayrıştırılmış CSR'nin açık anahtarından, @fitfak/ssl'in sertifikaya YAZARKEN
+    // kullandığı yolun aynısıyla hesaplanıyor. Aynı kaynaktan gelmesi şart: kontrolün baktığı
+    // değer ile sertifikada duran değer ayrışırsa, tekillik kaydı hiçbir zaman eşleşmez.
     if (typeof checkKeyUniqueness === 'function') {
-      const candidateSkid = skidOfPublicKeyPem(csr.publicKeyPem || ssl.parseCSR(csrPem).publicKeyPem);
+      const candidateSkid = skidOfCsr(csr);
       if (await checkKeyUniqueness(candidateSkid.toString('hex'))) {
         throw new AppError('key_already_certified',
           'Bu açık anahtar için zaten bir sertifika üretilmiş. Yeni bir anahtar çifti ve CSR oluşturun.',
@@ -599,6 +614,25 @@ function skidOf(certPem) {
     .publicKey.export({ format: 'jwk' }));
 }
 
+/**
+ * Bir CSR'nin açık anahtarının SKID'i -- @fitfak/ssl sertifikaya yazarken ne hesaplıyorsa o.
+ *
+ * RSA ve EC ayrı hesaplanır (RFC 5280 §4.2.1.2 yöntem 1 ikisinde de subjectPublicKey BIT
+ * STRING'inin SHA-1'i, ama o baytlar anahtar türüne göre farklı kurulur). Yalnızca EC'yi
+ * hesaplamak, bir RSA CSR'sinde sessizce yanlış bir değer üretirdi -- ve o değer hiçbir yerde
+ * hata vermez, yalnızca tekillik kaydının hiçbir zaman eşleşmemesine yol açar.
+ */
+function skidOfCsr(csr) {
+  const key = csr && csr.publicKey;
+  if (!key) {
+    throw new AppError('invalid_csr',
+      "CSR'nin açık anahtarı okunamadı; anahtar tekilliği kontrol edilemez", { httpStatus: 400 });
+  }
+  return key.keyType === 'rsa'
+    ? ssl.asn1.computeRsaSKID(key.n, key.e)
+    : ssl.asn1.computeEcSKID(key.publicKeyBuf);
+}
+
 /** Aynı hesap, bir sertifika yerine bir açık anahtar PEM'inden. */
 function skidOfPublicKeyPem(publicKeyPem) {
   if (!publicKeyPem) {
@@ -620,6 +654,7 @@ function skidFromJwk(jwk) {
 module.exports = {
   ProductionPkiIssuer,
   skidOf,
+  skidOfCsr,
   skidOfPublicKeyPem,
   PROFILE_MAP,
   PKI_PURPOSES,

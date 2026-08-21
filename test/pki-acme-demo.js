@@ -190,9 +190,25 @@ async function main() {
     } catch { acmeResolvable = false; }
 
     if (!acmeResolvable) {
+      // BU ATLAMA PAHALIYA MAL OLDU ve mesajı o yüzden bu kadar uzun.
+      //
+      // Sertifika ÜRETEN tek uçtan uca yol bu bölümün içinde. Atlandığı sürece iki ayrı hata
+      // hiçbir testte görünmedi ve ikisi de ACME'yi tamamen kullanılamaz hâlde bırakıyordu:
+      //
+      //   * finalize, GEÇERLİ bir CSR'ye "CSR'nin açık anahtarı okunamadı" diyerek 400
+      //     dönüyordu -- aday SKID, parseCSR'nin döndürmediği bir alandan hesaplanıyordu.
+      //   * üretilen sertifikada hiç dNSName SAN yoktu -- doğrulanmış alan adı CN'e
+      //     yazılıyordu ve RFC 6125 §6.4.4'ten beri hiçbir istemci CN'e bakmıyor.
+      //
+      // Yani "yeşil" bir test paketi, hiçbir zaman kullanılabilir bir sertifika üretmemiş bir
+      // ACME sunucusunu onaylıyordu. Bir kontrolün KOŞMAMASI, kontrolün olmamasından daha
+      // kötüdür: birincisi yokluğunu gizler.
       console.log(`pki-acme: ATLANDI -- ACME http-01 bölümü, 127.0.0.1'e çözümlenen bir *.fitfak.net adı ister.`);
+      console.log(`pki-acme: BU BÖLÜM SERTİFİKA ÜRETİMİNİ SINAYAN TEK YER. Atlanması, üretilen`);
+      console.log(`pki-acme: sertifikanın kullanılabilir olup olmadığının HİÇ doğrulanmaması demek.`);
       console.log(`pki-acme: çalıştırmak için: /etc/hosts'a '127.0.0.1 ${ACME_IDENTIFIER}' ekleyin`);
       console.log(`pki-acme: (ya da FITFAK_IDP_TEST_ACME_HOST ile başka bir ad verin)`);
+      console.log(`pki-acme: DNS'e bağlı olmayan karşılığı test/csr-issuance-demo.js'de ve o her zaman koşar.`);
     } else {
 
     let challengeContent = null;
@@ -293,6 +309,17 @@ async function main() {
       assert.strictEqual(certDownload.status, 200);
       assert.ok(certDownload.raw.length > 0);
       console.log('pki-acme: üretilen sertifika /acme/cert/ üzerinden indirilebildi');
+
+      // 200 dönmesi sertifikanın KULLANILABİLİR olduğunu söylemez. Doğrulanmış alan adı
+      // SAN'da olmalı: CN'e yazılan bir ad hiçbir modern istemci tarafından okunmaz
+      // (RFC 6125 §6.4.4), yani SAN'sız bir sertifika her el sıkışmada reddedilir --
+      // ve bu, onu üreten koddan bir ağ hattı ötede anlaşılır.
+      const issuedCert = new crypto.X509Certificate(certDownload.raw.toString('utf8'));
+      assert.ok(
+        (issuedCert.subjectAltName || '').includes(`DNS:${ACME_IDENTIFIER}`),
+        `üretilen sertifika 'DNS:${ACME_IDENTIFIER}' SAN'ını taşımıyor: ${issuedCert.subjectAltName}`,
+      );
+      console.log('pki-acme: ve doğrulanmış alan adını SAN\'da taşıyor -- yani gerçekten kullanılabilir');
 
       const replayJws = makeJws({
         url: 'https://trust.fitfak.net/acme/new-account', nonce: nonce1, payload: {}, jwk, privateKey,
