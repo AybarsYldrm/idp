@@ -159,6 +159,44 @@ function main() {
     check('ve hâlâ doğrulanıyor', /safeRedirect\(\s*\n?\s*params\.get\('return_to'\)/.test(login));
   }
 
+  console.log('\n9. Yüzeyler arası yönlendirme MUTLAK adres kullanıyor');
+
+  {
+    // `/admin` one.fitfak.net'te, giriş sayfası session.fitfak.net'te. Göreli bir adres
+    // tarayıcı tarafından BULUNULAN kökene göre çözülür, yani yönetici one.fitfak.net/login'e
+    // gidiyordu -- orada giriş sayfası yok. Ters yönde de aynısı: giriş sayfası tutamağı
+    // çözüp `/admin` alıyor ve session.fitfak.net/admin'e gidiyordu; orada da /admin yok.
+    // İki yönde de 404, ve iki adres de tek başına doğru göründüğü için hiçbir şey söylemiyor.
+    const redirects = createInternalRedirects({
+      secret: Buffer.alloc(32, 7),
+      origins: { idp: 'https://session.fitfak.net', admin: 'https://one.fitfak.net' },
+    });
+
+    const adminLogin = redirects.loginUrl('/admin');
+    check('one.fitfak.net/admin -> mutlak giriş adresi',
+      adminLogin.startsWith('https://session.fitfak.net/login?'));
+    check('ve dönüş tutamağını taşıyor', /[?&]ru=fru\./.test(adminLogin));
+
+    const adminBack = redirects.destinationFor(redirects.handleForName('admin'));
+    check('giriş sonrası dönüş de mutlak', adminBack === 'https://one.fitfak.net/admin');
+
+    // Aynı yüzey içindekiler GÖRELİ kalmalı: mutlak adres koymak, yerel bir kurulumu
+    // yapılandırmadaki dış hostname'e göndermek olurdu.
+    check('aynı yüzeydeki giriş göreli', redirects.loginUrl('/portal').startsWith('/login?'));
+    check('aynı yüzeydeki dönüş göreli',
+      redirects.destinationFor(redirects.handleForName('portal')) === '/portal');
+
+    // Köken verilmediğinde göreli kalıyor: yapılandırılmamış bir hostname uydurmak, bir
+    // kurulumu var olmayan bir adrese göndermek demek.
+    const noOrigins = createInternalRedirects({ secret: Buffer.alloc(32, 7) });
+    check('köken yoksa göreli kalıyor', noOrigins.loginUrl('/admin').startsWith('/login?'));
+
+    // Tutamaklar kökenden BAĞIMSIZ türetiliyor: bir host değişikliği dışarıda paylaşılmış
+    // her bağlantıyı kırmamalı.
+    check('tutamak kökene bağlı değil',
+      noOrigins.handleForName('admin') === redirects.handleForName('admin'));
+  }
+
   console.log(`\nOK - iç dönüş adresleri: ${checks} kontrol geçti.`);
 }
 

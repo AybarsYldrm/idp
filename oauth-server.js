@@ -484,7 +484,15 @@ async function main() {
   // `?return_to=%2Fadmin` yerine `?ru=<tutamak>`. Fark yalnızca görsel değil: bir tutamak ancak
   // kayıtlı listede varsa çözülür, yani açık yönlendirme engellenmesi gereken bir şey olmaktan
   // çıkıp ifade edilemez bir şey haline geliyor. Gerekçenin tamamı core/internal-redirects.js'de.
-  const internalRedirects = createInternalRedirects({ secret: config.redirectHandleSecret });
+  //
+  // Kökenler geçiliyor, çünkü hedefler TEK bir host üzerinde değil: `/admin` one.fitfak.net'te,
+  // geri kalanı session.fitfak.net'te. Yüzeyler arası bir yönlendirmeyi göreli bırakmak,
+  // tarayıcının onu BULUNDUĞU kökene göre çözmesi demek -- yönetici one.fitfak.net/login'e
+  // gidiyordu ve orada giriş sayfası yok. Ayrıntı core/internal-redirects.js'de.
+  const internalRedirects = createInternalRedirects({
+    secret: config.redirectHandleSecret,
+    origins: { idp: ISSUER, admin: ADMIN_ISSUER, trust: TRUST_ISSUER },
+  });
 
   // Veritabanının yönetim API'sine giden vekil. Adres ve kimlik bilgisi eşleştirme dizininden
   // okunuyor; veritabanı henüz açılmamışsa uçlar 503 döner ve sebebini söyler.

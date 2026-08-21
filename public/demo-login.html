@@ -463,6 +463,12 @@
     if (returnHandle) {
       // Tutamak sunucuda çözülüyor. Sayfada çözmek, listenin sayfaya gömülmesi demek olurdu ve
       // o liste, sistemin iç yapısını giriş yapmamış herkese açardı.
+      //
+      // DÖNEN ADRES MUTLAK OLABİLİR ve buna aynı-köken kontrolü EKLENMEMELİ. Yönetim paneli
+      // one.fitfak.net'te, bu sayfa session.fitfak.net'te; `/admin` diye göreli bir adres
+      // tarayıcıyı session.fitfak.net/admin'e götürür ve orada o sayfa yok. Değer zaten
+      // sunucunun KAPALI listesinden geliyor, yani doğrulanacak bir şey yok -- uydurulmuş bir
+      // tutamak varsayılana düşer. Gerekçenin tamamı core/internal-redirects.js'de.
       fetch('/auth/resolve-ru?ru=' + encodeURIComponent(returnHandle), { credentials: 'include' })
         .then(function (r) { return r.json(); })
         .then(function (d) { location.href = d.destination || '/portal'; })
