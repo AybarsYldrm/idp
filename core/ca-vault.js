@@ -48,8 +48,13 @@ const path = require('node:path');
 // ortaya çıkar.
 
 const { PkiVault, PKI_PURPOSES } = require('@fitfak/database');
-
-const STATUS_BASE = process.env.FITFAK_TRUST_STATUS_URL || 'http://status.trust.fitfak.net';
+// Ara CA'ların KENDİ AIA/CDP adresleri de sertifikaların içine yazılıyor, yani onlar da
+// karşılanmak zorunda. Adresler burada AYRICA kurulursa, durum sunucusunun karşıladığı
+// yollarla sessizce ayrışabilirler -- bu dosyanın kendi `STATUS_BASE` sabitini taşıması tam
+// olarak o riskti. Tek kaynak core/pki-urls.js.
+const {
+  STATUS_BASE, OCSP_URL, ROOT_CERT_URL, ROOT_CRL_URL,
+} = require('./pki-urls');
 
 /**
  * Bu dağıtımın varsayılan ara CA'ları. Admin panelinden başkaları eklenebilir
@@ -133,9 +138,9 @@ async function openCaVault({ db, caDir = null, ssl = null, trustDomain = 'fitfak
       // sertifikalarınki ara CA'nınkine, ara CA'nınki kökünkine. Bir ara CA'nın
       // CRL'ini köke göstermek, "ara sertifika iptal edilirse altındaki her şey
       // düşer" davranışının doğrulayıcı tarafında sessizce çalışmamasına yol açar.
-      ocspUrl: `${STATUS_BASE}/ocsp`,
-      caIssuersUrl: `${STATUS_BASE}/root.crt`,
-      crlUrls: [`${STATUS_BASE}/crl/root`],
+      ocspUrl: OCSP_URL,
+      caIssuersUrl: ROOT_CERT_URL,
+      crlUrls: [ROOT_CRL_URL],
     });
     created.push(definition.name);
   }

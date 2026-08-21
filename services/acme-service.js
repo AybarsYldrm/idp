@@ -333,13 +333,36 @@ class AcmeService {
     const csrPem = `-----BEGIN CERTIFICATE REQUEST-----\n${csrDer.toString('base64')}\n-----END CERTIFICATE REQUEST-----`;
     const identifiers = JSON.parse(orderRow.identifiersJson);
 
+    // DOĞRULANMIŞ ADLAR SAN'A YAZILIR -- ve bu bir düzeltme.
+    //
+    // Buradan yalnızca `cn: identifiers[0].value` geçiyordu. Uç sertifika üretimi CSR'nin
+    // kendi SAN'larını taşımaz (doğru: başvuran kendi alan adını yazdıramamalı), yani ortaya
+    // çıkan sertifikada dNSName HİÇ YOKTU. RFC 6125 §6.4.4'ten beri hiçbir modern istemci
+    // CN'e bakmaz -- ACME ile alınan sertifika hiçbir tarayıcıda, Windows schannel'da ya da
+    // Go'nun crypto/tls'inde kabul edilmezdi ve bu ancak ilk el sıkışmada anlaşılırdı.
+    //
+    // İkinci hata aynı satırdaydı: sipariş BİRDEN FAZLA kimlik taşıyabilir ve yalnızca
+    // birincisi okunuyordu. Üç alan adı için doğrulama yapan bir istemci, ikisini kapsamayan
+    // bir sertifika alıyordu.
+    //
+    // SAN'lar SİPARİŞTEN geliyor, CSR'den değil: sipariştekiler http-01 ile doğrulanmış
+    // olanlardır. CSR'den almak, doğrulanmamış bir adı sertifikaya yazdırmak olurdu.
+    const validatedNames = identifiers
+      .filter((id) => id && id.type === 'dns' && id.value)
+      .map((id) => ({ type: 'dns', value: String(id.value) }));
+    if (validatedNames.length === 0) {
+      throw new AppError('badCSR',
+        'Siparişte doğrulanmış hiçbir dns kimliği yok; sertifikaya yazılacak bir sunucu adı '
+        + 'bulunmuyor', { httpStatus: 400 });
+    }
+
     // 🛡️ MÜKEMMEL GÜVENLİK (PERFECT FORWARD SECRECY) KONTROLÜ
     const {
       certPem, serialNumberHex, skidHex, notBefore, notAfter, issuerName,
     } = await this.pkiIssuer.signCertificateFromCsr({
-      csrPem, 
-      profile: 'server-auth', 
-      subjectOverride: { cn: identifiers[0]?.value },
+      csrPem,
+      profile: 'server-auth',
+      subjectOverride: { cn: validatedNames[0].value, sans: validatedNames },
       // pki.js motoru sertifika basmadan önce bu callback'i çağırır:
       checkKeyUniqueness: async (incomingSkidHex) => {
         // Bu parmak izine (Private Key) ait veritabanımızda başka sertifika var mı?
@@ -352,7 +375,7 @@ class AcmeService {
       serialNumberHex,
       skidHex, // 🛡️ Parmak izi (SKID) daha sonra kontrol edilebilmesi için veritabanına yazılıyor
       userId: orderRow.accountId,
-      subjectCn: identifiers[0]?.value || '',
+      subjectCn: validatedNames[0].value,
       profile: 'server-auth',
       certPem,
       notBefore: BigInt(notBefore.getTime()),

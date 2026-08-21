@@ -31,7 +31,7 @@ function userCanRequestProfile(userRow, profile) {
  * bu fonksiyon SADECE RBAC kapısı + DB kaydı + ince PEM biçim kontrolü yapar.
  */
 async function requestCertificate({
-  db, pkiIssuer, userId, csrPem, profile = 'client-auth',
+  db, pkiIssuer, userId, csrPem, profile = 'client-auth', dnsNames = [],
 }) {
   if (!isWellFormedCsrPem(csrPem)) {
     throw new AppError('invalid_csr', 'Geçersiz CSR biçimi (PEM bekleniyor)', { httpStatus: 400 });
@@ -50,13 +50,37 @@ async function requestCertificate({
 
   const certs = db.collection('certificates');
 
+  // SUNUCU SERTİFİKASI KİMLİĞİNİ KULLANICI ADINDAN ALAMAZ.
+  //
+  // Burada her profil için aynı subject kuruluyordu: `cn: userRow.username`, SAN olarak da
+  // yalnızca e-posta. Bir `server-auth` isteği için ortaya çıkan şey, CN'i "alice", tek SAN'ı
+  // `rfc822Name:alice@fitfak.net` olan bir TLS SUNUCU sertifikasıydı -- yani hiçbir sunucu
+  // adını kapsamayan, hiçbir el sıkışmada kabul edilmeyecek bir sertifika. İstemci CSR'sinde
+  // hangi alan adını yazarsa yazsın sonuç değişmiyordu, çünkü CSR'nin SAN'ları bilinçli olarak
+  // taşınmıyor.
+  //
+  // Sunucu adları AÇIKÇA isteniyor ve profil izniyle yetkilendiriliyor: `server-auth` zaten
+  // `userCanRequestProfile` kapısının arkasında (admin ya da açıkça verilmiş yetki). Alan adı
+  // SAHİPLİĞİNİN doğrulandığı yol ACME'dir (services/acme-service.js, http-01); bu yol,
+  // sahipliği zaten bilinen bir operatör için olan yoldur.
+  const isServerProfile = profile === 'server-auth';
+  const requestedNames = (Array.isArray(dnsNames) ? dnsNames : [dnsNames])
+    .map((n) => String(n || '').trim()).filter(Boolean);
+  if (isServerProfile && requestedNames.length === 0) {
+    throw new AppError('server_name_required',
+      "'server-auth' bir TLS sunucu sertifikasıdır ve hangi sunucu adı için verildiğini "
+      + 'taşımak zorundadır. İstekte `dnsNames` verin; alan adı sahipliğini doğrulatarak '
+      + 'almak istiyorsanız ACME uçlarını kullanın (trust.fitfak.net/acme/directory).',
+      { httpStatus: 400 });
+  }
+
+  const subjectOverride = isServerProfile
+    ? { cn: requestedNames[0], sans: requestedNames.map((value) => ({ type: 'dns', value })) }
+    : { cn: userRow.username, email: userRow.email };
+
   const {
     certPem, serialNumberHex, skidHex, notBefore, notAfter, issuerName,
-  } = await pkiIssuer.signCertificateFromCsr({
-    csrPem,
-    profile,
-    subjectOverride: { cn: userRow.username, email: userRow.email },
-  });
+  } = await pkiIssuer.signCertificateFromCsr({ csrPem, profile, subjectOverride });
 
   // Anahtar tekilliği, imzalamadan ÖNCE bir ön-kontrolle DEĞİL, kaydın kendisiyle
   // ATOMİK olarak zorlanır.
@@ -77,7 +101,7 @@ async function requestCertificate({
       serialNumberHex,
       skidHex,
       userId,
-      subjectCn: userRow.username,
+      subjectCn: subjectOverride.cn,
       profile,
       certPem,
       notBefore: BigInt(notBefore.getTime()),
