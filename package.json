@@ -5,6 +5,14 @@
   "private": true,
   "license": "UNLICENSED",
   "main": "oauth-server.js",
+  "exports": {
+    ".": "./oauth-server.js",
+    "./client": "./client/identity-client.js",
+    "./join": "./client/join-fitfak.js",
+    "./auth-client": "./auth-client.js",
+    "./spiffe": "./core/spiffe.js",
+    "./package.json": "./package.json"
+  },
   "engines": {
     "node": ">=20.0.0"
   },
@@ -27,7 +35,7 @@
     "test:db": "node test/db-integration-demo.js",
     "test:redirects": "node test/oauth-redirect-demo.js",
     "test:workload": "node test/workload-identity-demo.js",
-    "test:zero-trust": "npm run test:ssl-compat && npm run test:redirects && npm run test:workload && npm run test:staging && npm run test:key-vault && npm run test:crl-distribution && npm run test:cors && npm run test:login-steps && npm run test:internal-redirects && npm run test:db-admin-proxy && npm run test:applications && npm run test:panel-views && npm run test:status-routing && npm run test:csr && npm run test:join",
+    "test:zero-trust": "npm run test:ssl-compat && npm run test:redirects && npm run test:workload && npm run test:staging && npm run test:key-vault && npm run test:crl-distribution && npm run test:cors && npm run test:login-steps && npm run test:internal-redirects && npm run test:db-admin-proxy && npm run test:applications && npm run test:panel-views && npm run test:status-routing && npm run test:csr && npm run test:join && npm run test:document-scopes",
     "test:staging": "node test/staging-store-demo.js",
     "test:key-vault": "node test/key-vault-demo.js",
     "test:crl-distribution": "node test/crl-distribution-demo.js",
@@ -40,7 +48,8 @@
     "test:panel-views": "node test/admin-panel-views-demo.js",
     "test:status-routing": "node test/status-routing-demo.js",
     "test:csr": "node test/csr-issuance-demo.js",
-    "test:join": "node test/join-fitfak-demo.js"
+    "test:join": "node test/join-fitfak-demo.js",
+    "test:document-scopes": "node test/document-scopes-demo.js"
   },
   "notes": {
     "neden-sifir-bagimlilik": "WebAuthn/FIDO2, TOTP (RFC 6238), ES256 JWT, CBOR, base32/base64url, ve gRPC-Web tarzı çerçeveleme dahil HER ŞEY node:crypto ve diğer Node.js yerleşikleri üzerine sıfırdan yazıldı -- talep edilen kısıtlamaya uygun olarak harici kütüphane YOK.",

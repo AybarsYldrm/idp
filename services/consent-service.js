@@ -66,6 +66,36 @@ const SCOPE_CATALOG = {
       + 'Veri okumaz -- boyut bildirir, içerik değil.',
     sensitive: true,
   },
+  'documents:read': {
+    title: 'Belgeleriniz (okuma)',
+    detail: 'Belge Stüdyosu\'ndaki taslaklarınızı ve imzalı belgelerinizi listeler ve açar. '
+      + 'Değişiklik yapamaz, silemez.',
+    sensitive: false,
+  },
+  'documents:write': {
+    title: 'Belgeleriniz (yazma)',
+    detail: 'Taslak oluşturabilir, düzenleyebilir ve silebilir; belgelerinizi başkalarıyla '
+      + 'paylaşabilir. Paylaştığı her belgeyi siz /profile sayfasından geri alabilirsiniz.',
+    sensitive: true,
+  },
+  'documents:sign': {
+    title: 'Belgelerinizi imzalama',
+    detail: 'Sizin adınıza imza sertifikası ister ve belgeleri o sertifikayla imzalar. '
+      + 'İmza anahtarınız tarayıcınızda üretilir ve tarayıcınızdan çıkmaz — bu izin, '
+      + 'sertifikayı ALMA yetkisidir, anahtarı verme yetkisi değil.',
+    sensitive: true,
+  },
+  'mail:read': {
+    title: 'Posta kutunuz (okuma)',
+    detail: 'İletilerinizi ve eklerini okur. Bir belgeyi postadan alıp düzenlemek için gerekir.',
+    sensitive: true,
+  },
+  'mail:send': {
+    title: 'Sizin adınıza posta gönderme',
+    detail: 'İmzalı bir belgeyi ek olarak gönderir. Gönderilen her ileti Gönderilenler '
+      + 'klasörünüzde görünür.',
+    sensitive: true,
+  },
   offline_access: {
     title: 'Siz yokken de erişim',
     detail: 'Tarayıcınızı kapattıktan sonra da erişimini sürdürür (yenileme belirteci). İzni geri aldığınızda sona erer.',

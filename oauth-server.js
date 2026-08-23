@@ -1951,6 +1951,11 @@ async function main() {
   const WORKLOAD_REGISTRY = JSON.parse(process.env.FITFAK_IDP_WORKLOADS || JSON.stringify({
     'dns-resolver': { requiredScope: 'identity:workload', profile: 'workload' },
     'smtp-relay': { requiredScope: 'identity:workload', profile: 'workload' },
+    // Belge Stüdyosu, kullanıcı taslaklarını @fitfak/database'te tutuyor ve
+    // oraya SPIFFE kimliğiyle bağlanıyor. Adı burada yazılı olmasaydı,
+    // veritabanına bağlanmak için bir kayıt sırrı elle tutturulmak zorunda
+    // kalırdı — ve elle tutturulan her şey bir gün ayrışır.
+    'belge-studio': { requiredScope: 'identity:workload', profile: 'workload' },
   }));
 
   /** Tarayıcıda oturum açmış kullanıcı için oturum kimliği (spiffe://.../session/<id>). */

@@ -19,7 +19,8 @@ Referans kodunuzdaki (`server.js`, `grpc-server.js`, `@fitfak/database` demolar�
 9. [v1.1: e-posta doğrulama, RBAC, Snowflake ID, uzak gRPC veritabanı](#v11-güncellemesi-e-posta-doğrulama-rbac-snowflake-id-uzak-grpc-veritabanı-seçeneği)
 10. [v1.2: DB-tabanlı OAuth client'lar, çoklu-hesap seçici, QR kod](#v12-güncellemesi-db-tabanlı-oauth-clientlar-çoklu-hesap-seçici-gerçek-qr-kod-sade-tasarım)
 11. [v1.3: Device Code girişi, ölçeklenebilirlik, PKI/ACME sistemi](#v13-güncellemesi-device-code-girişi-ölçeklenebilirlik-ve-tam-pkiacme-sistemi)
-12. [Dosya haritası](#dosya-haritası)
+12. [Belge ve posta kapsamları](#belge-ve-posta-kapsamları-v14)
+13. [Dosya haritası](#dosya-haritası)
 
 ---
 
@@ -382,6 +383,72 @@ Alt seviye çerçeveleme/trailer mekaniği, gerçek bir HTTP/2 + native trailer 
 - **`test/mtls-demo.js`**: openssl ile üretilmiş gerçek bir CA + istemci + sunucu sertifika zinciriyle uçtan uca doğrulandı -- geçerli sertifika başarılı oluyor (sunucu doğru CN'i görüyor), sertifikasız istemci reddediliyor, güvenilmeyen CA'dan sertifika ASLA `authorized:true` sonucuna yol açmıyor.
 
 Sunucu tarafı mTLS doğrulaması (hangi CA'lara güvenileceği, `requestCert`/`rejectUnauthorized` yapılandırması) sizin sorumluluğunuzdadır -- bu proje sadece istemci tarafını sağlar.
+
+---
+
+## Belge ve posta kapsamları (v1.4)
+
+Belge Stüdyosu (`belge-studio`) ve posta sunucusu (`fitfak-mail`) artık
+kullanıcının belgelerine bu IdP üzerinden erişiyor. Bunun için iki şey
+eklendi.
+
+### 1. Kapsam kataloğu
+
+| Kapsam | Ne verir | Hassas |
+|--------|----------|--------|
+| `documents:read` | Taslakları listeler ve açar | hayır |
+| `documents:write` | Oluşturur, düzenler, siler, paylaşır | **evet** |
+| `documents:sign` | Adına sertifika ister ve belgeleri imzalar | **evet** |
+| `mail:read` | İletileri ve ekleri okur | **evet** |
+| `mail:send` | Adına posta gönderir | **evet** |
+
+Onay ekranı ne verildiğini **söylemek** zorunda. Katalogda olmayan bir
+kapsam "ne olduğu tanımlı değil, emin değilseniz reddedin" diye
+gösteriliyor — doğru ama işe yaramaz. Kullanıcı `documents:write`
+onaylarken belgelerinin silinebileceğini ve paylaşılabileceğini bilmeli.
+
+`documents:sign` açıklaması, **anahtarın verilmediğini** ayrıca söylüyor:
+imza anahtarı kullanıcının tarayıcısında üretiliyor ve oradan çıkmıyor; bu
+izin sertifikayı **alma** yetkisidir, anahtarı verme yetkisi değil.
+Kullanıcı bu farkı onay ekranından anlayabilmeli.
+
+Okuma kapsamı hassas **değil** ve öyle işaretlenmedi — her şeyi hassas
+saymak, hiçbir şeyi hassas saymamakla aynı sonucu verir.
+
+### 2. `belge-studio` iş yükü kaydı
+
+`WORKLOAD_REGISTRY` varsayılanına eklendi:
+
+```js
+'belge-studio': { requiredScope: 'identity:workload', profile: 'workload' },
+```
+
+Belge Stüdyosu kullanıcı taslaklarını `@fitfak/database`te tutuyor ve
+oraya **SPIFFE kimliğiyle** bağlanıyor. Adı burada yazılı olmasaydı,
+veritabanına bağlanmak için bir kayıt sırrını elle tutturmak gerekirdi —
+ve elle tutturulan her şey bir gün ayrışır.
+
+### 3. Paket dışa aktarımları
+
+`package.json` artık bir `exports` haritası taşıyor:
+
+| Yol | Dosya | Kim kullanıyor |
+|-----|-------|----------------|
+| `.` | `oauth-server.js` | — |
+| `./client` | `client/identity-client.js` | Arka uç servisleri (jeton doğrulama) |
+| `./join` | `client/join-fitfak.js` | **`@fitfak/workspace`** — yığına tek çağrıyla katılma |
+| `./auth-client` | `auth-client.js` | — |
+| `./spiffe` | `core/spiffe.js` | Kimlik biçimleri |
+
+`./join` olmadan `@fitfak/workspace` `joinFitfak()`ı bulamıyor ve çalışma
+alanı katmanı **sessizce dosya sürücüsüne düşüyor** — yani SPIFFE yerine
+tek makinelik bir depo. "Çalışıyor ama yanlış yerde çalışıyor", bulunması
+en zor hâl; `test/document-scopes-demo.js` bu haritanın her yolunun
+çözüldüğünü doğruluyor.
+
+```bash
+npm run test:document-scopes
+```
 
 ---
 
